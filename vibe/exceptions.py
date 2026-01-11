@@ -159,3 +159,16 @@ class TaskQueueFullError(TaskError):
     """Raised when task queue is at capacity."""
 
     pass
+
+
+# Integration Errors
+class ResearchError(VibeError):
+    """Base exception for Perplexity research errors."""
+
+    pass
+
+
+class GitHubError(VibeError):
+    """Base exception for GitHub CLI errors."""
+
+    pass

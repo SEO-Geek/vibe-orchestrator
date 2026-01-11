@@ -36,7 +36,8 @@ from vibe.config import (
     save_config,
 )
 from vibe.claude.executor import ClaudeExecutor, TaskResult, ToolCall, get_git_diff
-from vibe.exceptions import ConfigError, ClaudeError, GLMConnectionError, MemoryConnectionError, StartupError
+from vibe.exceptions import ConfigError, ClaudeError, GLMConnectionError, MemoryConnectionError, StartupError, ResearchError, GitHubError
+from vibe.integrations import PerplexityClient, GitHubOps
 from vibe.glm.client import GLMClient, ping_glm_sync
 from vibe.glm.prompts import SUPERVISOR_SYSTEM_PROMPT
 from vibe.memory.keeper import VibeMemory
@@ -56,6 +57,8 @@ app = typer.Typer(
 # Global clients (initialized after startup validation)
 _glm_client: GLMClient | None = None
 _memory: VibeMemory | None = None
+_perplexity: PerplexityClient | None = None
+_github: GitHubOps | None = None
 
 
 def handle_shutdown(signum: int, frame: types.FrameType | None) -> NoReturn:
@@ -659,12 +662,16 @@ def conversation_loop(
                     break
                 elif cmd == "/help":
                     console.print("\n[bold]Commands:[/bold]")
-                    console.print("  /quit    - Exit Vibe")
-                    console.print("  /status  - Show session status")
-                    console.print("  /usage   - Show GLM usage stats")
-                    console.print("  /memory  - Show memory stats")
-                    console.print("  /project - Switch project")
-                    console.print("  /help    - Show this help")
+                    console.print("  /quit      - Exit Vibe")
+                    console.print("  /status    - Show session status")
+                    console.print("  /usage     - Show GLM usage stats")
+                    console.print("  /memory    - Show memory stats")
+                    console.print("  /research  - Research a topic via Perplexity")
+                    console.print("  /github    - Show GitHub repo info")
+                    console.print("  /issues    - List GitHub issues")
+                    console.print("  /prs       - List GitHub pull requests")
+                    console.print("  /project   - Switch project")
+                    console.print("  /help      - Show this help")
                     console.print()
                 elif cmd == "/status":
                     stats = context.get_stats()
@@ -696,6 +703,87 @@ def conversation_loop(
                         console.print()
                     else:
                         console.print("[yellow]Memory not available[/yellow]")
+                elif cmd.startswith("/research"):
+                    # /research <query> - Research a topic via Perplexity
+                    if not _perplexity or not _perplexity.is_available:
+                        console.print("[yellow]Perplexity not available (PERPLEXITY_API_KEY not set)[/yellow]")
+                        continue
+                    query = user_input[9:].strip()  # Remove "/research "
+                    if not query:
+                        query = Prompt.ask("What do you want to research?")
+                    if query:
+                        with console.status("[bold blue]Researching...[/bold blue]"):
+                            try:
+                                result = asyncio.run(_perplexity.research(query, context=load_project_context(project)))
+                                console.print(Panel(
+                                    Markdown(result.answer),
+                                    title=f"[bold]Research: {query[:50]}...[/bold]" if len(query) > 50 else f"[bold]Research: {query}[/bold]",
+                                    border_style="green",
+                                ))
+                                if result.citations:
+                                    console.print("[dim]Citations:[/dim]")
+                                    for citation in result.citations[:5]:
+                                        console.print(f"  [dim]• {citation}[/dim]")
+                            except ResearchError as e:
+                                console.print(f"[red]Research failed: {e}[/red]")
+                elif cmd == "/github":
+                    # Show GitHub repo info
+                    if not _github:
+                        console.print("[yellow]GitHub CLI not configured[/yellow]")
+                        continue
+                    try:
+                        repo_info = _github.get_repo_info()
+                        if repo_info:
+                            console.print(f"\n[bold]GitHub Repository:[/bold]")
+                            console.print(f"  Name: {repo_info.get('name', 'Unknown')}")
+                            owner = repo_info.get('owner', {})
+                            console.print(f"  Owner: {owner.get('login', 'Unknown') if isinstance(owner, dict) else owner}")
+                            console.print(f"  URL: {repo_info.get('url', 'Unknown')}")
+                            console.print(f"  Private: {'Yes' if repo_info.get('isPrivate') else 'No'}")
+                            default_branch = repo_info.get('defaultBranchRef', {})
+                            console.print(f"  Default branch: {default_branch.get('name', 'Unknown') if isinstance(default_branch, dict) else 'main'}")
+                            console.print()
+                        else:
+                            console.print("[yellow]No repo info available[/yellow]")
+                    except GitHubError as e:
+                        console.print(f"[red]GitHub error: {e}[/red]")
+                elif cmd == "/issues":
+                    # List GitHub issues
+                    if not _github:
+                        console.print("[yellow]GitHub CLI not configured[/yellow]")
+                        continue
+                    try:
+                        with console.status("[bold blue]Fetching issues...[/bold blue]"):
+                            issues = _github.list_issues(limit=10)
+                        if issues:
+                            console.print(f"\n[bold]Open Issues ({len(issues)}):[/bold]")
+                            for issue in issues:
+                                labels_str = f" [{', '.join(issue.labels)}]" if issue.labels else ""
+                                console.print(f"  [cyan]#{issue.number}[/cyan] {issue.title}{labels_str}")
+                            console.print()
+                        else:
+                            console.print("[dim]No open issues[/dim]")
+                    except GitHubError as e:
+                        console.print(f"[red]GitHub error: {e}[/red]")
+                elif cmd == "/prs":
+                    # List GitHub pull requests
+                    if not _github:
+                        console.print("[yellow]GitHub CLI not configured[/yellow]")
+                        continue
+                    try:
+                        with console.status("[bold blue]Fetching pull requests...[/bold blue]"):
+                            prs = _github.list_prs(limit=10)
+                        if prs:
+                            console.print(f"\n[bold]Open Pull Requests ({len(prs)}):[/bold]")
+                            for pr in prs:
+                                draft_str = " [draft]" if pr.draft else ""
+                                console.print(f"  [cyan]#{pr.number}[/cyan] {pr.title}{draft_str}")
+                                console.print(f"    [dim]{pr.head} → {pr.base}[/dim]")
+                            console.print()
+                        else:
+                            console.print("[dim]No open pull requests[/dim]")
+                    except GitHubError as e:
+                        console.print(f"[red]GitHub error: {e}[/red]")
                 else:
                     console.print(f"[red]Unknown command: {user_input}[/red]")
                 continue
@@ -751,7 +839,20 @@ def main(
         console.print(f"[bold red]GLM initialization failed:[/bold red] {e}")
         raise typer.Exit(1)
 
-    # Step 4: Project selection
+    # Step 4: Initialize optional integrations
+    global _perplexity, _github
+
+    # Perplexity for research (optional)
+    _perplexity = PerplexityClient()
+    if not _perplexity.is_available:
+        console.print("  [dim]Perplexity: not configured (PERPLEXITY_API_KEY)[/dim]")
+
+    # GitHub CLI for repo operations (optional)
+    _github = GitHubOps()
+    if not _github.check_auth():
+        _github = None
+
+    # Step 5: Project selection
     selection = show_project_list(config)
     if selection is None:
         raise typer.Exit(0)
@@ -762,7 +863,7 @@ def main(
         console.print(f"[bold red]Project directory does not exist:[/bold red] {project.path}")
         raise typer.Exit(1)
 
-    # Step 5: Initialize memory and start session
+    # Step 6: Initialize memory and start session
     memory_items = 0
     try:
         _memory = VibeMemory(project.name)
@@ -775,7 +876,7 @@ def main(
         console.print(f"[yellow]Warning: Memory not available: {e}[/yellow]")
         _memory = None
 
-    # Step 6: Initialize session context
+    # Step 7: Initialize session context
     context = SessionContext(
         state=SessionState.IDLE,
         project_name=project.name,
@@ -785,7 +886,7 @@ def main(
 
     show_project_loaded(project, memory_items=memory_items)
 
-    # Step 7: Enter conversation loop
+    # Step 8: Enter conversation loop
     conversation_loop(context, config, project, _glm_client, _memory)
 
 

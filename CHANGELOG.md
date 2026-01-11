@@ -6,6 +6,31 @@ All notable changes to Vibe Orchestrator will be documented in this file.
 
 ### Added
 
+#### Phase 8: Polish (2026-01-11)
+
+- **Perplexity Research Integration**:
+  - PerplexityClient using OpenAI-compatible API
+  - `/research` command for technical documentation lookup
+  - Research for tasks, error lookup, library documentation
+  - Citations extracted from responses
+
+- **GitHub Operations**:
+  - GitHubOps class using `gh` CLI for all operations
+  - Issue management: list, get, create, close
+  - Pull request operations: list, get, create, merge
+  - Branch creation and repo sync
+  - `/github`, `/issues`, `/prs` commands in CLI
+
+- **CLI Commands**:
+  - `/research <query>` - Research via Perplexity API
+  - `/github` - Show GitHub repo info
+  - `/issues` - List open issues
+  - `/prs` - List open pull requests
+
+- **New Exceptions**:
+  - `ResearchError` for Perplexity API errors
+  - `GitHubError` for GitHub CLI errors
+
 #### Phase 7: Project Updates (2026-01-11)
 
 - **ProjectUpdater Class**: Automatic documentation updates
