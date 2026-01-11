@@ -153,6 +153,17 @@ def query_logs(
     return results[:limit]
 
 
+def percentile(values: list[float], p: float) -> float:
+    """Calculate percentile of a sorted list."""
+    if not values:
+        return 0.0
+    sorted_vals = sorted(values)
+    k = (len(sorted_vals) - 1) * p / 100
+    f = int(k)
+    c = f + 1 if f + 1 < len(sorted_vals) else f
+    return sorted_vals[f] + (k - f) * (sorted_vals[c] - sorted_vals[f])
+
+
 def calculate_stats(entries: list[dict[str, Any]]) -> dict[str, Any]:
     """
     Calculate statistics from log entries.
@@ -161,39 +172,75 @@ def calculate_stats(entries: list[dict[str, Any]]) -> dict[str, Any]:
         entries: List of log entries
 
     Returns:
-        Dictionary with statistics
+        Dictionary with statistics including percentiles and costs
     """
     glm_entries = [e for e in entries if e.get("_source") == "glm"]
     claude_entries = [e for e in entries if e.get("_source") == "claude"]
 
     # GLM stats
     total_glm_tokens = sum(e.get("total_tokens", 0) for e in glm_entries)
+    prompt_tokens = sum(e.get("prompt_tokens", 0) for e in glm_entries)
+    completion_tokens = sum(e.get("completion_tokens", 0) for e in glm_entries)
     glm_latencies = [e.get("latency_ms", 0) for e in glm_entries if e.get("latency_ms")]
     avg_glm_latency = sum(glm_latencies) / len(glm_latencies) if glm_latencies else 0
 
-    # Claude stats
+    # GLM cost estimation ($0.001/1K input, $0.002/1K output)
+    glm_cost = (prompt_tokens / 1000) * 0.001 + (completion_tokens / 1000) * 0.002
+
+    # Claude stats (cost tracked by Claude CLI, not here)
     claude_successes = sum(1 for e in claude_entries if e.get("success"))
     claude_failures = len(claude_entries) - claude_successes
     success_rate = (claude_successes / len(claude_entries) * 100) if claude_entries else 0
     durations = [e.get("duration_ms", 0) for e in claude_entries if e.get("duration_ms")]
     avg_duration = sum(durations) / len(durations) if durations else 0
 
-    # Method breakdown
-    methods: dict[str, int] = {}
+    # Percentiles for latency and duration
+    glm_p50 = percentile(glm_latencies, 50)
+    glm_p95 = percentile(glm_latencies, 95)
+    claude_p50 = percentile(durations, 50)
+    claude_p95 = percentile(durations, 95)
+
+    # Method breakdown with tokens
+    methods: dict[str, dict[str, int]] = {}
     for e in glm_entries:
         m = e.get("method", "unknown")
-        methods[m] = methods.get(m, 0) + 1
+        if m not in methods:
+            methods[m] = {"count": 0, "tokens": 0}
+        methods[m]["count"] += 1
+        methods[m]["tokens"] += e.get("total_tokens", 0)
+
+    # Tool usage breakdown
+    tool_counts: dict[str, int] = {}
+    for e in claude_entries:
+        for tc in e.get("tool_calls", []):
+            tool_name = tc.get("name", "unknown")
+            tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
+
+    # Error breakdown
+    errors: list[str] = []
+    for e in glm_entries + claude_entries:
+        if err := e.get("error"):
+            errors.append(err[:100])
 
     return {
         "glm_calls": len(glm_entries),
         "glm_tokens": total_glm_tokens,
+        "glm_prompt_tokens": prompt_tokens,
+        "glm_completion_tokens": completion_tokens,
         "glm_avg_latency_ms": int(avg_glm_latency),
+        "glm_p50_latency_ms": int(glm_p50),
+        "glm_p95_latency_ms": int(glm_p95),
+        "glm_cost_usd": round(glm_cost, 4),
         "glm_methods": methods,
         "claude_executions": len(claude_entries),
         "claude_successes": claude_successes,
         "claude_failures": claude_failures,
         "claude_success_rate": round(success_rate, 1),
         "claude_avg_duration_ms": int(avg_duration),
+        "claude_p50_duration_ms": int(claude_p50),
+        "claude_p95_duration_ms": int(claude_p95),
+        "claude_tools": tool_counts,
+        "errors": errors[:10],  # Last 10 errors
     }
 
 
@@ -247,25 +294,40 @@ def format_stats(stats: dict[str, Any]) -> str:
     """
     lines = [
         "=== GLM Statistics ===",
-        f"  Calls:        {stats['glm_calls']}",
-        f"  Total Tokens: {stats['glm_tokens']:,}",
-        f"  Avg Latency:  {stats['glm_avg_latency_ms']}ms",
+        f"  Calls:          {stats['glm_calls']}",
+        f"  Total Tokens:   {stats['glm_tokens']:,} (in: {stats.get('glm_prompt_tokens', 0):,}, out: {stats.get('glm_completion_tokens', 0):,})",
+        f"  Latency:        avg {stats['glm_avg_latency_ms']}ms, p50 {stats.get('glm_p50_latency_ms', 0)}ms, p95 {stats.get('glm_p95_latency_ms', 0)}ms",
+        f"  Est. Cost:      ${stats.get('glm_cost_usd', 0):.4f}",
     ]
 
-    if stats["glm_methods"]:
+    if stats.get("glm_methods"):
         lines.append("  Methods:")
-        for method, count in sorted(stats["glm_methods"].items()):
-            lines.append(f"    - {method}: {count}")
+        for method, data in sorted(stats["glm_methods"].items()):
+            if isinstance(data, dict):
+                lines.append(f"    - {method}: {data['count']} calls, {data['tokens']:,} tokens")
+            else:
+                lines.append(f"    - {method}: {data}")
 
     lines.extend([
         "",
         "=== Claude Statistics ===",
-        f"  Executions:   {stats['claude_executions']}",
-        f"  Successes:    {stats['claude_successes']}",
-        f"  Failures:     {stats['claude_failures']}",
-        f"  Success Rate: {stats['claude_success_rate']}%",
-        f"  Avg Duration: {stats['claude_avg_duration_ms']}ms ({stats['claude_avg_duration_ms']/1000:.1f}s)",
+        f"  Executions:     {stats['claude_executions']}",
+        f"  Success/Fail:   {stats['claude_successes']}/{stats['claude_failures']} ({stats['claude_success_rate']}%)",
+        f"  Duration:       avg {stats['claude_avg_duration_ms']/1000:.1f}s, p50 {stats.get('claude_p50_duration_ms', 0)/1000:.1f}s, p95 {stats.get('claude_p95_duration_ms', 0)/1000:.1f}s",
     ])
+
+    if stats.get("claude_tools"):
+        lines.append("  Tools Used:")
+        for tool, count in sorted(stats["claude_tools"].items(), key=lambda x: -x[1])[:10]:
+            lines.append(f"    - {tool}: {count}")
+
+    if stats.get("errors"):
+        lines.extend([
+            "",
+            "=== Recent Errors ===",
+        ])
+        for err in stats["errors"][:5]:
+            lines.append(f"  - {err[:80]}...")
 
     return "\n".join(lines)
 
@@ -282,3 +344,121 @@ def tail_logs(log_type: str = "all", lines: int = 20) -> list[dict[str, Any]]:
         List of log entries
     """
     return query_logs(log_type=log_type, limit=lines)
+
+
+def follow_logs(
+    log_type: str = "all",
+    callback: Any = None,
+    poll_interval: float = 0.5,
+) -> Iterator[dict[str, Any]]:
+    """
+    Follow log files in real-time (like tail -f).
+
+    Args:
+        log_type: "glm", "claude", "session", or "all"
+        callback: Optional callback for each new entry
+        poll_interval: Seconds between polls
+
+    Yields:
+        New log entries as they appear
+    """
+    import time
+
+    config = get_config()
+
+    # Determine which files to watch
+    files: list[tuple[str, Path]] = []
+    if log_type in ("glm", "all"):
+        files.append(("glm", config.glm_log_path))
+    if log_type in ("claude", "all"):
+        files.append(("claude", config.claude_log_path))
+    if log_type in ("session", "all"):
+        files.append(("session", config.session_log_path))
+
+    # Track file positions
+    positions: dict[Path, int] = {}
+    for _, filepath in files:
+        if filepath.exists():
+            positions[filepath] = filepath.stat().st_size
+        else:
+            positions[filepath] = 0
+
+    while True:
+        for source, filepath in files:
+            if not filepath.exists():
+                continue
+
+            current_size = filepath.stat().st_size
+            last_pos = positions.get(filepath, 0)
+
+            if current_size > last_pos:
+                # New content available
+                with open(filepath, "r", encoding="utf-8") as f:
+                    f.seek(last_pos)
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                            entry["_source"] = source
+                            if callback:
+                                callback(entry)
+                            yield entry
+                        except json.JSONDecodeError:
+                            continue
+
+                positions[filepath] = current_size
+
+        time.sleep(poll_interval)
+
+
+def get_session_summary(session_id: str) -> dict[str, Any]:
+    """
+    Get a summary for a specific session.
+
+    Args:
+        session_id: The session ID to summarize
+
+    Returns:
+        Summary dictionary with all session activity
+    """
+    entries = query_logs(log_type="all", session_id=session_id, limit=1000)
+
+    glm_entries = [e for e in entries if e.get("_source") == "glm"]
+    claude_entries = [e for e in entries if e.get("_source") == "claude"]
+    session_entries = [e for e in entries if e.get("_source") == "session"]
+
+    # Get time range
+    timestamps = [e.get("timestamp", "") for e in entries if e.get("timestamp")]
+    start_time = min(timestamps) if timestamps else ""
+    end_time = max(timestamps) if timestamps else ""
+
+    # Calculate duration
+    duration_seconds = 0.0
+    if start_time and end_time:
+        try:
+            start = datetime.fromisoformat(start_time)
+            end = datetime.fromisoformat(end_time)
+            duration_seconds = (end - start).total_seconds()
+        except ValueError:
+            pass
+
+    # Get user requests from session events
+    requests = [
+        e.get("user_request", "")
+        for e in session_entries
+        if e.get("event_type") == "request" and e.get("user_request")
+    ]
+
+    return {
+        "session_id": session_id,
+        "start_time": start_time,
+        "end_time": end_time,
+        "duration_seconds": duration_seconds,
+        "glm_calls": len(glm_entries),
+        "claude_executions": len(claude_entries),
+        "total_tokens": sum(e.get("total_tokens", 0) for e in glm_entries),
+        "user_requests": requests,
+        "stats": calculate_stats(entries),
+    }

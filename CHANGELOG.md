@@ -4,6 +4,59 @@ All notable changes to Vibe Orchestrator will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+#### Unified Persistence Layer (2026-01-11)
+
+**Problem**: Two separate memory systems (TaskHistory in-memory, VibeMemory SQLite) that were mostly decoupled. User requests and chat context not persisted. No crash recovery. Context lost between sessions.
+
+**Solution**: New unified persistence module with comprehensive SQLite schema:
+
+1. **New Module** (`vibe/persistence/`):
+   - `schema.sql` - 18 tables for full persistence (projects, sessions, messages, tasks, attempts, reviews, debug sessions, etc.)
+   - `models.py` - Python dataclasses with enums for all entities
+   - `repository.py` - `VibeRepository` class with all CRUD operations
+   - Uses WAL mode for concurrent reads, foreign keys enforced
+
+2. **Crash Recovery**:
+   - Heartbeat-based orphan detection (5 minute threshold)
+   - Sessions marked as 'crashed' if process died
+   - On startup: detects and reports orphaned sessions
+   - PID and hostname tracking for multi-host detection
+
+3. **Full Task Lifecycle**:
+   - Task status transitions with audit trail
+   - Task attempts (each Claude execution) tracked
+   - File changes per attempt
+   - GLM reviews linked to attempts
+
+4. **Conversation Persistence**:
+   - Every user message persisted
+   - GLM responses saved
+   - Message types: chat, clarification, decomposition, review
+
+5. **GLM Verified**:
+   - Implementation reviewed by GLM
+   - Fixed race condition in `get_or_create_project()` (atomic upsert)
+   - Fixed transaction usage in `start_session()`
+
+6. **Backward Compatible**:
+   - Runs alongside existing VibeMemory
+   - Dual-write pattern: both systems updated
+   - Gradual migration path
+
+**Database**: `~/.config/vibe/vibe.db`
+
+**Files Created**:
+- `vibe/persistence/__init__.py`
+- `vibe/persistence/schema.sql`
+- `vibe/persistence/models.py`
+- `vibe/persistence/repository.py`
+
+**Files Modified**:
+- `vibe/cli.py` - Repository initialization, message persistence, heartbeat, crash detection
+- `vibe/state.py` - Added `repo_session_id` field to SessionContext
+
 ### Fixed
 
 #### Rock-Solid Clarification System (2026-01-11)

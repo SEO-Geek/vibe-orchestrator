@@ -47,6 +47,12 @@ from vibe.glm.prompts import SUPERVISOR_SYSTEM_PROMPT
 from vibe.memory.keeper import VibeMemory
 from vibe.memory.debug_session import DebugSession, DebugAttempt, AttemptResult
 from vibe.memory.task_history import TaskHistory, add_task, add_request, get_context_for_glm
+# New unified persistence layer
+from vibe.persistence.repository import VibeRepository
+from vibe.persistence.models import (
+    SessionStatus, TaskStatus, AttemptResult as PersistAttemptResult,
+    MessageRole, MessageType
+)
 from vibe.glm.debug_state import DebugContext, ClaudeIteration
 from vibe.glm.prompts import DEBUG_CLAUDE_PROMPT
 from vibe.logging import (
@@ -74,6 +80,7 @@ app = typer.Typer(
 # Global clients (initialized after startup validation)
 _glm_client: GLMClient | None = None
 _memory: VibeMemory | None = None
+_repository: VibeRepository | None = None  # New unified persistence
 _perplexity: PerplexityClient | None = None
 _github: GitHubOps | None = None
 _debug_session: DebugSession | None = None
@@ -82,13 +89,40 @@ _debug_session: DebugSession | None = None
 def handle_shutdown(signum: int, frame: types.FrameType | None) -> NoReturn:
     """Handle graceful shutdown on SIGINT/SIGTERM."""
     console.print("\n[yellow]Shutting down Vibe...[/yellow]")
-    # End session and save state
+    # End sessions and save state
     if _memory and _memory.session_id:
         try:
             _memory.end_session("Session ended via signal")
         except Exception:
             pass  # Best effort on shutdown
+    # Also end new persistence session
+    if _repository:
+        try:
+            # Get current session from SessionContext would be ideal,
+            # but we don't have access here. Let's just close the repository.
+            _repository.close()
+        except Exception:
+            pass
     sys.exit(0)
+
+
+def persist_message(
+    session_id: str,
+    role: MessageRole,
+    content: str,
+    message_type: MessageType = MessageType.CHAT,
+) -> None:
+    """
+    Persist a message to the new unified persistence layer.
+
+    This is a helper for gradually migrating to the new system.
+    Fails silently if repository is not available.
+    """
+    if _repository and session_id:
+        try:
+            _repository.add_message(session_id, role, content, message_type)
+        except Exception as e:
+            logger.debug(f"Failed to persist message: {e}")
 
 
 # Register signal handlers
@@ -383,6 +417,9 @@ async def execute_debug_workflow(
                 title="Claude's Findings",
                 border_style="green" if result.success else "red",
             ))
+            # Flush after Panel to prevent buffer bleeding
+            import sys
+            sys.stdout.flush()
         elif result.error:
             console.print(f"[red]Error: {result.error}[/red]")
 
@@ -485,6 +522,12 @@ async def execute_debug_workflow(
         success=context.is_complete,
         summary=f"{len(context.iterations)} iterations, solved={context.is_complete}",
     )
+
+    # Ensure all output is flushed before returning
+    import sys
+    console.file.flush() if hasattr(console, 'file') else None
+    sys.stdout.flush()
+    sys.stderr.flush()
 
 
 async def execute_task_with_claude(
@@ -666,9 +709,11 @@ async def process_user_request(
     # Check if this is a debug request - use dedicated debug workflow
     from vibe.glm.client import is_investigation_request
 
-    # Keywords that trigger debug workflow (more specific than investigation)
-    DEBUG_KEYWORDS = ["debug", "fix", "broken", "not working", "error", "bug", "crash", "fail", "why is", "what's wrong"]
-    is_debug = any(keyword in user_request.lower() for keyword in DEBUG_KEYWORDS)
+    # Keywords that trigger debug workflow - only check FIRST LINE to avoid
+    # false positives from pasted findings containing words like "Fixed"
+    DEBUG_KEYWORDS = ["debug", "broken", "not working", "bug", "crash", "why is", "what's wrong"]
+    first_line = user_request.split('\n')[0].lower()
+    is_debug = any(keyword in first_line for keyword in DEBUG_KEYWORDS)
 
     if is_debug:
         console.print("[dim]Debug request detected - using debug workflow[/dim]")
@@ -750,14 +795,17 @@ async def process_user_request(
 
     console.print()
 
-    # Ask for confirmation before executing
-    confirm = Prompt.ask(
-        "Execute these tasks?",
-        choices=["y", "n"],
-        default="y",
-    )
+    # Ask for confirmation - use simple input() instead of Rich Prompt.ask
+    # Rich's Prompt with choices can't handle multi-line paste (each line
+    # triggers "Please select one of the available options" spam)
+    try:
+        console.print("[bold]Execute these tasks?[/bold] [dim][y/n] (y):[/dim] ", end="")
+        sys.stdout.flush()
+        confirm = input().strip().lower() or "y"
+    except (EOFError, KeyboardInterrupt):
+        confirm = "n"
 
-    if confirm.lower() != "y":
+    if confirm != "y":
         console.print("[yellow]Cancelled.[/yellow]")
         return
 
@@ -949,6 +997,12 @@ async def process_user_request(
                 console.print(f"[red]Claude error on task {i}: {e}[/red]")
                 failed += 1
                 context.add_error(str(e))
+                # Record the failed task so "redo the failed task" works
+                add_task(
+                    task.get("description", ""),
+                    success=False,
+                    summary=f"Error: {str(e)[:200]}",
+                )
                 break  # Don't retry on Claude errors
 
     # Final summary with GLM usage
@@ -1018,11 +1072,66 @@ def conversation_loop(
     """
     console.print("[bold]What do you want to work on?[/bold]")
     console.print("[dim]Type your request, or /help for commands, /quit to exit[/dim]")
+    console.print("[dim]For multi-line input, end with an empty line or Ctrl+D[/dim]")
     console.print()
+
+    def read_multiline_input() -> str:
+        """Read input that may span multiple lines (for paste support).
+
+        - Commands (starting with /) are processed immediately
+        - Everything else reads until TWO consecutive empty lines or EOF
+        - This ensures pasted content is fully captured
+        """
+        lines: list[str] = []
+        console.print("[bold cyan]>[/bold cyan] ", end="")
+        sys.stdout.flush()
+
+        empty_count = 0
+
+        try:
+            while True:
+                line = input()
+
+                # Commands are always single-line, process immediately
+                if not lines and line.startswith("/"):
+                    return line
+
+                # Track consecutive empty lines
+                if not line.strip():
+                    empty_count += 1
+                    # Two empty lines in a row = done
+                    if empty_count >= 2 and lines:
+                        break
+                    # Single empty line after content
+                    if empty_count >= 1 and lines:
+                        # Add the empty line (preserve formatting)
+                        lines.append("")
+                        # Brief moment for more paste
+                        import select
+                        if hasattr(select, 'select'):
+                            readable, _, _ = select.select([sys.stdin], [], [], 0.15)
+                            if not readable:
+                                # Remove trailing empty line if we're done
+                                if lines and lines[-1] == "":
+                                    lines.pop()
+                                break
+                        else:
+                            lines.pop()  # Remove empty on Windows
+                            break
+                    continue
+                else:
+                    empty_count = 0
+
+                lines.append(line)
+
+        except EOFError:
+            pass
+
+        return "\n".join(lines)
 
     while True:
         try:
-            user_input = Prompt.ask("[bold cyan]>[/bold cyan]")
+            user_input = read_multiline_input()
 
             if not user_input.strip():
                 continue
@@ -1050,6 +1159,7 @@ def conversation_loop(
                     console.print("  /usage      - Show GLM usage stats")
                     console.print("  /memory     - Show memory stats")
                     console.print("  /history    - Show task history (what GLM sees)")
+                    console.print("  /redo       - Re-execute the most recent failed task")
                     console.print("  /convention - Manage global conventions")
                     console.print("  /debug      - Debug session tracking")
                     console.print("  /rollback   - Rollback to debug checkpoint")
@@ -1107,15 +1217,35 @@ def conversation_loop(
                         for task in tasks:
                             icon = "[green]✓[/green]" if task.status == "completed" else "[red]✗[/red]"
                             console.print(f"  {icon} {task.description[:70]}")
-                        console.print()
-
-                    # Show what GLM sees
-                    glm_context = get_context_for_glm()
-                    if glm_context:
-                        console.print("[bold]Context for GLM:[/bold]")
-                        console.print(Panel(glm_context, border_style="dim"))
+                elif cmd == "/redo" or cmd.startswith("/redo "):
+                    # Redo failed tasks directly without GLM decomposition
+                    failed_tasks = [t for t in TaskHistory.get_recent_tasks(20) if t.status == "failed"]
+                    if not failed_tasks:
+                        console.print("[yellow]No failed tasks to redo[/yellow]")
                     else:
-                        console.print("[dim]No task history yet[/dim]")
+                        console.print(f"\n[bold]Failed Tasks ({len(failed_tasks)}):[/bold]")
+                        for i, task in enumerate(failed_tasks, 1):
+                            console.print(f"  {i}. {task.description[:70]}")
+                        console.print()
+                        console.print("[dim]Re-executing most recent failed task...[/dim]")
+                        # Create task dict from the failed task
+                        retry_task = {
+                            "id": "retry-1",
+                            "description": failed_tasks[0].description,
+                            "files": ["investigate relevant files"],
+                            "constraints": ["This is a retry of a previously failed task"],
+                        }
+                        # Execute directly
+                        asyncio.run(execute_tasks(
+                            glm_client=glm_client,
+                            executor=ClaudeExecutor(project.path),
+                            project=project,
+                            tasks=[retry_task],
+                            memory=memory,
+                            context=context,
+                            user_request=f"Retry: {failed_tasks[0].description}",
+                        ))
+                    continue
                 elif cmd.startswith("/convention"):
                     # /convention - Manage global conventions
                     if not memory:
@@ -1482,6 +1612,22 @@ def conversation_loop(
                     console.print(f"[red]Unknown command: {user_input}[/red]")
                 continue
 
+            # Input size validation - warn if very large
+            MAX_INPUT_SIZE = 50000  # ~50KB reasonable limit
+            if len(user_input) > MAX_INPUT_SIZE:
+                console.print(f"[yellow]Warning: Input is very large ({len(user_input):,} chars). Truncating to {MAX_INPUT_SIZE:,}.[/yellow]")
+                user_input = user_input[:MAX_INPUT_SIZE] + "\n\n[... truncated due to size ...]"
+
+            # Persist user message to new system
+            persist_message(context.repo_session_id, MessageRole.USER, user_input, MessageType.CHAT)
+
+            # Update heartbeat in new persistence
+            if _repository and context.repo_session_id:
+                try:
+                    _repository.update_heartbeat(context.repo_session_id)
+                except Exception:
+                    pass  # Non-critical
+
             # Process request through GLM
             asyncio.run(process_user_request(glm_client, context, project, user_input, memory))
 
@@ -1496,7 +1642,7 @@ def main(
     skip_ping: bool = typer.Option(False, "--skip-ping", help="Skip GLM API ping (faster startup)"),
 ) -> None:
     """Start Vibe Orchestrator."""
-    global _glm_client, _memory
+    global _glm_client, _memory, _repository
 
     # Step 1: Validate startup
     with Progress(
@@ -1557,8 +1703,40 @@ def main(
         console.print(f"[bold red]Project directory does not exist:[/bold red] {project.path}")
         raise typer.Exit(1)
 
-    # Step 6: Initialize memory and start session
+    # Step 6: Initialize persistence and start session
     memory_items = 0
+    repo_session_id = ""
+
+    # Initialize new unified persistence layer
+    try:
+        _repository = VibeRepository()
+        _repository.initialize()
+
+        # Get or create project in new persistence
+        repo_project = _repository.get_or_create_project(
+            name=project.name,
+            path=str(project.path),
+            description=project.description or "",
+        )
+
+        # Check for orphaned sessions (crash recovery)
+        orphans = _repository.get_orphaned_sessions()
+        if orphans:
+            console.print(f"[yellow]⚠ Found {len(orphans)} orphaned session(s) from previous crash(es)[/yellow]")
+            for orphan in orphans[:3]:  # Show max 3
+                console.print(f"  [dim]- Session {orphan.id[:8]}... started {orphan.started_at}[/dim]")
+
+        # Start new session in persistence layer
+        repo_session = _repository.start_session(repo_project.id)
+        repo_session_id = repo_session.id
+        console.print(f"  [dim]Persistence: session {repo_session_id[:8]}...[/dim]")
+
+    except Exception as e:
+        logger.error(f"Failed to initialize persistence: {e}")
+        console.print(f"[yellow]Warning: New persistence not available: {e}[/yellow]")
+        _repository = None
+
+    # Also initialize old memory system (for backward compatibility)
     try:
         _memory = VibeMemory(project.name)
         _memory.start_session(f"Vibe session for {project.name}")
@@ -1585,17 +1763,20 @@ def main(
         if stats["total_tasks"] > 0:
             console.print(f"  [dim]TaskHistory: {stats['total_tasks']} tasks loaded ({stats['completed']} completed, {stats['failed']} failed)[/dim]")
     except MemoryConnectionError as e:
-        console.print(f"[yellow]Warning: Memory not available: {e}[/yellow]")
+        console.print(f"[yellow]Warning: Old memory not available: {e}[/yellow]")
         _memory = None
         # Still set project name for logging even without memory
         set_project_name(project.name)
 
     # Step 7: Initialize session context
+    # Prefer old memory session ID for backward compatibility, fall back to new repo
+    session_id = (_memory.session_id if _memory else "") or repo_session_id
     context = SessionContext(
         state=SessionState.IDLE,
         project_name=project.name,
         project_path=project.path,
-        session_id=_memory.session_id if _memory else "",
+        session_id=session_id,
+        repo_session_id=repo_session_id,  # New persistence session
     )
 
     show_project_loaded(project, memory_items=memory_items)
@@ -1677,9 +1858,36 @@ def logs(
     session: str = typer.Option(None, "--session", help="Filter by session ID"),
     tail: int = typer.Option(20, "--tail", "-n", help="Show last N entries"),
     stats: bool = typer.Option(False, "--stats", help="Show statistics instead of entries"),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Follow logs in real-time (like tail -f)"),
 ) -> None:
     """View and analyze Vibe logs."""
+    from vibe.logging.viewer import follow_logs
+
+    def print_entry(entry: dict) -> None:
+        """Print a single log entry with color."""
+        line = format_entry_line(entry)
+        source = entry.get("_source", "")
+        if source == "glm":
+            console.print(f"[cyan]{line}[/cyan]")
+        elif source == "claude":
+            if entry.get("success"):
+                console.print(f"[green]{line}[/green]")
+            else:
+                console.print(f"[red]{line}[/red]")
+        else:
+            console.print(f"[dim]{line}[/dim]")
+
     try:
+        if follow:
+            # Live follow mode
+            console.print(f"[dim]Following {log_type} logs... (Ctrl+C to stop)[/dim]")
+            try:
+                for entry in follow_logs(log_type=log_type):
+                    print_entry(entry)
+            except KeyboardInterrupt:
+                console.print("\n[dim]Stopped following logs[/dim]")
+            return
+
         # Query logs with filters
         entries = query_logs(
             log_type=log_type,
@@ -1699,18 +1907,7 @@ def logs(
         else:
             # Display log entries (most recent last)
             for entry in reversed(entries[:tail]):
-                line = format_entry_line(entry)
-                # Color based on source
-                source = entry.get("_source", "")
-                if source == "glm":
-                    console.print(f"[cyan]{line}[/cyan]")
-                elif source == "claude":
-                    if entry.get("success"):
-                        console.print(f"[green]{line}[/green]")
-                    else:
-                        console.print(f"[red]{line}[/red]")
-                else:
-                    console.print(f"[dim]{line}[/dim]")
+                print_entry(entry)
 
     except ValueError as e:
         console.print(f"[red]Error:[/red] {e}")

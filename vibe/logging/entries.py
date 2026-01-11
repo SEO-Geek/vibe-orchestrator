@@ -47,6 +47,19 @@ class GLMLogEntry:
     error: str | None = None
     error_type: str | None = None
 
+    # Cost estimation (calculated)
+    cost_usd: float = 0.0
+
+    def estimate_cost(self) -> float:
+        """
+        Estimate cost based on token counts.
+        GLM-4.7 pricing (approximate): $0.001/1K input, $0.002/1K output
+        """
+        input_cost = (self.prompt_tokens / 1000) * 0.001
+        output_cost = (self.completion_tokens / 1000) * 0.002
+        self.cost_usd = round(input_cost + output_cost, 6)
+        return self.cost_usd
+
     def to_json(self) -> str:
         """Serialize to JSON string."""
         return json.dumps(asdict(self), default=str)

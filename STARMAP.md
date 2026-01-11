@@ -55,7 +55,15 @@ User <-> GLM (brain) <-> Claude (worker)
 │   │
 │   ├── memory/
 │   │   ├── __init__.py
-│   │   └── keeper.py      # Direct SQLite access to memory-keeper
+│   │   ├── keeper.py      # Direct SQLite access to memory-keeper
+│   │   ├── task_history.py # In-memory task tracking
+│   │   └── debug_session.py # Debug session management
+│   │
+│   ├── persistence/        # NEW: Unified persistence layer
+│   │   ├── __init__.py
+│   │   ├── schema.sql     # SQLite schema (18 tables)
+│   │   ├── models.py      # Dataclasses for all entities
+│   │   └── repository.py  # VibeRepository database access
 │   │
 │   └── integrations/
 │       ├── __init__.py
@@ -111,6 +119,16 @@ Direct SQLite access to memory-keeper database:
 - Checkpoint creation before risky operations
 - Convention storage for cross-project rules
 
+### VibeRepository (`persistence/repository.py`)
+Unified persistence layer - single source of truth:
+- SQLite database at `~/.config/vibe/vibe.db`
+- 18 tables: projects, sessions, messages, tasks, attempts, reviews, etc.
+- Crash recovery via heartbeat-based orphan detection
+- Full task lifecycle with audit trail
+- Conversation persistence for all messages
+- WAL mode for concurrent reads, foreign keys enforced
+- Atomic operations with transaction support
+
 ## CLI Commands
 
 | Command | Description |
@@ -147,6 +165,7 @@ Projects are registered in `~/.config/vibe/projects.json`:
 
 ## Recent Changes
 
+- **2026-01-11**: Unified persistence layer (VibeRepository, crash recovery, full task tracking)
 - **2026-01-11**: Core implementation complete (Supervisor, Reviewer)
 - **2026-01-11**: Robustness fixes (context overflow, state bleed, review fallback)
 - **2026-01-11**: Task enforcer, conventions, debug sessions

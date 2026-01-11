@@ -45,7 +45,7 @@ INVESTIGATION_KEYWORDS = re.compile(
 )
 
 # API configuration
-DEFAULT_TIMEOUT = 30.0  # seconds - fail fast, delegate on timeout
+DEFAULT_TIMEOUT = 240.0  # seconds - allow time for long prompts with context
 MAX_RETRIES = 2
 RETRY_DELAYS = [1.0, 3.0]  # exponential backoff
 
@@ -276,11 +276,28 @@ class GLMClient:
                 raise GLMResponseError("No message in GLM response", {"finish_reason": choice.finish_reason})
 
             content = choice.message.content or ""
+            finish_reason = choice.finish_reason or ""
+            current_max = max_tokens or self.max_tokens
+
+            # INTELLIGENT RETRY: If response was truncated, automatically retry with higher limit
+            if finish_reason == "length" and current_max < 16384:
+                new_max = min(current_max * 2, 16384)  # Double up to 16K max
+                logger.warning(
+                    f"Response truncated at {current_max} tokens, retrying with {new_max}"
+                )
+                # Recursive retry with higher limit
+                return await self.chat(
+                    system_prompt=system_prompt,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=new_max,
+                    method=method,
+                )
 
             # Update log entry with response data
             log_entry.response_content = content[:10000]  # Truncate for log size
             log_entry.model = response.model or self.model
-            log_entry.finish_reason = choice.finish_reason or ""
+            log_entry.finish_reason = finish_reason
             log_entry.prompt_tokens = response.usage.prompt_tokens if response.usage else 0
             log_entry.completion_tokens = response.usage.completion_tokens if response.usage else 0
             log_entry.total_tokens = response.usage.total_tokens if response.usage else 0
@@ -297,7 +314,7 @@ class GLMClient:
                     "completion_tokens": response.usage.completion_tokens if response.usage else 0,
                     "total_tokens": response.usage.total_tokens if response.usage else 0,
                 },
-                finish_reason=choice.finish_reason or "",
+                finish_reason=finish_reason,
             )
 
         except OpenAIError as e:
@@ -403,28 +420,22 @@ class GLMClient:
                 logger.info(f"Decomposed request into {len(tasks)} tasks")
                 return tasks
 
-        except asyncio.TimeoutError:
-            logger.warning("GLM timeout in decompose_task, using fallback")
-        except Exception as e:
-            logger.warning(f"GLM decomposition failed: {e}, using fallback")
-
-        # FALLBACK: If GLM fails or returns garbage, create a generic task
-        # This ensures the system NEVER fails on decomposition
-        logger.info("Creating fallback investigation task")
-        return [
-            {
+            # Empty task list - create fallback investigation task
+            logger.warning("GLM returned empty task list, creating fallback task")
+            return [{
                 "id": "task-1",
-                "description": f"Investigate and execute: {user_request}. "
-                               "Explore the codebase, understand the context, and complete the request. "
-                               "Report findings and actions taken.",
-                "files": ["investigate to find relevant files"],
-                "constraints": [
-                    "Explore thoroughly before making changes",
-                    "Document findings clearly",
-                    "Ask for clarification only if absolutely necessary"
-                ],
-            }
-        ]
+                "description": f"Investigate and address: {user_request[:200]}",
+                "files": ["investigate relevant files"],
+                "constraints": ["Report findings before making changes"],
+                "success_criteria": "Issue understood and addressed",
+            }]
+
+        except asyncio.TimeoutError:
+            logger.error(f"GLM timeout after {DEFAULT_TIMEOUT}s in decompose_task")
+            raise GLMConnectionError(f"GLM timed out after {DEFAULT_TIMEOUT}s - try a shorter request or check API status")
+        except Exception as e:
+            logger.error(f"GLM decomposition failed: {e}")
+            raise GLMConnectionError(f"GLM failed to decompose task: {e}")
 
     async def review_changes(
         self,
@@ -471,6 +482,7 @@ Output JSON: {{"approved": true/false, "issues": [...], "feedback": "..."}}"""
             system_prompt=REVIEWER_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": review_prompt}],
             temperature=0.1,
+            max_tokens=8192,  # Higher limit for review responses
             method="review_changes",
         )
 
@@ -642,9 +654,10 @@ If you MUST ask (see rules above), ask ONE brief question about a DECISION the u
 
         try:
             response = await self.chat(
-                system_prompt="You are GLM generating debugging tasks. Output valid JSON only.",
+                system_prompt="You are GLM generating debugging tasks. Output ONLY the JSON object.",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
+                max_tokens=8192,  # Higher limit to prevent truncation
                 method="generate_debug_task",
             )
             content = response.content
@@ -702,9 +715,10 @@ If you MUST ask (see rules above), ask ONE brief question about a DECISION the u
 
         try:
             response = await self.chat(
-                system_prompt="You are GLM reviewing Claude's debugging work. Output valid JSON only.",
+                system_prompt="You are GLM reviewing Claude's debugging work. Output ONLY the JSON object, no explanation or reasoning before it.",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
+                max_tokens=8192,  # Higher limit for review responses
                 method="review_debug_iteration",
             )
             content = response.content

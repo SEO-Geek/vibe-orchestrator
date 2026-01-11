@@ -116,8 +116,36 @@ User Request: {user_request}
 Project Context:
 {project_context}
 
+## CRITICAL: Check for Existing Findings in User Request
+
+FIRST, examine the User Request above. If it contains:
+- "## What I Investigated" or "## What I Found" or "## What I Did"
+- Specific file paths and line numbers already identified
+- Root cause analysis or fixes already made
+- Verification steps or recommendations
+
+Then the user has ALREADY DONE work! Your FIRST task should be:
+1. VERIFY the changes/findings mentioned - check if they were applied correctly
+2. TEST using any verification steps mentioned
+3. Then create follow-up tasks for any REMAINING issues mentioned
+
+DO NOT create tasks to re-investigate things already documented in the findings.
+
 IMPORTANT: The project context may contain "Recent Tasks Executed" and "Recent User Requests" sections.
-If the user refers to "the tasks", "redo", "retry", or "what we did" - USE THIS HISTORY to understand what they mean.
+- Tasks marked [✓] are completed successfully
+- Tasks marked [✗] are FAILED and may need to be retried
+
+## Handling "redo" / "retry" Commands:
+If user says "redo", "retry", "redo the failed task", or similar:
+1. Look at Recent Tasks Executed for tasks marked [✗] (failed)
+2. Create a task with the SAME description as the failed task
+3. Do NOT re-investigate or change the approach - just retry the same work
+
+Example: If user says "redo the failed task" and history shows:
+  [✓] Investigate OCR issues
+  [✗] Fix OCR coordinate mapping
+
+Then output a task to "Fix OCR coordinate mapping" (the failed one), not a new investigation.
 
 Output a JSON array of tasks. Each task should:
 1. Be completable in a single Claude session
@@ -156,21 +184,37 @@ DEBUG_TASK_PROMPT = """You are GLM generating a debugging task for Claude.
 ## Current Hypothesis:
 {hypothesis}
 
+## CRITICAL: Check for Existing Findings
+
+FIRST, examine the problem description above. If it contains:
+- "## What I Investigated" or "## What I Found" or "## What I Did"
+- Specific file paths and line numbers
+- Root cause analysis or fixes already made
+- Recommendations or verification steps
+
+Then the user has ALREADY DONE investigation work! Your task should be:
+1. VERIFY the changes mentioned - check if they were applied correctly
+2. TEST the fixes - run any verification steps mentioned
+3. BUILD ON the findings - address any remaining issues noted
+4. DO NOT re-investigate what's already documented
+
+If no existing findings: Generate a fresh investigation task.
+
 ## Your Task:
 Generate a SPECIFIC, ACTIONABLE task for Claude to execute next.
 
 Rules:
-1. Be SPECIFIC - tell Claude exactly what to investigate or fix
-2. Build on previous attempts - don't repeat what failed
+1. Be SPECIFIC - tell Claude exactly what to investigate, verify, or fix
+2. USE EXISTING CONTEXT - if findings exist, reference them directly
 3. Include starting points - which files, which functions
 4. Define success criteria - how will we know it worked?
 
 ## Output Format (JSON):
 ```json
 {{
-  "task": "Specific task description",
+  "task": "Specific task description (VERIFY existing work if findings present)",
   "starting_points": ["file1.py", "function_name"],
-  "what_to_look_for": "Specific things to investigate",
+  "what_to_look_for": "Specific things to verify or investigate",
   "success_criteria": "How to verify success"
 }}
 ```

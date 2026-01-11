@@ -37,10 +37,10 @@ logger = logging.getLogger(__name__)
 
 # Timeout tiers based on task complexity
 TIMEOUT_TIERS = {
-    "quick": 30,  # Simple reads, small edits
-    "code": 120,  # Normal coding tasks
-    "debug": 180,  # Debugging sessions
-    "research": 300,  # Research and exploration
+    "quick": 120,   # Simple reads, small edits (2 min)
+    "code": 900,    # Normal coding tasks (15 min)
+    "debug": 900,   # Debugging sessions (15 min)
+    "research": 900,  # Research and exploration (15 min)
 }
 
 

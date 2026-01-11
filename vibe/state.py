@@ -90,6 +90,7 @@ class SessionContext:
     project_name: str = ""
     project_path: str = ""
     session_id: str = ""
+    repo_session_id: str = ""  # New unified persistence session ID
 
     # Task management
     current_task: Task | None = None
