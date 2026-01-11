@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import types
+from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
 
@@ -35,9 +36,10 @@ from vibe.config import (
     save_config,
 )
 from vibe.claude.executor import ClaudeExecutor, TaskResult, ToolCall, get_git_diff
-from vibe.exceptions import ConfigError, ClaudeError, GLMConnectionError, StartupError
+from vibe.exceptions import ConfigError, ClaudeError, GLMConnectionError, MemoryConnectionError, StartupError
 from vibe.glm.client import GLMClient, ping_glm_sync
 from vibe.glm.prompts import SUPERVISOR_SYSTEM_PROMPT
+from vibe.memory.keeper import VibeMemory
 from vibe.state import SessionContext, SessionState
 
 # Rich console for terminal output
@@ -50,14 +52,20 @@ app = typer.Typer(
     add_completion=False,
 )
 
-# Global GLM client (initialized after startup validation)
+# Global clients (initialized after startup validation)
 _glm_client: GLMClient | None = None
+_memory: VibeMemory | None = None
 
 
 def handle_shutdown(signum: int, frame: types.FrameType | None) -> NoReturn:
     """Handle graceful shutdown on SIGINT/SIGTERM."""
     console.print("\n[yellow]Shutting down Vibe...[/yellow]")
-    # TODO: Save session state to memory-keeper
+    # End session and save state
+    if _memory and _memory.session_id:
+        try:
+            _memory.end_session("Session ended via signal")
+        except Exception:
+            pass  # Best effort on shutdown
     sys.exit(0)
 
 
@@ -397,6 +405,7 @@ async def process_user_request(
     context: SessionContext,
     project: Project,
     user_request: str,
+    memory: VibeMemory | None = None,
 ) -> None:
     """
     Process a user request through GLM and execute with Claude.
@@ -406,6 +415,7 @@ async def process_user_request(
         context: Session context
         project: Current project
         user_request: User's request text
+        memory: Optional memory client for persistence
     """
     # Load project context
     project_context = load_project_context(project)
@@ -467,6 +477,19 @@ async def process_user_request(
         console.print("[yellow]Cancelled.[/yellow]")
         return
 
+    # Create checkpoint before execution (if memory available)
+    if memory:
+        try:
+            checkpoint_name = f"pre-execution-{datetime.now().strftime('%H%M%S')}"
+            memory.create_checkpoint_with_git(
+                name=checkpoint_name,
+                description=f"Before executing: {user_request[:50]}",
+                project_path=project.path,
+            )
+            console.print(f"  [dim]Checkpoint created: {checkpoint_name}[/dim]")
+        except Exception as e:
+            console.print(f"  [dim]Warning: Could not create checkpoint: {e}[/dim]")
+
     # Initialize Claude executor
     try:
         executor = ClaudeExecutor(
@@ -496,6 +519,13 @@ async def process_user_request(
                 console.print(f"[red]Task failed: {result.error}[/red]")
                 failed += 1
                 context.add_error(result.error or "Unknown error")
+                # Save failure to memory
+                if memory:
+                    memory.save_task_result(
+                        task_description=task.get("description", ""),
+                        success=False,
+                        summary=result.error or "Unknown error",
+                    )
                 continue
 
             # Review with GLM
@@ -513,8 +543,23 @@ async def process_user_request(
             if review.get("approved"):
                 completed += 1
                 context.add_completed_task(task.get("description", ""))
+                # Save success to memory
+                if memory:
+                    memory.save_task_result(
+                        task_description=task.get("description", ""),
+                        success=True,
+                        summary=result.result or "",
+                        files_changed=result.file_changes,
+                    )
             else:
                 failed += 1
+                # Save rejection to memory
+                if memory:
+                    memory.save_task_result(
+                        task_description=task.get("description", ""),
+                        success=False,
+                        summary=f"Rejected: {review.get('feedback', '')}",
+                    )
                 # TODO: Implement retry with feedback
 
             context.transition_to(SessionState.EXECUTING)
@@ -537,9 +582,18 @@ async def process_user_request(
         )
     )
 
-    # Record in context
+    # Record in context and memory
     summary = f"Executed {completed}/{len(tasks)} tasks successfully"
     context.add_glm_message("assistant", summary)
+
+    # Save session progress to memory
+    if memory:
+        memory.save(
+            key=f"request-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+            value=f"Request: {user_request}\nResult: {summary}",
+            category="progress",
+            priority="normal",
+        )
 
 
 def conversation_loop(
@@ -547,6 +601,7 @@ def conversation_loop(
     config: VibeConfig,
     project: Project,
     glm_client: GLMClient,
+    memory: VibeMemory | None = None,
 ) -> None:
     """
     Main conversation loop with GLM.
@@ -568,6 +623,9 @@ def conversation_loop(
             if user_input.startswith("/"):
                 cmd = user_input.lower().strip()
                 if cmd in ("/quit", "/exit", "/q"):
+                    # End memory session before exiting
+                    if memory and memory.session_id:
+                        memory.end_session("Session ended by user")
                     console.print("[yellow]Goodbye![/yellow]")
                     break
                 elif cmd == "/help":
@@ -575,6 +633,7 @@ def conversation_loop(
                     console.print("  /quit    - Exit Vibe")
                     console.print("  /status  - Show session status")
                     console.print("  /usage   - Show GLM usage stats")
+                    console.print("  /memory  - Show memory stats")
                     console.print("  /project - Switch project")
                     console.print("  /help    - Show this help")
                     console.print()
@@ -594,12 +653,26 @@ def conversation_loop(
                     console.print(f"  Requests: {usage['request_count']}")
                     console.print(f"  Total tokens: {usage['total_tokens']}")
                     console.print()
+                elif cmd == "/memory":
+                    if memory:
+                        stats = memory.get_stats()
+                        console.print(f"\n[bold]Memory Stats:[/bold]")
+                        console.print(f"  Total items: {stats['total_items']}")
+                        console.print(f"  Sessions: {stats['session_count']}")
+                        console.print(f"  Checkpoints: {stats['checkpoint_count']}")
+                        if stats['by_category']:
+                            console.print(f"  By category:")
+                            for cat, count in stats['by_category'].items():
+                                console.print(f"    {cat}: {count}")
+                        console.print()
+                    else:
+                        console.print("[yellow]Memory not available[/yellow]")
                 else:
                     console.print(f"[red]Unknown command: {user_input}[/red]")
                 continue
 
             # Process request through GLM
-            asyncio.run(process_user_request(glm_client, context, project, user_input))
+            asyncio.run(process_user_request(glm_client, context, project, user_input, memory))
 
         except KeyboardInterrupt:
             console.print("\n[yellow]Use /quit to exit[/yellow]")
@@ -612,7 +685,7 @@ def main(
     skip_ping: bool = typer.Option(False, "--skip-ping", help="Skip GLM API ping (faster startup)"),
 ) -> None:
     """Start Vibe Orchestrator."""
-    global _glm_client
+    global _glm_client, _memory
 
     # Step 1: Validate startup
     with Progress(
@@ -660,18 +733,31 @@ def main(
         console.print(f"[bold red]Project directory does not exist:[/bold red] {project.path}")
         raise typer.Exit(1)
 
-    # Step 5: Initialize session context
+    # Step 5: Initialize memory and start session
+    memory_items = 0
+    try:
+        _memory = VibeMemory(project.name)
+        _memory.start_session(f"Vibe session for {project.name}")
+
+        # Load existing context items count
+        context_items = _memory.load_project_context(limit=100)
+        memory_items = len(context_items)
+    except MemoryConnectionError as e:
+        console.print(f"[yellow]Warning: Memory not available: {e}[/yellow]")
+        _memory = None
+
+    # Step 6: Initialize session context
     context = SessionContext(
         state=SessionState.IDLE,
         project_name=project.name,
         project_path=project.path,
+        session_id=_memory.session_id if _memory else "",
     )
 
-    # TODO: Load memory items for this project
-    show_project_loaded(project, memory_items=0)
+    show_project_loaded(project, memory_items=memory_items)
 
-    # Step 6: Enter conversation loop
-    conversation_loop(context, config, project, _glm_client)
+    # Step 7: Enter conversation loop
+    conversation_loop(context, config, project, _glm_client, _memory)
 
 
 @app.command()

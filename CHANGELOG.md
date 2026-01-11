@@ -6,6 +6,34 @@ All notable changes to Vibe Orchestrator will be documented in this file.
 
 ### Added
 
+#### Phase 6: Memory Integration (2026-01-11)
+
+- **VibeMemory Class**: Direct SQLite access to memory-keeper database
+  - Session start/end tracking with project isolation (channel = project_name)
+  - Context items: save, load, search with category/priority filters
+  - Decisions and task results persistence
+  - Journal entries with mood and tags
+
+- **Checkpoint System**: Git-aware checkpoints before risky operations
+  - Captures git branch and status
+  - Links context items to checkpoint for recovery
+  - Created automatically before task execution
+
+- **CLI Memory Integration**:
+  - Session starts when project is loaded
+  - Memory items count shown on project load
+  - `/memory` command shows stats (total items, categories, sessions)
+  - Task results saved after each execution
+  - Session ends gracefully on `/quit` or signal
+
+- **Memory Features**:
+  - `list_recent_sessions()` - View past sessions for project
+  - `continue_session()` - Resume existing session
+  - `search()` - Find items by text and category
+  - `save_decision()` - Record decisions with reasoning
+  - `save_task_result()` - Track task completion
+  - `get_stats()` - Memory statistics per project
+
 #### Phase 4: Claude Code Executor (2026-01-11)
 
 - **Claude CLI Integration**: Full subprocess integration with Claude Code CLI
