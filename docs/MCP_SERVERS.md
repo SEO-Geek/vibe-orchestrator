@@ -4,30 +4,47 @@ This document lists MCP (Model Context Protocol) servers that are highly relevan
 
 ## Currently Installed (Brian's Setup)
 
-These are already available in the Claude Code environment:
+All 13 MCP servers are installed and verified working:
+
+### Core Development Tools
 
 | Server | Package | Purpose |
 |--------|---------|---------|
-| **playwright** | @executeautomation/playwright-mcp-server | Browser automation and testing |
-| **chrome-devtools** | chrome-devtools-mcp | Control Chrome browser (requires --remote-debugging-port=9222) |
-| **perplexity** | perplexity-mcp | Deep research & web search |
-| **context7** | @upstash/context7-mcp | Fetch current library documentation |
 | **memory** | @modelcontextprotocol/server-memory | Knowledge graph persistence |
 | **memory-keeper** | mcp-memory-keeper | Session checkpoint/recovery |
 | **filesystem** | @modelcontextprotocol/server-filesystem | Safe file operations |
 | **github** | @modelcontextprotocol/server-github | GitHub API operations |
 | **git** | mcp-git | Repository operations |
 
-## Recommended to Install
+### Browser Automation (2 options)
 
-### Browser Automation & Testing
+| Server | Package | Purpose |
+|--------|---------|---------|
+| **playwright** | @executeautomation/playwright-mcp-server | Primary browser automation and testing |
+| **puppeteer** | @modelcontextprotocol/server-puppeteer | Backup browser automation (stealth mode) |
+| **chrome-devtools** | chrome-devtools-mcp | Control Chrome browser (requires --remote-debugging-port=9222) |
 
-| Server | Install Command | Purpose |
-|--------|-----------------|---------|
-| **puppeteer** | `npx @modelcontextprotocol/server-puppeteer` | Puppeteer browser automation |
-| **puppeteer-real-browser** | `npm i puppeteer-real-browser-mcp-server` | Stealth browser with anti-detection |
-| **browserbase** | See [repo](https://github.com/browserbase/mcp-server-browserbase) | Cloud browser testing |
-| **currents** | See [repo](https://github.com/currents-dev/currents-mcp) | Test execution tracking |
+### Research & Documentation
+
+| Server | Package | Purpose |
+|--------|---------|---------|
+| **perplexity** | perplexity-mcp | Deep research & web search |
+| **context7** | @upstash/context7-mcp | Fetch current library documentation |
+
+### Reasoning & API Testing
+
+| Server | Package | Purpose |
+|--------|---------|---------|
+| **sequential-thinking** | @modelcontextprotocol/server-sequential-thinking | Step-by-step reasoning for complex tasks |
+| **fetch** | mcp-server-fetch (uvx) | HTTP requests for API testing |
+
+### Database Tools
+
+| Server | Package | Purpose |
+|--------|---------|---------|
+| **sqlite** | mcp-server-sqlite (uvx) | SQLite database operations |
+
+## Optional Additional Servers
 
 ### Code Analysis & Linting
 
@@ -43,11 +60,11 @@ These are already available in the Claude Code environment:
 | **docker-mcp** | See [repo](https://github.com/QuantGeekDev/docker-mcp) | Docker container management |
 | **kubernetes** | See [repo](https://github.com/Flux159/mcp-server-kubernetes) | K8s cluster operations |
 
-### Database Tools
+### Advanced Database
 
 | Server | Install Command | Purpose |
 |--------|-----------------|---------|
-| **sqlite** | See [repo](https://github.com/panasenco/mcp-sqlite) | SQLite operations |
+| **postgres** | `uvx mcp-server-postgres` | PostgreSQL operations |
 | **neo4j** | See [repo](https://github.com/neo4j-contrib/mcp-neo4j/) | Graph database |
 
 ### Debugging

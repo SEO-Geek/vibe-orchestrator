@@ -34,6 +34,14 @@ All notable changes to Vibe Orchestrator will be documented in this file.
   - Branch creation and repo sync
   - `/github`, `/issues`, `/prs` commands in CLI
 
+- **MCP Server Installations** (13 total):
+  - Installed `sequential-thinking` for step-by-step reasoning
+  - Installed `puppeteer` as backup browser automation
+  - Installed `fetch` (uvx) for HTTP API testing
+  - Installed `sqlite` (uvx) for database operations
+  - Installed `uv` package manager for Python MCP servers
+  - All servers verified working via `claude mcp list`
+
 - **MCP Server Documentation**:
   - Recommended MCP servers for vibe coding (docs/MCP_SERVERS.md)
   - Browser automation, code analysis, Docker, database tools
