@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # Perplexity API configuration
 PERPLEXITY_BASE_URL = "https://api.perplexity.ai"
-DEFAULT_MODEL = "llama-3.1-sonar-large-128k-online"
+DEFAULT_MODEL = "sonar"  # Updated 2025 - old llama-3.1-sonar-* models deprecated
 
 
 @dataclass
@@ -55,15 +55,16 @@ class PerplexityClient:
             api_key: Perplexity API key (or from PERPLEXITY_API_KEY env)
             model: Model to use for research
         """
-        self.api_key = api_key or os.environ.get("PERPLEXITY_API_KEY", "")
+        # Don't store api_key as instance variable for security
+        resolved_key = api_key or os.environ.get("PERPLEXITY_API_KEY", "")
         self.model = model
 
-        if not self.api_key:
+        if not resolved_key:
             logger.warning("PERPLEXITY_API_KEY not set - research will be unavailable")
             self._client = None
         else:
             self._client = AsyncOpenAI(
-                api_key=self.api_key,
+                api_key=resolved_key,  # Only passed to client, not stored
                 base_url=PERPLEXITY_BASE_URL,
             )
 

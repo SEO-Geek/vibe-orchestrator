@@ -474,16 +474,21 @@ class ClaudeExecutor:
             self.timeout = original_timeout
 
 
-def get_git_diff(project_path: str, files: list[str] | None = None) -> str:
+def get_git_diff(
+    project_path: str,
+    files: list[str] | None = None,
+    max_chars: int = 50000,
+) -> str:
     """
-    Get git diff for changed files.
+    Get git diff for changed files with truncation for large diffs.
 
     Args:
         project_path: Path to git repo
         files: Specific files to diff (or all if None)
+        max_chars: Maximum characters to return (default 50k, ~12k tokens)
 
     Returns:
-        Git diff string
+        Git diff string, truncated if too large
     """
     import subprocess
 
@@ -499,6 +504,20 @@ def get_git_diff(project_path: str, files: list[str] | None = None) -> str:
             text=True,
             timeout=10,
         )
-        return result.stdout or "(no changes)"
+        diff = result.stdout or "(no changes)"
+
+        # Truncate large diffs to prevent context window issues
+        if len(diff) > max_chars:
+            truncated_diff = diff[:max_chars]
+            # Try to truncate at a line boundary
+            last_newline = truncated_diff.rfind("\n")
+            if last_newline > max_chars - 1000:
+                truncated_diff = truncated_diff[:last_newline]
+            return (
+                f"{truncated_diff}\n\n"
+                f"... [TRUNCATED - diff was {len(diff):,} chars, showing first {len(truncated_diff):,}]"
+            )
+
+        return diff
     except Exception:
         return "(could not get diff)"

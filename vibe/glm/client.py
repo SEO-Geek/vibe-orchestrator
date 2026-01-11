@@ -393,6 +393,8 @@ def ping_glm_sync(api_key: str, timeout: float = 10.0) -> tuple[bool, str]:
     """
     Synchronous ping for startup validation.
 
+    Handles the case where an event loop may or may not already be running.
+
     Args:
         api_key: OpenRouter API key
         timeout: Request timeout
@@ -401,4 +403,17 @@ def ping_glm_sync(api_key: str, timeout: float = 10.0) -> tuple[bool, str]:
         Tuple of (success, message)
     """
     client = GLMClient(api_key)
-    return asyncio.run(client.ping(timeout))
+
+    try:
+        # Check if there's already a running event loop
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # No running loop, safe to use asyncio.run()
+        return asyncio.run(client.ping(timeout))
+
+    # If we're here, there's a running loop - use run_until_complete
+    # This shouldn't happen in normal CLI usage, but handle it gracefully
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future = executor.submit(asyncio.run, client.ping(timeout))
+        return future.result(timeout=timeout + 5)

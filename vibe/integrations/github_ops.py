@@ -19,6 +19,31 @@ from vibe.exceptions import GitHubError
 logger = logging.getLogger(__name__)
 
 
+def _safe_json_loads(data: str, default: Any = None, raise_on_error: bool = False) -> Any:
+    """
+    Safely parse JSON from gh CLI output.
+
+    Args:
+        data: JSON string to parse
+        default: Default value if parsing fails (ignored if raise_on_error=True)
+        raise_on_error: If True, raise GitHubError on parse failure
+
+    Returns:
+        Parsed JSON data or default value
+    """
+    if not data:
+        if raise_on_error:
+            raise GitHubError("Empty response from gh command")
+        return default if default is not None else []
+    try:
+        return json.loads(data)
+    except json.JSONDecodeError as e:
+        if raise_on_error:
+            raise GitHubError(f"Invalid JSON response from gh: {e}")
+        logger.warning(f"Failed to parse JSON from gh output: {e}")
+        return default if default is not None else []
+
+
 @dataclass
 class IssueInfo:
     """Information about a GitHub issue."""
@@ -151,7 +176,7 @@ class GitHubOps:
                 args.extend(["--label", label])
 
         result = self._run_gh(args)
-        issues_data = json.loads(result.stdout) if result.stdout else []
+        issues_data = _safe_json_loads(result.stdout, [])
 
         issues = []
         for data in issues_data:
@@ -183,7 +208,7 @@ class GitHubOps:
         ]
 
         result = self._run_gh(args)
-        data = json.loads(result.stdout)
+        data = _safe_json_loads(result.stdout, raise_on_error=True)
 
         return IssueInfo(
             number=data["number"],
@@ -235,7 +260,7 @@ class GitHubOps:
         args.append("number,title,url")
 
         result = self._run_gh(args)
-        data = json.loads(result.stdout)
+        data = _safe_json_loads(result.stdout, raise_on_error=True)
 
         return IssueInfo(
             number=data["number"],
@@ -281,7 +306,7 @@ class GitHubOps:
         ]
 
         result = self._run_gh(args)
-        prs_data = json.loads(result.stdout) if result.stdout else []
+        prs_data = _safe_json_loads(result.stdout, [])
 
         prs = []
         for data in prs_data:
@@ -315,7 +340,7 @@ class GitHubOps:
         ]
 
         result = self._run_gh(args)
-        data = json.loads(result.stdout)
+        data = _safe_json_loads(result.stdout, raise_on_error=True)
 
         return PRInfo(
             number=data["number"],
@@ -369,7 +394,7 @@ class GitHubOps:
         args.append("number,title,url")
 
         result = self._run_gh(args)
-        data = json.loads(result.stdout)
+        data = _safe_json_loads(result.stdout, raise_on_error=True)
 
         return PRInfo(
             number=data["number"],
@@ -451,7 +476,7 @@ class GitHubOps:
         ]
 
         result = self._run_gh(args)
-        return json.loads(result.stdout) if result.stdout else {}
+        return _safe_json_loads(result.stdout, {})
 
     def get_stats(self) -> dict[str, Any]:
         """Get usage statistics."""

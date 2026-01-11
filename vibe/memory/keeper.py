@@ -16,10 +16,11 @@ import logging
 import sqlite3
 import subprocess
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 
 from vibe.config import MEMORY_DB_PATH
 from vibe.exceptions import MemoryConnectionError, MemoryNotFoundError
@@ -82,6 +83,24 @@ class VibeMemory:
 
         return sqlite3.connect(self._db_path)
 
+    @contextmanager
+    def _db_connection(self) -> Generator[sqlite3.Connection, None, None]:
+        """
+        Context manager for database connections.
+
+        Ensures connections are always closed, even on exceptions.
+        Commits on success, connection is closed on exit.
+        """
+        conn = self._get_connection()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def start_session(self, description: str = "") -> str:
         """
         Start a new Vibe session.
@@ -92,27 +111,24 @@ class VibeMemory:
         Returns:
             New session ID
         """
-        conn = self._get_connection()
-        cursor = conn.cursor()
-
         self.session_id = str(uuid.uuid4())
 
-        cursor.execute(
-            """
-            INSERT INTO sessions (id, name, description, default_channel, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                self.session_id,
-                f"vibe-{self.project_name}",
-                description,
-                self.project_name,
-                datetime.now().isoformat(),
-            ),
-        )
+        with self._db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO sessions (id, name, description, default_channel, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    self.session_id,
+                    f"vibe-{self.project_name}",
+                    description,
+                    self.project_name,
+                    datetime.now().isoformat(),
+                ),
+            )
 
-        conn.commit()
-        conn.close()
         return self.session_id
 
     def save(
@@ -134,32 +150,28 @@ class VibeMemory:
         if not self.session_id:
             raise MemoryConnectionError("No active session - call start_session first")
 
-        conn = self._get_connection()
-        cursor = conn.cursor()
-
         now = datetime.now().isoformat()
 
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO context_items
-            (id, session_id, key, value, category, priority, channel, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                str(uuid.uuid4()),
-                self.session_id,
-                key,
-                value,
-                category,
-                priority,
-                self.project_name,
-                now,
-                now,
-            ),
-        )
-
-        conn.commit()
-        conn.close()
+        with self._db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO context_items
+                (id, session_id, key, value, category, priority, channel, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    self.session_id,
+                    key,
+                    value,
+                    category,
+                    priority,
+                    self.project_name,
+                    now,
+                    now,
+                ),
+            )
 
     def load_project_context(self, limit: int = 50) -> list[ContextItem]:
         """
@@ -171,34 +183,32 @@ class VibeMemory:
         Returns:
             List of ContextItem objects
         """
-        conn = self._get_connection()
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT key, value, category, priority, created_at, channel
-            FROM context_items
-            WHERE channel = ?
-            ORDER BY priority DESC, created_at DESC
-            LIMIT ?
-            """,
-            (self.project_name, limit),
-        )
-
-        results = []
-        for row in cursor.fetchall():
-            results.append(
-                ContextItem(
-                    key=row[0],
-                    value=row[1],
-                    category=row[2],
-                    priority=row[3],
-                    created_at=datetime.fromisoformat(row[4]),
-                    channel=row[5],
-                )
+        with self._db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT key, value, category, priority, created_at, channel
+                FROM context_items
+                WHERE channel = ?
+                ORDER BY priority DESC, created_at DESC
+                LIMIT ?
+                """,
+                (self.project_name, limit),
             )
 
-        conn.close()
+            results = []
+            for row in cursor.fetchall():
+                results.append(
+                    ContextItem(
+                        key=row[0],
+                        value=row[1],
+                        category=row[2],
+                        priority=row[3],
+                        created_at=datetime.fromisoformat(row[4]),
+                        channel=row[5],
+                    )
+                )
+
         return results
 
     def get(self, key: str) -> ContextItem | None:
@@ -211,20 +221,18 @@ class VibeMemory:
         Returns:
             ContextItem or None if not found
         """
-        conn = self._get_connection()
-        cursor = conn.cursor()
+        with self._db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT key, value, category, priority, created_at, channel
+                FROM context_items
+                WHERE key = ? AND channel = ?
+                """,
+                (key, self.project_name),
+            )
 
-        cursor.execute(
-            """
-            SELECT key, value, category, priority, created_at, channel
-            FROM context_items
-            WHERE key = ? AND channel = ?
-            """,
-            (key, self.project_name),
-        )
-
-        row = cursor.fetchone()
-        conn.close()
+            row = cursor.fetchone()
 
         if row:
             return ContextItem(
@@ -251,27 +259,24 @@ class VibeMemory:
         if not self.session_id:
             raise MemoryConnectionError("No active session")
 
-        conn = self._get_connection()
-        cursor = conn.cursor()
-
         checkpoint_id = str(uuid.uuid4())
 
-        cursor.execute(
-            """
-            INSERT INTO checkpoints (id, session_id, name, description, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                checkpoint_id,
-                self.session_id,
-                name,
-                description,
-                datetime.now().isoformat(),
-            ),
-        )
+        with self._db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO checkpoints (id, session_id, name, description, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    checkpoint_id,
+                    self.session_id,
+                    name,
+                    description,
+                    datetime.now().isoformat(),
+                ),
+            )
 
-        conn.commit()
-        conn.close()
         return checkpoint_id
 
     def end_session(self, summary: str = "") -> None:
@@ -301,35 +306,33 @@ class VibeMemory:
         Returns:
             List of SessionInfo objects
         """
-        conn = self._get_connection()
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT s.id, s.name, s.description, s.default_channel, s.created_at,
-                   (SELECT COUNT(*) FROM context_items ci WHERE ci.session_id = s.id) as item_count
-            FROM sessions s
-            WHERE s.default_channel = ?
-            ORDER BY s.created_at DESC
-            LIMIT ?
-            """,
-            (self.project_name, limit),
-        )
-
-        results = []
-        for row in cursor.fetchall():
-            results.append(
-                SessionInfo(
-                    id=row[0],
-                    name=row[1] or "",
-                    description=row[2] or "",
-                    channel=row[3] or "",
-                    created_at=datetime.fromisoformat(row[4]) if row[4] else datetime.now(),
-                    item_count=row[5] or 0,
-                )
+        with self._db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT s.id, s.name, s.description, s.default_channel, s.created_at,
+                       (SELECT COUNT(*) FROM context_items ci WHERE ci.session_id = s.id) as item_count
+                FROM sessions s
+                WHERE s.default_channel = ?
+                ORDER BY s.created_at DESC
+                LIMIT ?
+                """,
+                (self.project_name, limit),
             )
 
-        conn.close()
+            results = []
+            for row in cursor.fetchall():
+                results.append(
+                    SessionInfo(
+                        id=row[0],
+                        name=row[1] or "",
+                        description=row[2] or "",
+                        channel=row[3] or "",
+                        created_at=datetime.fromisoformat(row[4]) if row[4] else datetime.now(),
+                        item_count=row[5] or 0,
+                    )
+                )
+
         return results
 
     def continue_session(self, session_id: str) -> bool:
@@ -342,20 +345,17 @@ class VibeMemory:
         Returns:
             True if session found and activated
         """
-        conn = self._get_connection()
-        cursor = conn.cursor()
+        with self._db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id FROM sessions WHERE id = ?",
+                (session_id,),
+            )
+            found = cursor.fetchone() is not None
 
-        cursor.execute(
-            "SELECT id FROM sessions WHERE id = ?",
-            (session_id,),
-        )
-
-        if cursor.fetchone():
+        if found:
             self.session_id = session_id
-            conn.close()
             return True
-
-        conn.close()
         return False
 
     def search(
@@ -375,50 +375,49 @@ class VibeMemory:
         Returns:
             List of matching ContextItem objects
         """
-        conn = self._get_connection()
-        cursor = conn.cursor()
+        with self._db_connection() as conn:
+            cursor = conn.cursor()
 
-        if category:
-            cursor.execute(
-                """
-                SELECT id, key, value, category, priority, created_at, channel
-                FROM context_items
-                WHERE channel = ?
-                  AND category = ?
-                  AND (key LIKE ? OR value LIKE ?)
-                ORDER BY created_at DESC
-                LIMIT ?
-                """,
-                (self.project_name, category, f"%{query}%", f"%{query}%", limit),
-            )
-        else:
-            cursor.execute(
-                """
-                SELECT id, key, value, category, priority, created_at, channel
-                FROM context_items
-                WHERE channel = ?
-                  AND (key LIKE ? OR value LIKE ?)
-                ORDER BY created_at DESC
-                LIMIT ?
-                """,
-                (self.project_name, f"%{query}%", f"%{query}%", limit),
-            )
-
-        results = []
-        for row in cursor.fetchall():
-            results.append(
-                ContextItem(
-                    id=row[0],
-                    key=row[1],
-                    value=row[2],
-                    category=row[3],
-                    priority=row[4],
-                    created_at=datetime.fromisoformat(row[5]) if row[5] else datetime.now(),
-                    channel=row[6],
+            if category:
+                cursor.execute(
+                    """
+                    SELECT id, key, value, category, priority, created_at, channel
+                    FROM context_items
+                    WHERE channel = ?
+                      AND category = ?
+                      AND (key LIKE ? OR value LIKE ?)
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (self.project_name, category, f"%{query}%", f"%{query}%", limit),
                 )
-            )
+            else:
+                cursor.execute(
+                    """
+                    SELECT id, key, value, category, priority, created_at, channel
+                    FROM context_items
+                    WHERE channel = ?
+                      AND (key LIKE ? OR value LIKE ?)
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (self.project_name, f"%{query}%", f"%{query}%", limit),
+                )
 
-        conn.close()
+            results = []
+            for row in cursor.fetchall():
+                results.append(
+                    ContextItem(
+                        id=row[0],
+                        key=row[1],
+                        value=row[2],
+                        category=row[3],
+                        priority=row[4],
+                        created_at=datetime.fromisoformat(row[5]) if row[5] else datetime.now(),
+                        channel=row[6],
+                    )
+                )
+
         return results
 
     def save_decision(self, key: str, decision: str, reasoning: str = "") -> None:
@@ -485,29 +484,26 @@ class VibeMemory:
         if not self.session_id:
             raise MemoryConnectionError("No active session")
 
-        conn = self._get_connection()
-        cursor = conn.cursor()
-
         entry_id = str(uuid.uuid4())
         tags_json = json.dumps(tags or [])
 
-        cursor.execute(
-            """
-            INSERT INTO journal_entries (id, session_id, entry, mood, tags, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                entry_id,
-                self.session_id,
-                entry,
-                mood,
-                tags_json,
-                datetime.now().isoformat(),
-            ),
-        )
+        with self._db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO journal_entries (id, session_id, entry, mood, tags, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    entry_id,
+                    self.session_id,
+                    entry,
+                    mood,
+                    tags_json,
+                    datetime.now().isoformat(),
+                ),
+            )
 
-        conn.commit()
-        conn.close()
         return entry_id
 
     def create_checkpoint_with_git(
@@ -557,39 +553,35 @@ class VibeMemory:
             except Exception as e:
                 logger.warning(f"Could not capture git status: {e}")
 
-        conn = self._get_connection()
-        cursor = conn.cursor()
-
         checkpoint_id = str(uuid.uuid4())
 
-        cursor.execute(
-            """
-            INSERT INTO checkpoints
-            (id, session_id, name, description, git_status, git_branch, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                checkpoint_id,
-                self.session_id,
-                name,
-                description,
-                git_status,
-                git_branch,
-                datetime.now().isoformat(),
-            ),
-        )
+        with self._db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO checkpoints
+                (id, session_id, name, description, git_status, git_branch, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    checkpoint_id,
+                    self.session_id,
+                    name,
+                    description,
+                    git_status,
+                    git_branch,
+                    datetime.now().isoformat(),
+                ),
+            )
 
-        # Link current context items to checkpoint
-        cursor.execute(
-            """
-            INSERT INTO checkpoint_items (id, checkpoint_id, context_item_id)
-            SELECT ?, ?, id FROM context_items WHERE session_id = ?
-            """,
-            (str(uuid.uuid4()), checkpoint_id, self.session_id),
-        )
-
-        conn.commit()
-        conn.close()
+            # Link current context items to checkpoint
+            cursor.execute(
+                """
+                INSERT INTO checkpoint_items (id, checkpoint_id, context_item_id)
+                SELECT ?, ?, id FROM context_items WHERE session_id = ?
+                """,
+                (str(uuid.uuid4()), checkpoint_id, self.session_id),
+            )
 
         logger.info(f"Created checkpoint '{name}' with ID {checkpoint_id[:8]}")
         return checkpoint_id
@@ -601,47 +593,45 @@ class VibeMemory:
         Returns:
             Dict with counts and recent activity
         """
-        conn = self._get_connection()
-        cursor = conn.cursor()
+        with self._db_connection() as conn:
+            cursor = conn.cursor()
 
-        # Count items by category
-        cursor.execute(
-            """
-            SELECT category, COUNT(*) as count
-            FROM context_items
-            WHERE channel = ?
-            GROUP BY category
-            """,
-            (self.project_name,),
-        )
-        by_category = {row[0]: row[1] for row in cursor.fetchall()}
+            # Count items by category
+            cursor.execute(
+                """
+                SELECT category, COUNT(*) as count
+                FROM context_items
+                WHERE channel = ?
+                GROUP BY category
+                """,
+                (self.project_name,),
+            )
+            by_category = {row[0]: row[1] for row in cursor.fetchall()}
 
-        # Total items
-        cursor.execute(
-            "SELECT COUNT(*) FROM context_items WHERE channel = ?",
-            (self.project_name,),
-        )
-        total_items = cursor.fetchone()[0]
+            # Total items
+            cursor.execute(
+                "SELECT COUNT(*) FROM context_items WHERE channel = ?",
+                (self.project_name,),
+            )
+            total_items = cursor.fetchone()[0]
 
-        # Session count
-        cursor.execute(
-            "SELECT COUNT(*) FROM sessions WHERE default_channel = ?",
-            (self.project_name,),
-        )
-        session_count = cursor.fetchone()[0]
+            # Session count
+            cursor.execute(
+                "SELECT COUNT(*) FROM sessions WHERE default_channel = ?",
+                (self.project_name,),
+            )
+            session_count = cursor.fetchone()[0]
 
-        # Checkpoint count
-        cursor.execute(
-            """
-            SELECT COUNT(*) FROM checkpoints c
-            JOIN sessions s ON c.session_id = s.id
-            WHERE s.default_channel = ?
-            """,
-            (self.project_name,),
-        )
-        checkpoint_count = cursor.fetchone()[0]
-
-        conn.close()
+            # Checkpoint count
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM checkpoints c
+                JOIN sessions s ON c.session_id = s.id
+                WHERE s.default_channel = ?
+                """,
+                (self.project_name,),
+            )
+            checkpoint_count = cursor.fetchone()[0]
 
         return {
             "total_items": total_items,
@@ -670,9 +660,6 @@ class VibeMemory:
         if not self.session_id:
             raise MemoryConnectionError("No active session")
 
-        conn = self._get_connection()
-        cursor = conn.cursor()
-
         now = datetime.now().isoformat()
         value = json.dumps({
             "convention": convention,
@@ -680,27 +667,27 @@ class VibeMemory:
             "created_by": self.project_name,
         })
 
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO context_items
-            (id, session_id, key, value, category, priority, channel, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                str(uuid.uuid4()),
-                self.session_id,
-                f"convention:{key}",
-                value,
-                "decision",
-                "high",
-                GLOBAL_CHANNEL,
-                now,
-                now,
-            ),
-        )
+        with self._db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO context_items
+                (id, session_id, key, value, category, priority, channel, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    self.session_id,
+                    f"convention:{key}",
+                    value,
+                    "decision",
+                    "high",
+                    GLOBAL_CHANNEL,
+                    now,
+                    now,
+                ),
+            )
 
-        conn.commit()
-        conn.close()
         logger.info(f"Saved global convention: {key}")
 
     def load_conventions(self, applies_to: str = "all") -> list[str]:
@@ -713,32 +700,30 @@ class VibeMemory:
         Returns:
             List of convention strings
         """
-        conn = self._get_connection()
-        cursor = conn.cursor()
+        with self._db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT key, value
+                FROM context_items
+                WHERE channel = ?
+                  AND key LIKE 'convention:%'
+                ORDER BY created_at DESC
+                """,
+                (GLOBAL_CHANNEL,),
+            )
 
-        cursor.execute(
-            """
-            SELECT key, value
-            FROM context_items
-            WHERE channel = ?
-              AND key LIKE 'convention:%'
-            ORDER BY created_at DESC
-            """,
-            (GLOBAL_CHANNEL,),
-        )
+            conventions = []
+            for row in cursor.fetchall():
+                try:
+                    data = json.loads(row[1])
+                    # Filter by applies_to
+                    if applies_to == "all" or data.get("applies_to") in ("all", applies_to):
+                        conventions.append(data.get("convention", ""))
+                except json.JSONDecodeError:
+                    # Fallback for plain text conventions
+                    conventions.append(row[1])
 
-        conventions = []
-        for row in cursor.fetchall():
-            try:
-                data = json.loads(row[1])
-                # Filter by applies_to
-                if applies_to == "all" or data.get("applies_to") in ("all", applies_to):
-                    conventions.append(data.get("convention", ""))
-            except json.JSONDecodeError:
-                # Fallback for plain text conventions
-                conventions.append(row[1])
-
-        conn.close()
         return conventions
 
     def list_conventions(self) -> list[dict[str, Any]]:
@@ -748,42 +733,40 @@ class VibeMemory:
         Returns:
             List of convention dicts with key, convention, applies_to
         """
-        conn = self._get_connection()
-        cursor = conn.cursor()
+        with self._db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT key, value, created_at
+                FROM context_items
+                WHERE channel = ?
+                  AND key LIKE 'convention:%'
+                ORDER BY created_at DESC
+                """,
+                (GLOBAL_CHANNEL,),
+            )
 
-        cursor.execute(
-            """
-            SELECT key, value, created_at
-            FROM context_items
-            WHERE channel = ?
-              AND key LIKE 'convention:%'
-            ORDER BY created_at DESC
-            """,
-            (GLOBAL_CHANNEL,),
-        )
+            conventions = []
+            for row in cursor.fetchall():
+                key = row[0].replace("convention:", "")
+                try:
+                    data = json.loads(row[1])
+                    conventions.append({
+                        "key": key,
+                        "convention": data.get("convention", ""),
+                        "applies_to": data.get("applies_to", "all"),
+                        "created_by": data.get("created_by", "unknown"),
+                        "created_at": row[2],
+                    })
+                except json.JSONDecodeError:
+                    conventions.append({
+                        "key": key,
+                        "convention": row[1],
+                        "applies_to": "all",
+                        "created_by": "unknown",
+                        "created_at": row[2],
+                    })
 
-        conventions = []
-        for row in cursor.fetchall():
-            key = row[0].replace("convention:", "")
-            try:
-                data = json.loads(row[1])
-                conventions.append({
-                    "key": key,
-                    "convention": data.get("convention", ""),
-                    "applies_to": data.get("applies_to", "all"),
-                    "created_by": data.get("created_by", "unknown"),
-                    "created_at": row[2],
-                })
-            except json.JSONDecodeError:
-                conventions.append({
-                    "key": key,
-                    "convention": row[1],
-                    "applies_to": "all",
-                    "created_by": "unknown",
-                    "created_at": row[2],
-                })
-
-        conn.close()
         return conventions
 
     def delete_convention(self, key: str) -> bool:
@@ -796,21 +779,17 @@ class VibeMemory:
         Returns:
             True if deleted, False if not found
         """
-        conn = self._get_connection()
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            DELETE FROM context_items
-            WHERE channel = ?
-              AND key = ?
-            """,
-            (GLOBAL_CHANNEL, f"convention:{key}"),
-        )
-
-        deleted = cursor.rowcount > 0
-        conn.commit()
-        conn.close()
+        with self._db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                DELETE FROM context_items
+                WHERE channel = ?
+                  AND key = ?
+                """,
+                (GLOBAL_CHANNEL, f"convention:{key}"),
+            )
+            deleted = cursor.rowcount > 0
 
         if deleted:
             logger.info(f"Deleted global convention: {key}")
@@ -828,33 +807,30 @@ class VibeMemory:
         if not self.session_id:
             raise MemoryConnectionError("No active session")
 
-        conn = self._get_connection()
-        cursor = conn.cursor()
-
         now = datetime.now().isoformat()
         key = f"debug-session:{session_data.get('problem', 'unknown')[:50]}"
 
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO context_items
-            (id, session_id, key, value, category, priority, channel, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                str(uuid.uuid4()),
-                self.session_id,
-                key,
-                json.dumps(session_data),
-                "progress",
-                "high",
-                self.project_name,
-                now,
-                now,
-            ),
-        )
+        with self._db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO context_items
+                (id, session_id, key, value, category, priority, channel, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    self.session_id,
+                    key,
+                    json.dumps(session_data),
+                    "progress",
+                    "high",
+                    self.project_name,
+                    now,
+                    now,
+                ),
+            )
 
-        conn.commit()
-        conn.close()
         logger.info(f"Saved debug session: {key}")
 
     def load_debug_session(self) -> dict[str, Any] | None:
@@ -864,23 +840,20 @@ class VibeMemory:
         Returns:
             Debug session dict or None
         """
-        conn = self._get_connection()
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT value
-            FROM context_items
-            WHERE channel = ?
-              AND key LIKE 'debug-session:%'
-            ORDER BY updated_at DESC
-            LIMIT 1
-            """,
-            (self.project_name,),
-        )
-
-        row = cursor.fetchone()
-        conn.close()
+        with self._db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT value
+                FROM context_items
+                WHERE channel = ?
+                  AND key LIKE 'debug-session:%'
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (self.project_name,),
+            )
+            row = cursor.fetchone()
 
         if row:
             try:
@@ -903,36 +876,34 @@ class VibeMemory:
         Returns:
             List of debug session summaries
         """
-        conn = self._get_connection()
-        cursor = conn.cursor()
+        with self._db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT key, value, updated_at
+                FROM context_items
+                WHERE channel = ?
+                  AND key LIKE 'debug-session:%'
+                ORDER BY updated_at DESC
+                """,
+                (self.project_name,),
+            )
 
-        cursor.execute(
-            """
-            SELECT key, value, updated_at
-            FROM context_items
-            WHERE channel = ?
-              AND key LIKE 'debug-session:%'
-            ORDER BY updated_at DESC
-            """,
-            (self.project_name,),
-        )
+            sessions = []
+            for row in cursor.fetchall():
+                try:
+                    data = json.loads(row[1])
+                    if include_inactive or data.get("is_active", False):
+                        sessions.append({
+                            "key": row[0],
+                            "problem": data.get("problem", "Unknown"),
+                            "attempts": len(data.get("attempts", [])),
+                            "is_active": data.get("is_active", False),
+                            "updated_at": row[2],
+                        })
+                except json.JSONDecodeError:
+                    pass
 
-        sessions = []
-        for row in cursor.fetchall():
-            try:
-                data = json.loads(row[1])
-                if include_inactive or data.get("is_active", False):
-                    sessions.append({
-                        "key": row[0],
-                        "problem": data.get("problem", "Unknown"),
-                        "attempts": len(data.get("attempts", [])),
-                        "is_active": data.get("is_active", False),
-                        "updated_at": row[2],
-                    })
-            except json.JSONDecodeError:
-                pass
-
-        conn.close()
         return sessions
 
     def delete_debug_session(self, key: str) -> bool:
@@ -945,21 +916,17 @@ class VibeMemory:
         Returns:
             True if deleted
         """
-        conn = self._get_connection()
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            DELETE FROM context_items
-            WHERE channel = ?
-              AND key = ?
-            """,
-            (self.project_name, key),
-        )
-
-        deleted = cursor.rowcount > 0
-        conn.commit()
-        conn.close()
+        with self._db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                DELETE FROM context_items
+                WHERE channel = ?
+                  AND key = ?
+                """,
+                (self.project_name, key),
+            )
+            deleted = cursor.rowcount > 0
 
         if deleted:
             logger.info(f"Deleted debug session: {key}")
