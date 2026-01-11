@@ -36,10 +36,11 @@ def extract_json_from_response(response: str) -> dict[str, Any]:
         except json.JSONDecodeError:
             continue
 
-    # Try to find raw JSON (object or array)
+    # Try to find raw JSON (object or array) - use non-greedy matching
+    # Find objects by matching balanced braces
     json_patterns = [
-        r"(\{[\s\S]*\})",  # Object
-        r"(\[[\s\S]*\])",  # Array
+        r"(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})",  # Object with nested objects
+        r"(\[[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\])",  # Array with nested arrays
     ]
 
     for pattern in json_patterns:
