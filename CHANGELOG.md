@@ -6,6 +6,34 @@ All notable changes to Vibe Orchestrator will be documented in this file.
 
 ### Added
 
+#### Core Implementation Complete (2026-01-11)
+
+- **Supervisor Class** (`vibe/orchestrator/supervisor.py`):
+  - Full orchestration loop: GLM → Claude → GLM review
+  - Task decomposition via GLM
+  - Retry logic with feedback injection (max 3 attempts)
+  - Project context loading (STARMAP.md, CLAUDE.md, memory)
+  - Checkpoint creation before risky operations
+  - Cost tracking across all tasks
+
+- **Reviewer Class** (`vibe/orchestrator/reviewer.py`):
+  - GLM-powered code review gate
+  - ReviewResult dataclass with approval status, issues, feedback
+  - Attempt tracking per task
+  - Retry context builder for failed attempts
+  - Statistics tracking (approved/rejected counts)
+
+### Fixed
+
+#### Robustness Fixes (2026-01-11)
+
+- **Context Overflow**: Truncate retry feedback to 500 chars max
+- **State Bleed**: Use `copy.deepcopy()` for task dicts to prevent mutable constraint sharing
+- **Review Crash Fallback**: Auto-approve if GLM review fails to avoid losing Claude's work
+- **Decomposition Validation**: Reject empty task lists and empty descriptions in parser
+- **Empty Feedback Handling**: Provide meaningful default when GLM returns no feedback
+- **Timeout Protection**: Verified in executor with `asyncio.wait_for`
+
 #### Phase 8: Polish (2026-01-11)
 
 - **Task Enforcer System**:
