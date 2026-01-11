@@ -542,6 +542,7 @@ def get_git_diff(
 ) -> str:
     """
     Get git diff for changed files with truncation for large diffs.
+    Also handles untracked files by showing their content.
 
     Args:
         project_path: Path to git repo
@@ -549,43 +550,92 @@ def get_git_diff(
         max_chars: Maximum characters to return (default 50k, ~12k tokens)
 
     Returns:
-        Git diff string, truncated if too large
+        Git diff string (including untracked file content), truncated if too large
     """
     import subprocess
+    from pathlib import Path
 
     # If no files specified, return no changes (don't show unrelated diffs)
     if not files:
         return "(no code changes - task was information-only)"
 
-    cmd = ["git", "diff", "--no-color", "--"]
-    cmd.extend(files)
+    output_parts = []
 
+    # First, check which files are untracked using git status
+    untracked_files = set()
     try:
-        result = subprocess.run(
-            cmd,
+        status_result = subprocess.run(
+            ["git", "status", "--porcelain", "--"] + files,
             cwd=project_path,
             capture_output=True,
             text=True,
             timeout=10,
         )
-        diff = result.stdout.strip()
-
-        # If no diff for these specific files, report that
-        if not diff:
-            return f"(no changes detected in: {', '.join(files)})"
-
-        # Truncate large diffs to prevent context window issues
-        if len(diff) > max_chars:
-            truncated_diff = diff[:max_chars]
-            # Try to truncate at a line boundary
-            last_newline = truncated_diff.rfind("\n")
-            if last_newline > max_chars - 1000:
-                truncated_diff = truncated_diff[:last_newline]
-            return (
-                f"{truncated_diff}\n\n"
-                f"... [TRUNCATED - diff was {len(diff):,} chars, showing first {len(truncated_diff):,}]"
-            )
-
-        return diff
+        for line in status_result.stdout.strip().split("\n"):
+            if line.startswith("??"):  # Untracked file marker
+                # Format: "?? path/to/file"
+                untracked_path = line[3:].strip()
+                untracked_files.add(untracked_path)
     except Exception:
-        return "(could not get diff)"
+        pass  # Continue even if status check fails
+
+    # Get regular git diff for tracked files
+    tracked_files = [f for f in files if f not in untracked_files]
+    if tracked_files:
+        cmd = ["git", "diff", "--no-color", "--"]
+        cmd.extend(tracked_files)
+
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=project_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            diff = result.stdout.strip()
+            if diff:
+                output_parts.append(diff)
+        except Exception:
+            output_parts.append("(could not get diff for tracked files)")
+
+    # For untracked files, show their content as "new file" diffs
+    for untracked in untracked_files:
+        file_path = Path(project_path) / untracked
+        if file_path.exists():
+            try:
+                content = file_path.read_text()
+                # Format like a git diff for new file
+                lines = content.split("\n")
+                diff_lines = [f"+{line}" for line in lines]
+                new_file_diff = (
+                    f"diff --git a/{untracked} b/{untracked}\n"
+                    f"new file (untracked)\n"
+                    f"--- /dev/null\n"
+                    f"+++ b/{untracked}\n"
+                    f"@@ -0,0 +1,{len(lines)} @@\n"
+                    + "\n".join(diff_lines)
+                )
+                output_parts.append(new_file_diff)
+            except Exception:
+                output_parts.append(f"(could not read untracked file: {untracked})")
+
+    # Combine all output
+    if not output_parts:
+        return f"(no changes detected in: {', '.join(files)})"
+
+    combined = "\n\n".join(output_parts)
+
+    # Truncate large diffs to prevent context window issues
+    if len(combined) > max_chars:
+        truncated_diff = combined[:max_chars]
+        # Try to truncate at a line boundary
+        last_newline = truncated_diff.rfind("\n")
+        if last_newline > max_chars - 1000:
+            truncated_diff = truncated_diff[:last_newline]
+        return (
+            f"{truncated_diff}\n\n"
+            f"... [TRUNCATED - diff was {len(combined):,} chars, showing first {len(truncated_diff):,}]"
+        )
+
+    return combined

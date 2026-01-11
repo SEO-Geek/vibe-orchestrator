@@ -1012,6 +1012,30 @@ async def process_user_request(
                             )
                         except Exception as e:
                             logger.debug(f"Failed to update task status: {e}")
+
+                    # Git commit after approval - GLM owns the commit
+                    if result.file_changes:
+                        try:
+                            import subprocess
+                            # Add all changed files
+                            subprocess.run(
+                                ["git", "add", "--"] + result.file_changes,
+                                cwd=project.path,
+                                capture_output=True,
+                                timeout=30,
+                            )
+                            # Commit with task description
+                            task_desc = task.get("description", "Task completed")[:72]
+                            commit_msg = f"vibe: {task_desc}\n\nApproved by GLM review gate."
+                            subprocess.run(
+                                ["git", "commit", "-m", commit_msg],
+                                cwd=project.path,
+                                capture_output=True,
+                                timeout=30,
+                            )
+                            console.print(f"  [dim]Git: committed {len(result.file_changes)} file(s)[/dim]")
+                        except Exception as git_err:
+                            console.print(f"  [yellow]Git commit skipped: {git_err}[/yellow]")
                 else:
                     # Task rejected - prepare for retry with meaningful default feedback
                     feedback_text = review.get("feedback", "")
