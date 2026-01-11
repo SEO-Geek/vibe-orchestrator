@@ -122,6 +122,7 @@ class ClaudeExecutor:
         files: list[str] | None = None,
         constraints: list[str] | None = None,
         enforce_tools: bool = True,
+        debug_context: str | None = None,
     ) -> str:
         """
         Build the prompt for Claude.
@@ -131,15 +132,23 @@ class ClaudeExecutor:
             files: Files to work with
             constraints: Constraints to follow
             enforce_tools: Whether to include tool enforcement section
+            debug_context: Optional debug session context to inject
 
         Returns:
             Formatted prompt string
         """
-        parts = [
+        parts = []
+
+        # If debug context provided, add it FIRST so Claude sees it
+        if debug_context:
+            parts.append(debug_context)
+            parts.append("")
+
+        parts.extend([
             "You are working on a specific task. Do ONLY this task.",
             "",
             f"TASK: {task_description}",
-        ]
+        ])
 
         if files:
             parts.append(f"FILES: {', '.join(files)}")
@@ -263,6 +272,7 @@ class ClaudeExecutor:
         constraints: list[str] | None = None,
         on_progress: Callable[[str], None] | None = None,
         on_tool_call: Callable[[ToolCall], None] | None = None,
+        debug_context: str | None = None,
     ) -> TaskResult:
         """
         Execute a task via Claude Code.
@@ -273,6 +283,7 @@ class ClaudeExecutor:
             constraints: Constraints for Claude to follow
             on_progress: Callback for progress updates (text chunks)
             on_tool_call: Callback when a tool is called
+            debug_context: Optional debug session context to inject
 
         Returns:
             TaskResult with success/failure and details
@@ -282,7 +293,10 @@ class ClaudeExecutor:
             ClaudeTimeoutError: If task times out
             ClaudeExecutionError: For execution errors
         """
-        prompt = self.build_prompt(task_description, files, constraints)
+        prompt = self.build_prompt(
+            task_description, files, constraints,
+            enforce_tools=True, debug_context=debug_context
+        )
         cmd = self._build_command(prompt)
         env = self._clean_environment()
 

@@ -47,12 +47,34 @@ All notable changes to Vibe Orchestrator will be documented in this file.
   - Browser automation, code analysis, Docker, database tools
   - Tool requirements mapped to task types
 
+- **Debug Session Tracking System**:
+  - `DebugSession` class tracks debugging attempts with pass/fail and reasoning
+  - `DebugAttempt` dataclass for individual fix attempts with hypotheses
+  - `AttemptResult` enum: PENDING, SUCCESS, PARTIAL, FAILED, MADE_WORSE
+  - Feature preservation checklist (must_preserve list)
+  - Git checkpoint creation before each attempt for rollback
+  - Context injection into Claude prompts to prevent repeated failures
+  - Prevents Claude from losing context on what was already tried
+  - Prevents "bush fixes" that break existing functionality
+
 - **CLI Commands**:
   - `/research <query>` - Research via Perplexity API
   - `/github` - Show GitHub repo info
   - `/issues` - List open issues
   - `/prs` - List open pull requests
   - `/convention` - Manage global conventions
+  - `/debug start <problem>` - Start a debug session
+  - `/debug preserve <feature>` - Add feature that must not break
+  - `/debug hypothesis <text>` - Set current working hypothesis
+  - `/debug attempt <description>` - Start a new fix attempt
+  - `/debug fail <reason>` - Mark attempt as failed
+  - `/debug partial <result>` - Mark attempt as partially worked
+  - `/debug success` - Mark attempt as successful
+  - `/debug status` - Show debug session status
+  - `/debug context` - Show what gets injected into Claude
+  - `/debug end` - End the debug session
+  - `/rollback <attempt_id>` - Rollback to before a specific attempt
+  - `/rollback start` - Rollback to session start state
 
 - **New Exceptions**:
   - `ResearchError` for Perplexity API errors

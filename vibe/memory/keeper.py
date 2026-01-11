@@ -815,3 +815,152 @@ class VibeMemory:
         if deleted:
             logger.info(f"Deleted global convention: {key}")
         return deleted
+
+    # Debug Session Methods
+
+    def save_debug_session(self, session_data: dict[str, Any]) -> None:
+        """
+        Save a debug session to memory.
+
+        Args:
+            session_data: Serialized debug session dict
+        """
+        if not self.session_id:
+            raise MemoryConnectionError("No active session")
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        now = datetime.now().isoformat()
+        key = f"debug-session:{session_data.get('problem', 'unknown')[:50]}"
+
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO context_items
+            (id, session_id, key, value, category, priority, channel, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid.uuid4()),
+                self.session_id,
+                key,
+                json.dumps(session_data),
+                "progress",
+                "high",
+                self.project_name,
+                now,
+                now,
+            ),
+        )
+
+        conn.commit()
+        conn.close()
+        logger.info(f"Saved debug session: {key}")
+
+    def load_debug_session(self) -> dict[str, Any] | None:
+        """
+        Load the most recent active debug session for this project.
+
+        Returns:
+            Debug session dict or None
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT value
+            FROM context_items
+            WHERE channel = ?
+              AND key LIKE 'debug-session:%'
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (self.project_name,),
+        )
+
+        row = cursor.fetchone()
+        conn.close()
+
+        if row:
+            try:
+                data = json.loads(row[0])
+                # Only return if still active
+                if data.get("is_active", False):
+                    return data
+            except json.JSONDecodeError:
+                pass
+
+        return None
+
+    def list_debug_sessions(self, include_inactive: bool = False) -> list[dict[str, Any]]:
+        """
+        List all debug sessions for this project.
+
+        Args:
+            include_inactive: Include completed/inactive sessions
+
+        Returns:
+            List of debug session summaries
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT key, value, updated_at
+            FROM context_items
+            WHERE channel = ?
+              AND key LIKE 'debug-session:%'
+            ORDER BY updated_at DESC
+            """,
+            (self.project_name,),
+        )
+
+        sessions = []
+        for row in cursor.fetchall():
+            try:
+                data = json.loads(row[1])
+                if include_inactive or data.get("is_active", False):
+                    sessions.append({
+                        "key": row[0],
+                        "problem": data.get("problem", "Unknown"),
+                        "attempts": len(data.get("attempts", [])),
+                        "is_active": data.get("is_active", False),
+                        "updated_at": row[2],
+                    })
+            except json.JSONDecodeError:
+                pass
+
+        conn.close()
+        return sessions
+
+    def delete_debug_session(self, key: str) -> bool:
+        """
+        Delete a debug session.
+
+        Args:
+            key: Debug session key to delete
+
+        Returns:
+            True if deleted
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            DELETE FROM context_items
+            WHERE channel = ?
+              AND key = ?
+            """,
+            (self.project_name, key),
+        )
+
+        deleted = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+
+        if deleted:
+            logger.info(f"Deleted debug session: {key}")
+        return deleted

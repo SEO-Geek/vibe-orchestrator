@@ -41,6 +41,7 @@ from vibe.integrations import PerplexityClient, GitHubOps
 from vibe.glm.client import GLMClient, ping_glm_sync
 from vibe.glm.prompts import SUPERVISOR_SYSTEM_PROMPT
 from vibe.memory.keeper import VibeMemory
+from vibe.memory.debug_session import DebugSession, DebugAttempt, AttemptResult
 from vibe.orchestrator.project_updater import ProjectUpdater
 from vibe.state import SessionContext, SessionState
 
@@ -59,6 +60,7 @@ _glm_client: GLMClient | None = None
 _memory: VibeMemory | None = None
 _perplexity: PerplexityClient | None = None
 _github: GitHubOps | None = None
+_debug_session: DebugSession | None = None
 
 
 def handle_shutdown(signum: int, frame: types.FrameType | None) -> NoReturn:
@@ -286,6 +288,7 @@ async def execute_task_with_claude(
     task: dict,
     task_num: int,
     total_tasks: int,
+    debug_context: str | None = None,
 ) -> tuple[TaskResult, dict]:
     """
     Execute a single task with Claude, showing progress.
@@ -295,6 +298,7 @@ async def execute_task_with_claude(
         task: Task dictionary from GLM
         task_num: Current task number (1-based)
         total_tasks: Total number of tasks
+        debug_context: Optional debug session context to inject
 
     Returns:
         Tuple of (TaskResult, tool_verification_result)
@@ -327,6 +331,7 @@ async def execute_task_with_claude(
             constraints=constraints,
             on_progress=on_progress,
             on_tool_call=on_tool_call,
+            debug_context=debug_context,
         )
 
     # Verify tool usage
@@ -538,12 +543,16 @@ async def process_user_request(
 
     for i, task in enumerate(tasks, 1):
         try:
+            # Get debug context if in debug session
+            debug_ctx = _debug_session.get_context_for_claude() if _debug_session else None
+
             # Execute with Claude
             result, tool_verification = await execute_task_with_claude(
                 executor=executor,
                 task=task,
                 task_num=i,
                 total_tasks=len(tasks),
+                debug_context=debug_ctx,
             )
 
             if not result.success:
@@ -704,6 +713,8 @@ def conversation_loop(
                     console.print("  /usage      - Show GLM usage stats")
                     console.print("  /memory     - Show memory stats")
                     console.print("  /convention - Manage global conventions")
+                    console.print("  /debug      - Debug session tracking")
+                    console.print("  /rollback   - Rollback to debug checkpoint")
                     console.print("  /research   - Research a topic via Perplexity")
                     console.print("  /github     - Show GitHub repo info")
                     console.print("  /issues     - List GitHub issues")
@@ -869,6 +880,240 @@ def conversation_loop(
                             console.print("[dim]No open pull requests[/dim]")
                     except GitHubError as e:
                         console.print(f"[red]GitHub error: {e}[/red]")
+                elif cmd.startswith("/debug"):
+                    # /debug - Debug session management
+                    global _debug_session
+                    parts = user_input.split(maxsplit=2)
+                    subcommand = parts[1] if len(parts) > 1 else "status"
+
+                    if subcommand == "start":
+                        # /debug start <problem description>
+                        if _debug_session and _debug_session.is_active:
+                            console.print("[yellow]Debug session already active. Use /debug end first.[/yellow]")
+                            continue
+                        problem = parts[2] if len(parts) > 2 else Prompt.ask("Describe the problem")
+                        if problem:
+                            _debug_session = DebugSession(
+                                project_path=project.path,
+                                problem=problem,
+                            )
+                            console.print(f"\n[green bold]Debug Session Started[/green bold]")
+                            console.print(f"  Problem: {problem}")
+                            console.print(f"  Initial commit: {_debug_session.initial_commit or 'N/A'}")
+                            console.print()
+                            console.print("[dim]Use /debug preserve <feature> to add features that must work[/dim]")
+                            console.print("[dim]Use /debug hypothesis <text> to set current hypothesis[/dim]")
+                            # Save to memory
+                            if memory:
+                                memory.save_debug_session(_debug_session.to_dict())
+
+                    elif subcommand == "preserve":
+                        # /debug preserve <feature>
+                        if not _debug_session:
+                            console.print("[yellow]No active debug session. Use /debug start first.[/yellow]")
+                            continue
+                        feature = parts[2] if len(parts) > 2 else ""
+                        if not feature:
+                            feature = Prompt.ask("Feature to preserve")
+                        if feature:
+                            _debug_session.add_must_preserve(feature)
+                            console.print(f"[green]Added to preservation list: {feature}[/green]")
+                            if memory:
+                                memory.save_debug_session(_debug_session.to_dict())
+
+                    elif subcommand == "hypothesis":
+                        # /debug hypothesis <hypothesis text>
+                        if not _debug_session:
+                            console.print("[yellow]No active debug session. Use /debug start first.[/yellow]")
+                            continue
+                        hypothesis = parts[2] if len(parts) > 2 else ""
+                        if not hypothesis:
+                            hypothesis = Prompt.ask("Current hypothesis")
+                        if hypothesis:
+                            _debug_session.set_hypothesis(hypothesis)
+                            console.print(f"[green]Hypothesis set: {hypothesis}[/green]")
+                            if memory:
+                                memory.save_debug_session(_debug_session.to_dict())
+
+                    elif subcommand == "attempt":
+                        # /debug attempt <description>
+                        if not _debug_session:
+                            console.print("[yellow]No active debug session. Use /debug start first.[/yellow]")
+                            continue
+                        description = parts[2] if len(parts) > 2 else ""
+                        if not description:
+                            description = Prompt.ask("Describe the fix attempt")
+                        if description:
+                            attempt = _debug_session.start_attempt(description)
+                            console.print(f"\n[bold]Attempt #{attempt.id} Started[/bold]")
+                            console.print(f"  Description: {description}")
+                            console.print(f"  Rollback to: {attempt.rollback_commit or 'N/A'}")
+                            console.print()
+                            console.print("[dim]Use /debug fail <reason> or /debug success after testing[/dim]")
+                            if memory:
+                                memory.save_debug_session(_debug_session.to_dict())
+
+                    elif subcommand == "fail":
+                        # /debug fail <reason>
+                        if not _debug_session:
+                            console.print("[yellow]No active debug session.[/yellow]")
+                            continue
+                        # Find pending attempt
+                        pending = [a for a in _debug_session.attempts if a.result == AttemptResult.PENDING]
+                        if not pending:
+                            console.print("[yellow]No pending attempt to mark as failed.[/yellow]")
+                            continue
+                        reason = parts[2] if len(parts) > 2 else ""
+                        if not reason:
+                            reason = Prompt.ask("Why did it fail?")
+                        if reason:
+                            attempt = pending[-1]
+                            _debug_session.complete_attempt(
+                                attempt.id,
+                                AttemptResult.FAILED,
+                                reason
+                            )
+                            console.print(f"[red]Attempt #{attempt.id} marked as FAILED[/red]")
+                            console.print(f"  Reason: {reason}")
+                            if memory:
+                                memory.save_debug_session(_debug_session.to_dict())
+
+                    elif subcommand == "partial":
+                        # /debug partial <what helped>
+                        if not _debug_session:
+                            console.print("[yellow]No active debug session.[/yellow]")
+                            continue
+                        pending = [a for a in _debug_session.attempts if a.result == AttemptResult.PENDING]
+                        if not pending:
+                            console.print("[yellow]No pending attempt to mark.[/yellow]")
+                            continue
+                        reason = parts[2] if len(parts) > 2 else ""
+                        if not reason:
+                            reason = Prompt.ask("How did it help?")
+                        if reason:
+                            attempt = pending[-1]
+                            _debug_session.complete_attempt(
+                                attempt.id,
+                                AttemptResult.PARTIAL,
+                                reason
+                            )
+                            console.print(f"[yellow]Attempt #{attempt.id} marked as PARTIAL[/yellow]")
+                            console.print(f"  Result: {reason}")
+                            if memory:
+                                memory.save_debug_session(_debug_session.to_dict())
+
+                    elif subcommand == "success":
+                        # /debug success
+                        if not _debug_session:
+                            console.print("[yellow]No active debug session.[/yellow]")
+                            continue
+                        pending = [a for a in _debug_session.attempts if a.result == AttemptResult.PENDING]
+                        if not pending:
+                            console.print("[yellow]No pending attempt to mark as success.[/yellow]")
+                            continue
+                        attempt = pending[-1]
+                        _debug_session.complete_attempt(
+                            attempt.id,
+                            AttemptResult.SUCCESS,
+                            "Fix worked"
+                        )
+                        console.print(f"[green bold]Attempt #{attempt.id} marked as SUCCESS![/green bold]")
+                        if memory:
+                            memory.save_debug_session(_debug_session.to_dict())
+
+                    elif subcommand == "status":
+                        # /debug status - Show debug session state
+                        if not _debug_session:
+                            console.print("[dim]No active debug session.[/dim]")
+                            console.print("[dim]Use /debug start <problem> to begin.[/dim]")
+                            continue
+
+                        console.print(f"\n[bold]Debug Session Status[/bold]")
+                        console.print(f"  Problem: {_debug_session.problem}")
+                        console.print(f"  Hypothesis: {_debug_session.current_hypothesis or '(not set)'}")
+                        console.print(f"  Features to preserve: {len(_debug_session.must_preserve)}")
+                        for feat in _debug_session.must_preserve:
+                            console.print(f"    • {feat}")
+                        console.print()
+                        console.print(f"  [bold]Attempts ({len(_debug_session.attempts)}):[/bold]")
+                        for attempt in _debug_session.attempts:
+                            if attempt.result == AttemptResult.SUCCESS:
+                                icon = "[green]✓[/green]"
+                            elif attempt.result == AttemptResult.FAILED:
+                                icon = "[red]✗[/red]"
+                            elif attempt.result == AttemptResult.PARTIAL:
+                                icon = "[yellow]~[/yellow]"
+                            else:
+                                icon = "[blue]?[/blue]"
+                            console.print(f"    {icon} #{attempt.id}: {attempt.description}")
+                            if attempt.reason:
+                                console.print(f"       [dim]{attempt.reason}[/dim]")
+                        console.print()
+
+                    elif subcommand == "context":
+                        # /debug context - Show what gets injected into Claude
+                        if not _debug_session:
+                            console.print("[yellow]No active debug session.[/yellow]")
+                            continue
+                        context = _debug_session.get_context_for_claude()
+                        console.print(Panel(context, title="Debug Context for Claude", border_style="blue"))
+
+                    elif subcommand == "end":
+                        # /debug end - End the debug session
+                        if not _debug_session:
+                            console.print("[yellow]No active debug session.[/yellow]")
+                            continue
+                        _debug_session.is_active = False
+                        if memory:
+                            memory.save_debug_session(_debug_session.to_dict())
+                        console.print("[green]Debug session ended.[/green]")
+                        console.print(_debug_session.get_summary())
+                        _debug_session = None
+
+                    else:
+                        console.print("[dim]Usage:[/dim]")
+                        console.print("  /debug start <problem>      - Start a debug session")
+                        console.print("  /debug preserve <feature>   - Add feature to preserve")
+                        console.print("  /debug hypothesis <text>    - Set current hypothesis")
+                        console.print("  /debug attempt <description>- Start a fix attempt")
+                        console.print("  /debug fail <reason>        - Mark attempt as failed")
+                        console.print("  /debug partial <result>     - Mark attempt as partially worked")
+                        console.print("  /debug success              - Mark attempt as successful")
+                        console.print("  /debug status               - Show session status")
+                        console.print("  /debug context              - Show Claude context")
+                        console.print("  /debug end                  - End debug session")
+
+                elif cmd.startswith("/rollback"):
+                    # /rollback [attempt_id] - Rollback to before an attempt
+                    if not _debug_session:
+                        console.print("[yellow]No active debug session.[/yellow]")
+                        continue
+                    parts = user_input.split()
+                    if len(parts) > 1:
+                        try:
+                            attempt_id = int(parts[1])
+                            if _debug_session.rollback_to_attempt(attempt_id):
+                                console.print(f"[green]Rolled back to before attempt #{attempt_id}[/green]")
+                            else:
+                                console.print(f"[red]Rollback failed - attempt #{attempt_id} not found or no checkpoint[/red]")
+                        except ValueError:
+                            if parts[1] == "start":
+                                if _debug_session.rollback_to_start():
+                                    console.print("[green]Rolled back to session start[/green]")
+                                else:
+                                    console.print("[red]Rollback failed - no initial checkpoint[/red]")
+                            else:
+                                console.print("[red]Invalid attempt ID[/red]")
+                    else:
+                        console.print("[dim]Usage:[/dim]")
+                        console.print("  /rollback <attempt_id>  - Rollback to before attempt")
+                        console.print("  /rollback start         - Rollback to session start")
+                        console.print()
+                        console.print("[dim]Available rollback points:[/dim]")
+                        console.print(f"  start ({_debug_session.initial_commit})")
+                        for attempt in _debug_session.attempts:
+                            if attempt.rollback_commit:
+                                console.print(f"  #{attempt.id} ({attempt.rollback_commit})")
                 else:
                     console.print(f"[red]Unknown command: {user_input}[/red]")
                 continue
