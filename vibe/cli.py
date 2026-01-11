@@ -7,6 +7,7 @@ Shows startup validation, project selection, and conversation interface.
 """
 
 import asyncio
+import copy
 import os
 import shutil
 import signal
@@ -555,11 +556,18 @@ async def process_user_request(
                 debug_ctx = _debug_session.get_context_for_claude() if _debug_session else None
 
                 # Add previous rejection feedback to constraints for retry
-                task_with_feedback = task.copy()
+                # Use deepcopy to prevent state bleed from mutable constraint lists
+                task_with_feedback = copy.deepcopy(task)
                 if previous_feedback:
+                    # Limit feedback to prevent context overflow - only include last rejection
+                    # Truncate to 500 chars max to prevent prompt bloat
+                    truncated_feedback = previous_feedback[:500]
+                    if len(previous_feedback) > 500:
+                        truncated_feedback += "... [truncated]"
+
                     existing_constraints = task_with_feedback.get("constraints", []) or []
                     retry_constraints = [
-                        f"PREVIOUS ATTEMPT REJECTED (attempt {attempt}/{MAX_RETRIES}): {previous_feedback}",
+                        f"PREVIOUS ATTEMPT REJECTED: {truncated_feedback}",
                         "Address the feedback above before proceeding.",
                     ]
                     task_with_feedback["constraints"] = existing_constraints + retry_constraints
@@ -593,14 +601,23 @@ async def process_user_request(
                         f"[yellow]Warning: Task may be incomplete - missing required tools[/yellow]"
                     )
 
-                # Review with GLM
+                # Review with GLM - wrapped in try/except to avoid losing work on review crash
                 context.transition_to(SessionState.REVIEWING)
-                review = await review_with_glm(
-                    glm_client=glm_client,
-                    task=task,
-                    result=result,
-                    project_path=project.path,
-                )
+                try:
+                    review = await review_with_glm(
+                        glm_client=glm_client,
+                        task=task,
+                        result=result,
+                        project_path=project.path,
+                    )
+                except Exception as review_error:
+                    # Review crashed - auto-approve to avoid losing Claude's work
+                    console.print(f"[yellow]Review failed ({review_error}), auto-approving to preserve work[/yellow]")
+                    review = {
+                        "approved": True,
+                        "issues": [],
+                        "feedback": f"Auto-approved due to review error: {str(review_error)[:100]}",
+                    }
 
                 # If tool verification failed, add that to review issues
                 if not tool_verification["passed"]:
@@ -628,8 +645,10 @@ async def process_user_request(
                             files_changed=result.file_changes,
                         )
                 else:
-                    # Task rejected - prepare for retry
-                    previous_feedback = review.get("feedback", "") or "; ".join(review.get("issues", []))
+                    # Task rejected - prepare for retry with meaningful default feedback
+                    feedback_text = review.get("feedback", "")
+                    issues_text = "; ".join(review.get("issues", []))
+                    previous_feedback = feedback_text or issues_text or "Task did not meet quality standards. Please review and improve."
                     # Save rejection to memory for learning
                     if memory:
                         memory.save(

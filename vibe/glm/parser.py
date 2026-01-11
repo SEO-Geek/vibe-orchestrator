@@ -84,12 +84,22 @@ def parse_task_list(response: str) -> list[dict[str, Any]]:
             {"keys": list(data.keys()) if isinstance(data, dict) else "not a dict"},
         )
 
+    # Validate task list is not empty
+    if not tasks:
+        raise TaskParseError(
+            "GLM returned empty task list - request may be ambiguous or impossible",
+            {"response_preview": response[:200]},
+        )
+
     # Validate task structure
     for i, task in enumerate(tasks):
         if not isinstance(task, dict):
             raise TaskParseError(f"Task {i} is not a dictionary")
         if "description" not in task:
             raise TaskParseError(f"Task {i} missing 'description' field")
+        # Ensure description is not empty
+        if not task.get("description", "").strip():
+            raise TaskParseError(f"Task {i} has empty description")
 
     return tasks
 

@@ -509,13 +509,17 @@ class Supervisor:
                     self._emit_progress("Task approved by GLM")
                     break
                 else:
-                    # Rejected - prepare for retry
+                    # Rejected - prepare for retry with meaningful feedback
                     issues = review_result.get("issues", [])
-                    previous_feedback = (
-                        f"Previous attempt was rejected.\n"
-                        f"Issues: {', '.join(issues)}\n"
-                        f"Feedback: {result.review_feedback}"
-                    )
+                    feedback_text = result.review_feedback or "Task did not meet quality standards"
+                    issues_text = ", ".join(issues) if issues else "Not specified"
+
+                    # Limit feedback length to prevent context overflow
+                    combined_feedback = f"Issues: {issues_text}. Feedback: {feedback_text}"
+                    if len(combined_feedback) > 500:
+                        combined_feedback = combined_feedback[:497] + "..."
+
+                    previous_feedback = f"Previous attempt was rejected. {combined_feedback}"
 
                     self._emit_progress(
                         f"Task rejected: {result.review_feedback[:100]}... Retrying."
