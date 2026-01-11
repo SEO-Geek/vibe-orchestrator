@@ -6,6 +6,31 @@ All notable changes to Vibe Orchestrator will be documented in this file.
 
 ### Added
 
+#### Phase 7: Project Updates (2026-01-11)
+
+- **ProjectUpdater Class**: Automatic documentation updates
+  - STARMAP.md updates when new files are created
+  - CHANGELOG.md entries generated after task completion
+  - Uses GLM for intelligent update text (with fallback)
+  - Git-aware file change detection (created/modified/deleted)
+
+- **Auto-Update Integration**:
+  - Triggers after successful task execution
+  - Collects all file changes across tasks
+  - Updates docs only when files were actually changed
+  - Shows update status in session summary
+
+- **Changelog Features**:
+  - Proper [Unreleased] section management
+  - Category inference (Added/Changed/Fixed/Removed)
+  - Maintains existing changelog format
+  - Creates new changelog if none exists
+
+- **STARMAP Features**:
+  - Adds new files to "Recent Files Added" section
+  - GLM-powered section updates (optional)
+  - Preserves existing format and style
+
 #### Phase 6: Memory Integration (2026-01-11)
 
 - **VibeMemory Class**: Direct SQLite access to memory-keeper database

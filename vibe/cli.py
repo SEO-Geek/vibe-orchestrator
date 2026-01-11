@@ -40,6 +40,7 @@ from vibe.exceptions import ConfigError, ClaudeError, GLMConnectionError, Memory
 from vibe.glm.client import GLMClient, ping_glm_sync
 from vibe.glm.prompts import SUPERVISOR_SYSTEM_PROMPT
 from vibe.memory.keeper import VibeMemory
+from vibe.orchestrator.project_updater import ProjectUpdater
 from vibe.state import SessionContext, SessionState
 
 # Rich console for terminal output
@@ -504,6 +505,8 @@ async def process_user_request(
     context.transition_to(SessionState.EXECUTING)
     completed = 0
     failed = 0
+    all_file_changes: list[str] = []  # Track all modified files
+    all_summaries: list[str] = []  # Track all task summaries
 
     for i, task in enumerate(tasks, 1):
         try:
@@ -543,6 +546,10 @@ async def process_user_request(
             if review.get("approved"):
                 completed += 1
                 context.add_completed_task(task.get("description", ""))
+                # Track file changes and summaries for project updates
+                all_file_changes.extend(result.file_changes)
+                if result.result:
+                    all_summaries.append(result.result)
                 # Save success to memory
                 if memory:
                     memory.save_task_result(
@@ -594,6 +601,28 @@ async def process_user_request(
             category="progress",
             priority="normal",
         )
+
+    # Update project documentation if files were changed
+    if completed > 0 and all_file_changes:
+        try:
+            updater = ProjectUpdater(project.path, glm_client)
+            combined_summary = " ".join(all_summaries) if all_summaries else user_request
+
+            with console.status("[bold blue]Updating project docs...[/bold blue]"):
+                update_results = await updater.update_after_task(
+                    task_description=user_request,
+                    files_changed=list(set(all_file_changes)),  # Deduplicate
+                    claude_summary=combined_summary,
+                    update_starmap=True,
+                    update_changelog=True,
+                )
+
+            if update_results.get("starmap"):
+                console.print("  [dim]Updated STARMAP.md[/dim]")
+            if update_results.get("changelog"):
+                console.print("  [dim]Updated CHANGELOG.md[/dim]")
+        except Exception as e:
+            console.print(f"  [dim]Warning: Project update failed: {e}[/dim]")
 
 
 def conversation_loop(
