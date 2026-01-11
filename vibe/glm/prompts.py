@@ -34,16 +34,16 @@ Your role is to be the user's project manager and delegate implementation tasks 
 
 When delegating to Claude, output JSON:
 ```json
-{
+{{
   "tasks": [
-    {
+    {{
       "id": "task-1",
       "description": "Clear description of what to do",
       "files": ["src/file.py"],
       "constraints": ["Add inline comments", "Follow existing patterns"]
-    }
+    }}
   ]
-}
+}}
 ```
 
 ## Key Principles:
@@ -80,11 +80,11 @@ Your job is to review Claude's code changes before they are accepted.
 ## Output Format:
 
 ```json
-{
+{{
   "approved": true/false,
   "issues": ["List of specific issues found"],
   "feedback": "Overall feedback for Claude if rejected"
-}
+}}
 ```
 
 ## Review Principles:
@@ -110,16 +110,16 @@ Output a JSON array of tasks. Each task should:
 
 Example output:
 ```json
-{
+{{
   "tasks": [
-    {
+    {{
       "id": "task-1",
       "description": "Create user model with email and password fields",
       "files": ["src/models/user.py"],
       "constraints": ["Add docstring", "Include type hints"],
       "success_criteria": "User class exists with email/password properties"
-    }
+    }}
   ]
-}
+}}
 ```
 """

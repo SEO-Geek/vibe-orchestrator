@@ -541,89 +541,122 @@ async def process_user_request(
     all_file_changes: list[str] = []  # Track all modified files
     all_summaries: list[str] = []  # Track all task summaries
 
+    MAX_RETRIES = 3  # Maximum retry attempts per task
+
     for i, task in enumerate(tasks, 1):
-        try:
-            # Get debug context if in debug session
-            debug_ctx = _debug_session.get_context_for_claude() if _debug_session else None
+        attempt = 0
+        task_completed = False
+        previous_feedback = ""
 
-            # Execute with Claude
-            result, tool_verification = await execute_task_with_claude(
-                executor=executor,
-                task=task,
-                task_num=i,
-                total_tasks=len(tasks),
-                debug_context=debug_ctx,
-            )
+        while attempt < MAX_RETRIES and not task_completed:
+            attempt += 1
+            try:
+                # Get debug context if in debug session
+                debug_ctx = _debug_session.get_context_for_claude() if _debug_session else None
 
-            if not result.success:
-                console.print(f"[red]Task failed: {result.error}[/red]")
-                failed += 1
-                context.add_error(result.error or "Unknown error")
-                # Save failure to memory
-                if memory:
-                    memory.save_task_result(
-                        task_description=task.get("description", ""),
-                        success=False,
-                        summary=result.error or "Unknown error",
-                    )
-                continue
+                # Add previous rejection feedback to constraints for retry
+                task_with_feedback = task.copy()
+                if previous_feedback:
+                    existing_constraints = task_with_feedback.get("constraints", []) or []
+                    retry_constraints = [
+                        f"PREVIOUS ATTEMPT REJECTED (attempt {attempt}/{MAX_RETRIES}): {previous_feedback}",
+                        "Address the feedback above before proceeding.",
+                    ]
+                    task_with_feedback["constraints"] = existing_constraints + retry_constraints
+                    console.print(f"\n  [yellow]Retrying task (attempt {attempt}/{MAX_RETRIES})...[/yellow]")
 
-            # Check if tool verification failed (missing required tools)
-            if not tool_verification["passed"] and tool_verification.get("missing_required"):
-                console.print(
-                    f"[yellow]Warning: Task may be incomplete - missing required tools[/yellow]"
+                # Execute with Claude
+                result, tool_verification = await execute_task_with_claude(
+                    executor=executor,
+                    task=task_with_feedback,
+                    task_num=i,
+                    total_tasks=len(tasks),
+                    debug_context=debug_ctx,
                 )
 
-            # Review with GLM
-            context.transition_to(SessionState.REVIEWING)
-            review = await review_with_glm(
-                glm_client=glm_client,
-                task=task,
-                result=result,
-                project_path=project.path,
-            )
+                if not result.success:
+                    console.print(f"[red]Task failed: {result.error}[/red]")
+                    failed += 1
+                    context.add_error(result.error or "Unknown error")
+                    # Save failure to memory
+                    if memory:
+                        memory.save_task_result(
+                            task_description=task.get("description", ""),
+                            success=False,
+                            summary=result.error or "Unknown error",
+                        )
+                    break  # Don't retry on execution failure, only on review rejection
 
-            # If tool verification failed, add that to review issues
-            if not tool_verification["passed"]:
-                existing_issues = review.get("issues", [])
-                existing_issues.append(f"Tool verification: {tool_verification['feedback']}")
-                review["issues"] = existing_issues
-
-            # Show result
-            show_task_result(result, review)
-
-            if review.get("approved"):
-                completed += 1
-                context.add_completed_task(task.get("description", ""))
-                # Track file changes and summaries for project updates
-                all_file_changes.extend(result.file_changes)
-                if result.result:
-                    all_summaries.append(result.result)
-                # Save success to memory
-                if memory:
-                    memory.save_task_result(
-                        task_description=task.get("description", ""),
-                        success=True,
-                        summary=result.result or "",
-                        files_changed=result.file_changes,
+                # Check if tool verification failed (missing required tools)
+                if not tool_verification["passed"] and tool_verification.get("missing_required"):
+                    console.print(
+                        f"[yellow]Warning: Task may be incomplete - missing required tools[/yellow]"
                     )
-            else:
+
+                # Review with GLM
+                context.transition_to(SessionState.REVIEWING)
+                review = await review_with_glm(
+                    glm_client=glm_client,
+                    task=task,
+                    result=result,
+                    project_path=project.path,
+                )
+
+                # If tool verification failed, add that to review issues
+                if not tool_verification["passed"]:
+                    existing_issues = review.get("issues", [])
+                    existing_issues.append(f"Tool verification: {tool_verification['feedback']}")
+                    review["issues"] = existing_issues
+
+                # Show result
+                show_task_result(result, review)
+
+                if review.get("approved"):
+                    completed += 1
+                    task_completed = True
+                    context.add_completed_task(task.get("description", ""))
+                    # Track file changes and summaries for project updates
+                    all_file_changes.extend(result.file_changes)
+                    if result.result:
+                        all_summaries.append(result.result)
+                    # Save success to memory
+                    if memory:
+                        memory.save_task_result(
+                            task_description=task.get("description", ""),
+                            success=True,
+                            summary=result.result or "",
+                            files_changed=result.file_changes,
+                        )
+                else:
+                    # Task rejected - prepare for retry
+                    previous_feedback = review.get("feedback", "") or "; ".join(review.get("issues", []))
+                    # Save rejection to memory for learning
+                    if memory:
+                        memory.save(
+                            key=f"rejection-{task.get('id', i)}-{attempt}",
+                            value=f"Task: {task.get('description', '')}\nFeedback: {previous_feedback}",
+                            category="warning",
+                            priority="high",
+                        )
+
+                    if attempt >= MAX_RETRIES:
+                        # Out of retries
+                        failed += 1
+                        console.print(f"\n  [red]Task failed after {MAX_RETRIES} attempts[/red]")
+                        if memory:
+                            memory.save_task_result(
+                                task_description=task.get("description", ""),
+                                success=False,
+                                summary=f"Rejected after {MAX_RETRIES} attempts: {previous_feedback}",
+                            )
+
+                context.transition_to(SessionState.EXECUTING)
+
+            except ClaudeError as e:
+                console.print(f"[red]Claude error on task {i}: {e}[/red]")
                 failed += 1
-                # Save rejection to memory
-                if memory:
-                    memory.save_task_result(
-                        task_description=task.get("description", ""),
-                        success=False,
-                        summary=f"Rejected: {review.get('feedback', '')}",
-                    )
-                # TODO: Implement retry with feedback
-
-            context.transition_to(SessionState.EXECUTING)
-
-        except ClaudeError as e:
-            console.print(f"[red]Claude error on task {i}: {e}[/red]")
-            failed += 1
-            context.add_error(str(e))
+                context.add_error(str(e))
+                break  # Don't retry on Claude errors
 
     # Final summary
     context.transition_to(SessionState.IDLE)
