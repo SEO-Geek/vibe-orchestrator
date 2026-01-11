@@ -165,6 +165,23 @@ class SessionContext:
             self.error_count += 1
             self.last_error = error
 
+    def add_error(self, error: str) -> None:
+        """Record an error without requiring a current task."""
+        self.error_count += 1
+        self.last_error = error
+        self.last_activity = datetime.now()
+
+    def add_completed_task(self, description: str) -> None:
+        """Record a completed task by description (simple tracking)."""
+        task = Task(
+            id=f"task-{len(self.completed_tasks) + 1}",
+            description=description,
+            status="completed",
+            completed_at=datetime.now(),
+        )
+        self.completed_tasks.append(task)
+        self.last_activity = datetime.now()
+
     def get_stats(self) -> dict[str, Any]:
         """Get session statistics."""
         return {

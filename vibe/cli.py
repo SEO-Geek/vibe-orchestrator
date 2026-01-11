@@ -34,7 +34,8 @@ from vibe.config import (
     load_config,
     save_config,
 )
-from vibe.exceptions import ConfigError, GLMConnectionError, StartupError
+from vibe.claude.executor import ClaudeExecutor, TaskResult, ToolCall, get_git_diff
+from vibe.exceptions import ConfigError, ClaudeError, GLMConnectionError, StartupError
 from vibe.glm.client import GLMClient, ping_glm_sync
 from vibe.glm.prompts import SUPERVISOR_SYSTEM_PROMPT
 from vibe.state import SessionContext, SessionState
@@ -268,6 +269,129 @@ def load_project_context(project: Project) -> str:
     return "\n".join(context_parts)
 
 
+async def execute_task_with_claude(
+    executor: ClaudeExecutor,
+    task: dict,
+    task_num: int,
+    total_tasks: int,
+) -> TaskResult:
+    """
+    Execute a single task with Claude, showing progress.
+
+    Args:
+        executor: ClaudeExecutor instance
+        task: Task dictionary from GLM
+        task_num: Current task number (1-based)
+        total_tasks: Total number of tasks
+
+    Returns:
+        TaskResult from Claude
+    """
+    description = task.get("description", "No description")
+    files = task.get("files")
+    constraints = task.get("constraints")
+
+    # Progress callback for live updates
+    progress_lines: list[str] = []
+
+    def on_progress(text: str) -> None:
+        progress_lines.append(text)
+
+    def on_tool_call(tool_call: ToolCall) -> None:
+        console.print(f"    [dim]→ {tool_call.name}[/dim]")
+
+    console.print(
+        Panel(
+            f"[bold]Task {task_num}/{total_tasks}:[/bold] {description}",
+            border_style="cyan",
+        )
+    )
+
+    # Execute with spinner
+    with console.status("[bold blue]Claude working...[/bold blue]"):
+        result = await executor.execute(
+            task_description=description,
+            files=files,
+            constraints=constraints,
+            on_progress=on_progress,
+            on_tool_call=on_tool_call,
+        )
+
+    return result
+
+
+async def review_with_glm(
+    glm_client: GLMClient,
+    task: dict,
+    result: TaskResult,
+    project_path: str,
+) -> dict:
+    """
+    Have GLM review Claude's changes.
+
+    Args:
+        glm_client: GLM client instance
+        task: Original task dictionary
+        result: Claude's TaskResult
+        project_path: Path to project for git diff
+
+    Returns:
+        Review result dict with approved, issues, feedback
+    """
+    # Get git diff for changed files
+    diff = get_git_diff(project_path, result.file_changes)
+
+    # Get Claude's summary
+    claude_summary = result.result or "(no summary provided)"
+
+    # Have GLM review
+    with console.status("[bold yellow]GLM reviewing changes...[/bold yellow]"):
+        review = await glm_client.review_changes(
+            task_description=task.get("description", ""),
+            changes_diff=diff,
+            claude_summary=claude_summary,
+        )
+
+    return review
+
+
+def show_task_result(result: TaskResult, review: dict) -> None:
+    """Display task result and review to user."""
+    # Show what Claude did
+    if result.file_changes:
+        console.print("\n  [bold]Files modified:[/bold]")
+        for f in result.file_changes:
+            console.print(f"    [green]✓[/green] {f}")
+
+    if result.result:
+        console.print(f"\n  [bold]Claude's summary:[/bold]")
+        console.print(f"    {result.result[:200]}")
+
+    # Show review result
+    console.print()
+    if review.get("approved"):
+        console.print(
+            Panel(
+                "[bold green]APPROVED[/bold green]",
+                border_style="green",
+            )
+        )
+    else:
+        issues = review.get("issues", [])
+        feedback = review.get("feedback", "")
+        issue_text = "\n".join(f"  • {issue}" for issue in issues) if issues else ""
+        console.print(
+            Panel(
+                f"[bold red]REJECTED[/bold red]\n\n{issue_text}\n\n{feedback}",
+                border_style="red",
+            )
+        )
+
+    # Show cost
+    if result.cost_usd > 0:
+        console.print(f"  [dim]Cost: ${result.cost_usd:.4f} | Duration: {result.duration_ms}ms[/dim]")
+
+
 async def process_user_request(
     glm_client: GLMClient,
     context: SessionContext,
@@ -275,7 +399,7 @@ async def process_user_request(
     user_request: str,
 ) -> None:
     """
-    Process a user request through GLM.
+    Process a user request through GLM and execute with Claude.
 
     Args:
         glm_client: GLM client instance
@@ -332,20 +456,89 @@ async def process_user_request(
 
     console.print()
 
-    # For now, just show the plan - Phase 4 will execute tasks
+    # Ask for confirmation before executing
+    confirm = Prompt.ask(
+        "Execute these tasks?",
+        choices=["y", "n"],
+        default="y",
+    )
+
+    if confirm.lower() != "y":
+        console.print("[yellow]Cancelled.[/yellow]")
+        return
+
+    # Initialize Claude executor
+    try:
+        executor = ClaudeExecutor(
+            project_path=project.path,
+            timeout_tier="code",
+        )
+    except ClaudeError as e:
+        console.print(f"[red]Claude error: {e}[/red]")
+        return
+
+    # Execute each task
+    context.transition_to(SessionState.EXECUTING)
+    completed = 0
+    failed = 0
+
+    for i, task in enumerate(tasks, 1):
+        try:
+            # Execute with Claude
+            result = await execute_task_with_claude(
+                executor=executor,
+                task=task,
+                task_num=i,
+                total_tasks=len(tasks),
+            )
+
+            if not result.success:
+                console.print(f"[red]Task failed: {result.error}[/red]")
+                failed += 1
+                context.add_error(result.error or "Unknown error")
+                continue
+
+            # Review with GLM
+            context.transition_to(SessionState.REVIEWING)
+            review = await review_with_glm(
+                glm_client=glm_client,
+                task=task,
+                result=result,
+                project_path=project.path,
+            )
+
+            # Show result
+            show_task_result(result, review)
+
+            if review.get("approved"):
+                completed += 1
+                context.add_completed_task(task.get("description", ""))
+            else:
+                failed += 1
+                # TODO: Implement retry with feedback
+
+            context.transition_to(SessionState.EXECUTING)
+
+        except ClaudeError as e:
+            console.print(f"[red]Claude error on task {i}: {e}[/red]")
+            failed += 1
+            context.add_error(str(e))
+
+    # Final summary
+    context.transition_to(SessionState.IDLE)
+    console.print()
     console.print(
         Panel(
-            "[dim]Task execution will be implemented in Phase 4.\n"
-            "This will delegate each task to Claude Code.[/dim]",
-            title="Next Steps",
-            border_style="yellow",
+            f"[bold]Session Complete[/bold]\n\n"
+            f"  Completed: [green]{completed}[/green]\n"
+            f"  Failed: [red]{failed}[/red]\n"
+            f"  Total: {len(tasks)}",
+            border_style="blue",
         )
     )
 
     # Record in context
-    summary = f"Decomposed request into {len(tasks)} tasks: " + ", ".join(
-        t.get("description", "?")[:30] for t in tasks
-    )
+    summary = f"Executed {completed}/{len(tasks)} tasks successfully"
     context.add_glm_message("assistant", summary)
 
 
