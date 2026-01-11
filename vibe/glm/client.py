@@ -7,6 +7,7 @@ Uses OpenAI-compatible API with custom base URL.
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, AsyncIterator
@@ -23,9 +24,40 @@ from vibe.glm.prompts import (
 
 logger = logging.getLogger(__name__)
 
+# Keywords that indicate investigation/exploration - ALWAYS delegate, never clarify
+INVESTIGATION_KEYWORDS = re.compile(
+    r'\b(check|debug|investigate|find|search|look|review|analyze|test|verify|'
+    r'examine|inspect|diagnose|troubleshoot|explore|what\'s wrong|why is|'
+    r'how does|trace|profile|benchmark|audit|scan|monitor)\b',
+    re.IGNORECASE
+)
+
+# API configuration
+DEFAULT_TIMEOUT = 30.0  # seconds - fail fast, delegate on timeout
+MAX_RETRIES = 2
+RETRY_DELAYS = [1.0, 3.0]  # exponential backoff
+
+# Circuit breaker configuration
+CIRCUIT_BREAKER_THRESHOLD = 3  # failures before circuit opens
+CIRCUIT_BREAKER_RESET_TIME = 60.0  # seconds before trying again
+
 # OpenRouter API configuration
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "z-ai/glm-4.7"  # GLM-4.7 (latest) via OpenRouter
+
+
+def is_investigation_request(text: str) -> bool:
+    """
+    Check if a request is an investigation/exploration task.
+    These tasks should ALWAYS be delegated to Claude without clarification.
+
+    Args:
+        text: User's request text
+
+    Returns:
+        True if this is an investigation task that should skip clarification
+    """
+    return bool(INVESTIGATION_KEYWORDS.search(text))
 
 
 @dataclass
@@ -97,6 +129,37 @@ class GLMClient:
         # Track usage for cost monitoring
         self.total_tokens_used = 0
         self.request_count = 0
+
+        # Circuit breaker state
+        self._consecutive_failures = 0
+        self._circuit_open_until: datetime | None = None
+
+    def _is_circuit_open(self) -> bool:
+        """Check if circuit breaker is open (GLM calls should be skipped)."""
+        if self._circuit_open_until is None:
+            return False
+        if datetime.now() >= self._circuit_open_until:
+            # Reset circuit breaker
+            logger.info("Circuit breaker reset, allowing GLM calls again")
+            self._circuit_open_until = None
+            self._consecutive_failures = 0
+            return False
+        return True
+
+    def _record_success(self) -> None:
+        """Record successful API call, reset failure counter."""
+        self._consecutive_failures = 0
+
+    def _record_failure(self) -> None:
+        """Record failed API call, potentially open circuit breaker."""
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= CIRCUIT_BREAKER_THRESHOLD:
+            from datetime import timedelta
+            self._circuit_open_until = datetime.now() + timedelta(seconds=CIRCUIT_BREAKER_RESET_TIME)
+            logger.warning(
+                f"Circuit breaker OPEN after {self._consecutive_failures} failures. "
+                f"Skipping GLM for {CIRCUIT_BREAKER_RESET_TIME}s"
+            )
 
     async def ping(self, timeout: float = 10.0) -> tuple[bool, str]:
         """
@@ -253,15 +316,14 @@ class GLMClient:
         """
         Have GLM decompose a user request into atomic tasks.
 
+        NEVER FAILS - if GLM returns garbage, create fallback task.
+
         Args:
             user_request: The user's request
             project_context: Context about the project (starmap, recent changes, etc.)
 
         Returns:
             List of task dictionaries with id, description, files, constraints
-
-        Raises:
-            GLMResponseError: If response cannot be parsed
         """
         # Build the decomposition prompt
         prompt = TASK_DECOMPOSITION_PROMPT.format(
@@ -269,21 +331,43 @@ class GLMClient:
             project_context=project_context,
         )
 
-        response = await self.chat(
-            system_prompt=SUPERVISOR_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,  # Lower temperature for structured output
-        )
-
         try:
-            tasks = parse_task_list(response.content)
-            logger.info(f"Decomposed request into {len(tasks)} tasks")
-            return tasks
-        except Exception as e:
-            raise GLMResponseError(
-                f"Failed to parse task decomposition: {e}",
-                {"response": response.content[:500]},
+            response = await asyncio.wait_for(
+                self.chat(
+                    system_prompt=SUPERVISOR_SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.1,
+                ),
+                timeout=DEFAULT_TIMEOUT,
             )
+
+            tasks = parse_task_list(response.content)
+            if tasks:
+                logger.info(f"Decomposed request into {len(tasks)} tasks")
+                return tasks
+
+        except asyncio.TimeoutError:
+            logger.warning("GLM timeout in decompose_task, using fallback")
+        except Exception as e:
+            logger.warning(f"GLM decomposition failed: {e}, using fallback")
+
+        # FALLBACK: If GLM fails or returns garbage, create a generic task
+        # This ensures the system NEVER fails on decomposition
+        logger.info("Creating fallback investigation task")
+        return [
+            {
+                "id": "task-1",
+                "description": f"Investigate and execute: {user_request}. "
+                               "Explore the codebase, understand the context, and complete the request. "
+                               "Report findings and actions taken.",
+                "files": ["investigate to find relevant files"],
+                "constraints": [
+                    "Explore thoroughly before making changes",
+                    "Document findings clearly",
+                    "Ask for clarification only if absolutely necessary"
+                ],
+            }
+        ]
 
     async def review_changes(
         self,
@@ -346,38 +430,129 @@ Output JSON: {{"approved": true/false, "issues": [...], "feedback": "..."}}"""
         self,
         user_request: str,
         project_context: str,
+        clarification_count: int = 0,
+        timeout: float = DEFAULT_TIMEOUT,
     ) -> str | None:
         """
         Check if GLM needs clarification before proceeding.
 
+        ROBUST: Uses keyword detection, timeout, and retry logic.
+        On ANY failure or timeout, returns None (delegate to Claude).
+
         Args:
             user_request: The user's request
             project_context: Context about the project
+            clarification_count: How many times we've already asked (0 = first time)
+            timeout: API timeout in seconds (default 30s)
 
         Returns:
-            Clarification question if needed, None if request is clear
+            Clarification question if needed, None to delegate
         """
+        # HARD RULE 1: After 1 clarification, force delegation
+        if clarification_count >= 1:
+            logger.info("Clarification limit reached, forcing delegation")
+            return None
+
+        # HARD RULE 2: Investigation keywords = instant delegation (no API call needed)
+        if INVESTIGATION_KEYWORDS.search(user_request):
+            logger.info(f"Investigation keyword detected, skipping clarification")
+            return None
+
+        # HARD RULE 3: Circuit breaker open = skip GLM, delegate
+        if self._is_circuit_open():
+            logger.info("Circuit breaker open, skipping clarification")
+            return None
+
         prompt = f"""The user wants: {user_request}
 
 Project context:
 {project_context}
 
-If the request is clear and you can decompose it into tasks, respond with just: CLEAR
+## RULES FOR DECIDING:
 
-If you need clarification, ask ONE specific question to help decompose this into tasks.
-Keep your question brief and focused."""
+1. **DELEGATE IMMEDIATELY (respond CLEAR) for:**
+   - Investigation/debugging tasks ("check", "find", "why is", "what's wrong")
+   - Research tasks ("how does X work", "review", "analyze")
+   - Testing tasks ("test", "verify", "validate")
+   - Any task where Claude can explore the codebase to find answers
 
-        response = await self.chat(
-            system_prompt=SUPERVISOR_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-        )
+2. **Only ask clarification when:**
+   - User must choose between mutually exclusive approaches
+   - Information is EXTERNAL (API keys, business decisions, preferences)
+   - NEVER ask about file locations, error messages, or current state - Claude can find these
 
-        content = response.content.strip()
-        if content.upper() == "CLEAR" or content.upper().startswith("CLEAR"):
-            return None
+3. **If you already asked once, respond CLEAR** - delegate to Claude to investigate
 
-        return content
+If the request is clear OR is an investigation task, respond with just: CLEAR
+
+If you MUST ask (see rules above), ask ONE brief question about a DECISION the user must make."""
+
+        # Retry logic with timeout - on ANY failure, delegate
+        last_error = None
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                response = await asyncio.wait_for(
+                    self.chat(
+                        system_prompt=SUPERVISOR_SYSTEM_PROMPT,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.2,
+                    ),
+                    timeout=timeout,
+                )
+
+                # Success - reset circuit breaker
+                self._record_success()
+
+                content = response.content.strip()
+
+                # AGGRESSIVE DETECTION: Only return as clarification if it's clearly
+                # a SHORT question. Everything else = proceed to task decomposition.
+
+                # Signs that GLM wants to proceed (return None = proceed):
+                should_proceed = (
+                    content.upper() == "CLEAR"
+                    or content.upper().startswith("CLEAR")
+                    or '"tasks"' in content  # GLM returned task JSON
+                    or '"id":' in content  # Task structure
+                    or "```json" in content  # JSON block
+                    or "delegate" in content.lower()  # Delegation intent
+                    or "let me" in content.lower()  # Starting to work
+                    or len(content) > 500  # Long response = not a simple question
+                    or content.count("\n") > 5  # Multi-line = not a simple question
+                )
+
+                if should_proceed:
+                    logger.info("GLM indicates ready to proceed")
+                    return None
+
+                # Only return as clarification if it ends with "?" and is short
+                if "?" in content and len(content) < 300:
+                    return content
+
+                # Default: proceed (fail-safe)
+                logger.info("Ambiguous GLM response, defaulting to proceed")
+                return None
+
+            except asyncio.TimeoutError:
+                logger.warning(f"GLM timeout (attempt {attempt + 1}/{MAX_RETRIES + 1}), will delegate")
+                last_error = "timeout"
+            except (GLMConnectionError, GLMRateLimitError, OpenAIError) as e:
+                logger.warning(f"GLM error (attempt {attempt + 1}): {e}")
+                last_error = str(e)
+            except Exception as e:
+                logger.warning(f"Unexpected error in ask_clarification: {e}")
+                last_error = str(e)
+
+            # Wait before retry (if not last attempt)
+            if attempt < MAX_RETRIES:
+                await asyncio.sleep(RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)])
+
+        # All retries failed - record failure for circuit breaker
+        self._record_failure()
+
+        # Delegate to Claude (fail-safe)
+        logger.warning(f"All GLM attempts failed ({last_error}), forcing delegation to Claude")
+        return None
 
     def get_usage_stats(self) -> dict[str, Any]:
         """Get usage statistics."""

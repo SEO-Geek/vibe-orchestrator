@@ -8,6 +8,7 @@ Shows startup validation, project selection, and conversation interface.
 
 import asyncio
 import copy
+import logging
 import os
 import shutil
 import signal
@@ -17,6 +18,8 @@ import types
 from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
+
+logger = logging.getLogger(__name__)
 
 import typer
 from rich.console import Console
@@ -43,6 +46,7 @@ from vibe.glm.client import GLMClient, ping_glm_sync
 from vibe.glm.prompts import SUPERVISOR_SYSTEM_PROMPT
 from vibe.memory.keeper import VibeMemory
 from vibe.memory.debug_session import DebugSession, DebugAttempt, AttemptResult
+from vibe.memory.task_history import TaskHistory, add_task, add_request, get_context_for_glm
 from vibe.orchestrator.project_updater import ProjectUpdater
 from vibe.state import SessionContext, SessionState
 
@@ -253,7 +257,9 @@ def show_project_loaded(project: Project, memory_items: int = 0) -> None:
 
 def load_project_context(project: Project) -> str:
     """
-    Load project context for GLM (starmap, recent changes, etc.)
+    Load project context for GLM (starmap, guidelines, task history).
+
+    Task history comes from TaskHistory class (in-memory, always available).
 
     Args:
         project: The project to load context for
@@ -267,7 +273,7 @@ def load_project_context(project: Project) -> str:
     starmap_path = project.starmap_path
     if starmap_path.exists():
         try:
-            content = starmap_path.read_text()[:2000]  # Limit to 2000 chars
+            content = starmap_path.read_text()[:2000]
             context_parts.append(f"\n## Project Structure (STARMAP.md):\n{content}")
         except Exception:
             pass
@@ -280,6 +286,11 @@ def load_project_context(project: Project) -> str:
             context_parts.append(f"\n## Project Guidelines (CLAUDE.md):\n{content}")
         except Exception:
             pass
+
+    # Get task history from TaskHistory (ALWAYS available, in-memory)
+    task_context = get_context_for_glm()
+    if task_context:
+        context_parts.append(f"\n{task_context}")
 
     return "\n".join(context_parts)
 
@@ -308,6 +319,11 @@ async def execute_task_with_claude(
     files = task.get("files")
     constraints = task.get("constraints")
 
+    # Detect task type for timeout tier
+    # Investigation/research tasks get longer timeout (300s vs 120s)
+    from vibe.glm.client import is_investigation_request
+    timeout_tier = "research" if is_investigation_request(description) else "code"
+
     # Progress callback for live updates
     progress_lines: list[str] = []
 
@@ -317,9 +333,10 @@ async def execute_task_with_claude(
     def on_tool_call(tool_call: ToolCall) -> None:
         console.print(f"    [dim]→ {tool_call.name}[/dim]")
 
+    tier_label = f" [dim]({timeout_tier})[/dim]" if timeout_tier == "research" else ""
     console.print(
         Panel(
-            f"[bold]Task {task_num}/{total_tasks}:[/bold] {description}",
+            f"[bold]Task {task_num}/{total_tasks}:[/bold] {description}{tier_label}",
             border_style="cyan",
         )
     )
@@ -333,6 +350,7 @@ async def execute_task_with_claude(
             on_progress=on_progress,
             on_tool_call=on_tool_call,
             debug_context=debug_context,
+            timeout_tier=timeout_tier,
         )
 
     # Verify tool usage
@@ -441,19 +459,25 @@ async def process_user_request(
         user_request: User's request text
         memory: Optional memory client for persistence
     """
-    # Load project context
+    # Load project context (task history comes from TaskHistory class)
     project_context = load_project_context(project)
+
+    # Record this request in TaskHistory
+    add_request(user_request)
 
     # Add user message to history
     context.add_glm_message("user", user_request)
 
-    # Check if clarification is needed
+    # Check if clarification is needed (max 1 question, then delegate)
     console.print()
     with console.status("[bold blue]GLM analyzing request...[/bold blue]"):
-        clarification = await glm_client.ask_clarification(user_request, project_context)
+        clarification = await glm_client.ask_clarification(
+            user_request, project_context, clarification_count=context.clarification_count
+        )
 
     if clarification:
-        # GLM needs more info
+        # GLM needs more info - but only allow 1 clarification
+        context.clarification_count += 1
         console.print(
             Panel(
                 clarification,
@@ -463,6 +487,9 @@ async def process_user_request(
         )
         context.add_glm_message("assistant", clarification)
         return
+
+    # Reset clarification count when proceeding to decomposition
+    context.clarification_count = 0
 
     # Decompose into tasks
     console.print()
@@ -525,10 +552,11 @@ async def process_user_request(
             pass  # Non-critical
 
     # Initialize Claude executor with conventions
+    # Use "research" tier for investigation tasks, "code" for normal tasks
     try:
         executor = ClaudeExecutor(
             project_path=project.path,
-            timeout_tier="code",
+            timeout_tier="code",  # Default, will be overridden per-task
             global_conventions=global_conventions,
         )
     except ClaudeError as e:
@@ -586,7 +614,8 @@ async def process_user_request(
                     console.print(f"[red]Task failed: {result.error}[/red]")
                     failed += 1
                     context.add_error(result.error or "Unknown error")
-                    # Save failure to memory
+                    # Save failure to TaskHistory (always works) and memory (if available)
+                    add_task(task.get("description", ""), success=False, summary=result.error or "Unknown error")
                     if memory:
                         memory.save_task_result(
                             task_description=task.get("description", ""),
@@ -636,7 +665,13 @@ async def process_user_request(
                     all_file_changes.extend(result.file_changes)
                     if result.result:
                         all_summaries.append(result.result)
-                    # Save success to memory
+                    # Save success to TaskHistory (always works) and memory (if available)
+                    add_task(
+                        task.get("description", ""),
+                        success=True,
+                        summary=result.result or "",
+                        files_changed=result.file_changes,
+                    )
                     if memory:
                         memory.save_task_result(
                             task_description=task.get("description", ""),
@@ -662,6 +697,12 @@ async def process_user_request(
                         # Out of retries
                         failed += 1
                         console.print(f"\n  [red]Task failed after {MAX_RETRIES} attempts[/red]")
+                        # Save failure to TaskHistory (always works) and memory (if available)
+                        add_task(
+                            task.get("description", ""),
+                            success=False,
+                            summary=f"Rejected after {MAX_RETRIES} attempts: {previous_feedback[:100]}",
+                        )
                         if memory:
                             memory.save_task_result(
                                 task_description=task.get("description", ""),
@@ -749,6 +790,13 @@ def conversation_loop(
             if not user_input.strip():
                 continue
 
+            # Handle exit commands (with or without slash, like Claude Code)
+            if user_input.lower().strip() in ("exit", "quit", "q"):
+                if memory and memory.session_id:
+                    memory.end_session("Session ended by user")
+                console.print("[yellow]Goodbye![/yellow]")
+                break
+
             # Handle commands
             if user_input.startswith("/"):
                 cmd = user_input.lower().strip()
@@ -764,6 +812,7 @@ def conversation_loop(
                     console.print("  /status     - Show session status")
                     console.print("  /usage      - Show GLM usage stats")
                     console.print("  /memory     - Show memory stats")
+                    console.print("  /history    - Show task history (what GLM sees)")
                     console.print("  /convention - Manage global conventions")
                     console.print("  /debug      - Debug session tracking")
                     console.print("  /rollback   - Rollback to debug checkpoint")
@@ -804,6 +853,32 @@ def conversation_loop(
                         console.print()
                     else:
                         console.print("[yellow]Memory not available[/yellow]")
+                elif cmd == "/history":
+                    # Show task history (from in-memory TaskHistory)
+                    stats = TaskHistory.get_stats()
+                    console.print(f"\n[bold]Task History:[/bold]")
+                    console.print(f"  Total tasks: {stats['total_tasks']}")
+                    console.print(f"  Completed: [green]{stats['completed']}[/green]")
+                    console.print(f"  Failed: [red]{stats['failed']}[/red]")
+                    console.print(f"  Requests tracked: {stats['requests']}")
+                    console.print()
+
+                    # Show recent tasks
+                    tasks = TaskHistory.get_recent_tasks(10)
+                    if tasks:
+                        console.print("[bold]Recent Tasks:[/bold]")
+                        for task in tasks:
+                            icon = "[green]✓[/green]" if task.status == "completed" else "[red]✗[/red]"
+                            console.print(f"  {icon} {task.description[:70]}")
+                        console.print()
+
+                    # Show what GLM sees
+                    glm_context = get_context_for_glm()
+                    if glm_context:
+                        console.print("[bold]Context for GLM:[/bold]")
+                        console.print(Panel(glm_context, border_style="dim"))
+                    else:
+                        console.print("[dim]No task history yet[/dim]")
                 elif cmd.startswith("/convention"):
                     # /convention - Manage global conventions
                     if not memory:
@@ -1254,6 +1329,12 @@ def main(
         # Load existing context items count
         context_items = _memory.load_project_context(limit=100)
         memory_items = len(context_items)
+
+        # Load task history from database into in-memory TaskHistory
+        TaskHistory.load_from_memory(_memory)
+        stats = TaskHistory.get_stats()
+        if stats["total_tasks"] > 0:
+            console.print(f"  [dim]TaskHistory: {stats['total_tasks']} tasks loaded ({stats['completed']} completed, {stats['failed']} failed)[/dim]")
     except MemoryConnectionError as e:
         console.print(f"[yellow]Warning: Memory not available: {e}[/yellow]")
         _memory = None

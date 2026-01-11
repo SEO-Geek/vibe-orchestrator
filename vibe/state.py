@@ -107,6 +107,9 @@ class SessionContext:
     last_error: str | None = None
     error_count: int = 0
 
+    # Clarification tracking - reset when task decomposition starts
+    clarification_count: int = 0
+
     def transition_to(self, new_state: SessionState) -> bool:
         """
         Attempt to transition to a new state.

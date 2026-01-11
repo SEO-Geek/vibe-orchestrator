@@ -273,6 +273,7 @@ class ClaudeExecutor:
         on_progress: Callable[[str], None] | None = None,
         on_tool_call: Callable[[ToolCall], None] | None = None,
         debug_context: str | None = None,
+        timeout_tier: str | None = None,
     ) -> TaskResult:
         """
         Execute a task via Claude Code.
@@ -284,6 +285,7 @@ class ClaudeExecutor:
             on_progress: Callback for progress updates (text chunks)
             on_tool_call: Callback when a tool is called
             debug_context: Optional debug session context to inject
+            timeout_tier: Override timeout tier ('quick', 'code', 'debug', 'research')
 
         Returns:
             TaskResult with success/failure and details
@@ -293,6 +295,11 @@ class ClaudeExecutor:
             ClaudeTimeoutError: If task times out
             ClaudeExecutionError: For execution errors
         """
+        # Temporarily override timeout if tier specified
+        original_timeout = self.timeout
+        if timeout_tier and timeout_tier in TIMEOUT_TIERS:
+            self.timeout = TIMEOUT_TIERS[timeout_tier]
+            logger.info(f"Using timeout tier '{timeout_tier}': {self.timeout}s")
         prompt = self.build_prompt(
             task_description, files, constraints,
             enforce_tools=True, debug_context=debug_context
@@ -439,6 +446,10 @@ class ClaudeExecutor:
                 exit_code=-1,
                 stderr=str(e),
             )
+        finally:
+            # Restore original timeout if it was overridden
+            if timeout_tier:
+                self.timeout = original_timeout
 
     async def execute_simple(
         self,
@@ -492,9 +503,12 @@ def get_git_diff(
     """
     import subprocess
 
-    cmd = ["git", "diff", "--no-color"]
-    if files:
-        cmd.extend(["--"] + files)
+    # If no files specified, return no changes (don't show unrelated diffs)
+    if not files:
+        return "(no code changes - task was information-only)"
+
+    cmd = ["git", "diff", "--no-color", "--"]
+    cmd.extend(files)
 
     try:
         result = subprocess.run(
@@ -504,7 +518,11 @@ def get_git_diff(
             text=True,
             timeout=10,
         )
-        diff = result.stdout or "(no changes)"
+        diff = result.stdout.strip()
+
+        # If no diff for these specific files, report that
+        if not diff:
+            return f"(no changes detected in: {', '.join(files)})"
 
         # Truncate large diffs to prevent context window issues
         if len(diff) > max_chars:
