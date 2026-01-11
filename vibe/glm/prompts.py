@@ -140,3 +140,117 @@ Example output:
 }}
 ```
 """
+
+# =============================================================================
+# DEBUG WORKFLOW PROMPTS
+# =============================================================================
+
+DEBUG_TASK_PROMPT = """You are GLM generating a debugging task for Claude.
+
+## Problem Being Debugged:
+{problem}
+
+## Previous Attempts:
+{iterations_summary}
+
+## Current Hypothesis:
+{hypothesis}
+
+## Your Task:
+Generate a SPECIFIC, ACTIONABLE task for Claude to execute next.
+
+Rules:
+1. Be SPECIFIC - tell Claude exactly what to investigate or fix
+2. Build on previous attempts - don't repeat what failed
+3. Include starting points - which files, which functions
+4. Define success criteria - how will we know it worked?
+
+## Output Format (JSON):
+```json
+{{
+  "task": "Specific task description",
+  "starting_points": ["file1.py", "function_name"],
+  "what_to_look_for": "Specific things to investigate",
+  "success_criteria": "How to verify success"
+}}
+```
+"""
+
+DEBUG_REVIEW_PROMPT = """You are GLM reviewing Claude's debugging work.
+
+## Original Problem:
+{problem}
+
+## Task Given to Claude:
+{task}
+
+## Claude's Output:
+{output}
+
+## Files Modified:
+{files_changed}
+
+## Features That Must Still Work:
+{must_preserve}
+
+## Previous Iterations:
+{previous_iterations}
+
+## Your Review Task:
+1. Did Claude actually address the problem?
+2. Are the findings correct and well-reasoned?
+3. Did Claude break anything that must be preserved?
+4. Is the problem actually SOLVED, or just investigated?
+
+## Output Format (JSON):
+```json
+{{
+  "approved": true/false,
+  "is_problem_solved": true/false,
+  "feedback": "Specific feedback - what was good, what needs work",
+  "next_task": "If not solved, what should Claude do next? (null if solved)"
+}}
+```
+
+Important:
+- Be SPECIFIC in feedback - vague feedback wastes iterations
+- If Claude found root cause but didn't fix it, next_task should be the fix
+- If Claude fixed it but didn't verify, next_task should be verification
+- Only set is_problem_solved=true if you're confident the issue is resolved
+"""
+
+DEBUG_CLAUDE_PROMPT = """## DEBUGGING TASK
+
+{context}
+
+## YOUR TASK THIS ITERATION:
+{task}
+
+## REQUIRED OUTPUT FORMAT
+
+Structure your response with these sections:
+
+### What I Investigated
+- List files examined with specific line numbers
+- List commands run and their output
+
+### What I Found
+- Specific findings with evidence
+- Root cause if identified
+
+### What I Did
+- Actions taken (if any code changes)
+- Why this approach was chosen
+
+### Verification
+- How I verified the fix (if applicable)
+- Test results or observed behavior
+
+### Recommendation
+- What should happen next
+- Confidence level (high/medium/low)
+
+Be SPECIFIC - include file paths, line numbers, exact error messages.
+GLM will review this output and decide next steps.
+"""
+

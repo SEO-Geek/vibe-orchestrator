@@ -47,6 +47,17 @@ from vibe.glm.prompts import SUPERVISOR_SYSTEM_PROMPT
 from vibe.memory.keeper import VibeMemory
 from vibe.memory.debug_session import DebugSession, DebugAttempt, AttemptResult
 from vibe.memory.task_history import TaskHistory, add_task, add_request, get_context_for_glm
+from vibe.glm.debug_state import DebugContext, ClaudeIteration
+from vibe.glm.prompts import DEBUG_CLAUDE_PROMPT
+from vibe.logging import (
+    session_logger,
+    SessionLogEntry,
+    now_iso,
+    set_session_id,
+    set_project_name,
+    get_session_id,
+)
+from vibe.logging.viewer import query_logs, calculate_stats, format_entry_line, format_stats, tail_logs
 from vibe.orchestrator.project_updater import ProjectUpdater
 from vibe.state import SessionContext, SessionState
 
@@ -295,6 +306,187 @@ def load_project_context(project: Project) -> str:
     return "\n".join(context_parts)
 
 
+# =============================================================================
+# DEBUG WORKFLOW - GLM as Brain, Claude as Hands
+# =============================================================================
+
+async def execute_debug_workflow(
+    glm_client: GLMClient,
+    executor: ClaudeExecutor,
+    project: Project,
+    problem: str,
+    memory: VibeMemory | None = None,
+) -> None:
+    """
+    Execute the Claude-driven debugging workflow.
+
+    Flow:
+    1. Initialize DebugContext
+    2. GLM generates initial task for Claude
+    3. Loop:
+       a. Claude executes with FULL history
+       b. GLM reviews iteration
+       c. If solved: done
+       d. Else: GLM generates next task
+    4. Save context to memory
+
+    Args:
+        glm_client: GLM client for task generation and review
+        executor: Claude executor
+        project: Current project
+        problem: The debugging problem description
+        memory: Optional memory for persistence
+    """
+    MAX_ITERATIONS = 10
+
+    # Initialize debug context
+    context = DebugContext(problem=problem)
+
+    console.print(Panel(
+        f"[bold]Debug Workflow Started[/bold]\n\n"
+        f"Problem: {problem}\n"
+        f"Max iterations: {MAX_ITERATIONS}",
+        border_style="cyan",
+    ))
+
+    # GLM generates initial task
+    console.print("\n[dim]GLM generating initial task...[/dim]")
+    task_info = await glm_client.generate_debug_task(
+        problem=problem,
+        iterations_summary=context.format_iterations_summary(),
+        hypothesis=context.hypothesis,
+    )
+    current_task = task_info.get("task", f"Investigate: {problem}")
+
+    for iteration_num in range(1, MAX_ITERATIONS + 1):
+        console.print(f"\n[bold cyan]═══ Debug Iteration {iteration_num}/{MAX_ITERATIONS} ═══[/bold cyan]")
+        console.print(f"[bold]Task:[/bold] {current_task}")
+
+        # Build prompt with FULL context for Claude
+        claude_prompt = DEBUG_CLAUDE_PROMPT.format(
+            context=context.format_for_claude(),
+            task=current_task,
+        )
+
+        # Claude executes
+        console.print()
+        with console.status("[bold blue]Claude investigating...[/bold blue]"):
+            result = await executor.execute(
+                task_description=claude_prompt,
+                timeout_tier="research",  # 300s for investigation
+            )
+
+        # Display Claude's output
+        if result.success and result.result:
+            console.print(Panel(
+                result.result,
+                title="Claude's Findings",
+                border_style="green" if result.success else "red",
+            ))
+        elif result.error:
+            console.print(f"[red]Error: {result.error}[/red]")
+
+        # Track iteration in context
+        context.add_iteration(
+            task=current_task,
+            output=result.result or result.error or "(no output)",
+            files_changed=result.file_changes,
+            duration_ms=result.duration_ms,
+        )
+
+        # Show duration
+        duration_sec = result.duration_ms / 1000
+        console.print(f"[dim]Duration: {duration_sec:.1f}s[/dim]")
+
+        # GLM reviews
+        console.print("\n[dim]GLM reviewing...[/dim]")
+        review = await glm_client.review_debug_iteration(
+            problem=problem,
+            task=current_task,
+            output=result.result or result.error or "",
+            files_changed=result.file_changes,
+            must_preserve=context.must_preserve,
+            previous_iterations=context.format_iterations_summary(),
+        )
+
+        # Track review
+        context.add_review(
+            approved=review.get("approved", False),
+            is_problem_solved=review.get("is_problem_solved", False),
+            feedback=review.get("feedback", ""),
+            next_task=review.get("next_task"),
+        )
+
+        # Display review result
+        if review.get("is_problem_solved"):
+            console.print(Panel(
+                f"[bold green]PROBLEM SOLVED![/bold green]\n\n{review.get('feedback', '')}",
+                border_style="green",
+            ))
+            break
+
+        elif review.get("approved"):
+            console.print(Panel(
+                f"[bold yellow]ITERATION APPROVED[/bold yellow]\n\n{review.get('feedback', '')}\n\n"
+                f"[bold]Next:[/bold] {review.get('next_task', 'Continue')}",
+                border_style="yellow",
+            ))
+        else:
+            console.print(Panel(
+                f"[bold red]NEEDS MORE WORK[/bold red]\n\n{review.get('feedback', '')}\n\n"
+                f"[bold]Next:[/bold] {review.get('next_task', 'Continue investigation')}",
+                border_style="red",
+            ))
+
+        # Get next task
+        next_task = review.get("next_task")
+        if next_task:
+            current_task = next_task
+        else:
+            # GLM generates new task
+            console.print("\n[dim]GLM generating next task...[/dim]")
+            task_info = await glm_client.generate_debug_task(
+                problem=problem,
+                iterations_summary=context.format_iterations_summary(),
+                hypothesis=context.hypothesis,
+            )
+            current_task = task_info.get("task", "Continue investigation")
+
+    # End of loop
+    if not context.is_complete:
+        console.print(f"\n[yellow]Max iterations ({MAX_ITERATIONS}) reached without solving problem.[/yellow]")
+
+    # Show summary
+    glm_stats = glm_client.get_usage_stats()
+    console.print(Panel(
+        f"[bold]Debug Session Summary[/bold]\n\n"
+        f"Problem: {problem}\n"
+        f"Iterations: {len(context.iterations)}\n"
+        f"Solved: {'Yes' if context.is_complete else 'No'}\n"
+        f"GLM tokens: {glm_stats.get('total_tokens', 0):,}",
+        border_style="blue",
+    ))
+
+    # Save to memory
+    if memory:
+        try:
+            memory.save(
+                key=f"debug-session-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+                value=str(context.to_dict()),
+                category="progress",
+                priority="high",
+            )
+        except Exception as e:
+            logger.warning(f"Failed to save debug context: {e}")
+
+    # Record in task history
+    add_task(
+        description=f"Debug: {problem[:80]}",
+        success=context.is_complete,
+        summary=f"{len(context.iterations)} iterations, solved={context.is_complete}",
+    )
+
+
 async def execute_task_with_claude(
     executor: ClaudeExecutor,
     task: dict,
@@ -415,7 +607,9 @@ def show_task_result(result: TaskResult, review: dict) -> None:
 
     if result.result:
         console.print(f"\n  [bold]Claude's summary:[/bold]")
-        console.print(f"    {result.result[:200]}")
+        # Show full summary, wrapped for readability
+        for line in result.result.split('\n'):
+            console.print(f"    {line}")
 
     # Show review result
     console.print()
@@ -437,9 +631,10 @@ def show_task_result(result: TaskResult, review: dict) -> None:
             )
         )
 
-    # Show cost
-    if result.cost_usd > 0:
-        console.print(f"  [dim]Cost: ${result.cost_usd:.4f} | Duration: {result.duration_ms}ms[/dim]")
+    # Show duration (Claude cost excluded - included in Max subscription)
+    if result.duration_ms > 0:
+        duration_sec = result.duration_ms / 1000
+        console.print(f"  [dim]Duration: {duration_sec:.1f}s[/dim]")
 
 
 async def process_user_request(
@@ -459,6 +654,44 @@ async def process_user_request(
         user_request: User's request text
         memory: Optional memory client for persistence
     """
+    # Log user request
+    session_logger.info(SessionLogEntry(
+        timestamp=now_iso(),
+        session_id=get_session_id(),
+        event_type="request",
+        project_name=context.project_name,
+        user_request=user_request[:500],  # Truncate for log size
+    ).to_json())
+
+    # Check if this is a debug request - use dedicated debug workflow
+    from vibe.glm.client import is_investigation_request
+
+    # Keywords that trigger debug workflow (more specific than investigation)
+    DEBUG_KEYWORDS = ["debug", "fix", "broken", "not working", "error", "bug", "crash", "fail", "why is", "what's wrong"]
+    is_debug = any(keyword in user_request.lower() for keyword in DEBUG_KEYWORDS)
+
+    if is_debug:
+        console.print("[dim]Debug request detected - using debug workflow[/dim]")
+
+        # Record request
+        add_request(user_request)
+
+        # Create executor for debug workflow
+        executor = ClaudeExecutor(
+            project_path=project.path,
+            timeout_tier="research",
+        )
+
+        # Run debug workflow
+        await execute_debug_workflow(
+            glm_client=glm_client,
+            executor=executor,
+            project=project,
+            problem=user_request,
+            memory=memory,
+        )
+        return
+
     # Load project context (task history comes from TaskHistory class)
     project_context = load_project_context(project)
 
@@ -718,15 +951,19 @@ async def process_user_request(
                 context.add_error(str(e))
                 break  # Don't retry on Claude errors
 
-    # Final summary
+    # Final summary with GLM usage
     context.transition_to(SessionState.IDLE)
+    glm_stats = glm_client.get_usage_stats()
+    glm_tokens = glm_stats.get("total_tokens", 0)
+    glm_cost = glm_tokens * 0.0000006  # Approximate GLM-4.7 cost per token
     console.print()
     console.print(
         Panel(
             f"[bold]Session Complete[/bold]\n\n"
             f"  Completed: [green]{completed}[/green]\n"
             f"  Failed: [red]{failed}[/red]\n"
-            f"  Total: {len(tasks)}",
+            f"  Total: {len(tasks)}\n"
+            f"  GLM tokens: {glm_tokens:,} (~${glm_cost:.4f})",
             border_style="blue",
         )
     )
@@ -1326,6 +1563,18 @@ def main(
         _memory = VibeMemory(project.name)
         _memory.start_session(f"Vibe session for {project.name}")
 
+        # Set logging context for session correlation
+        set_session_id(_memory.session_id)
+        set_project_name(project.name)
+
+        # Log session start
+        session_logger.info(SessionLogEntry(
+            timestamp=now_iso(),
+            session_id=_memory.session_id,
+            event_type="start",
+            project_name=project.name,
+        ).to_json())
+
         # Load existing context items count
         context_items = _memory.load_project_context(limit=100)
         memory_items = len(context_items)
@@ -1338,6 +1587,8 @@ def main(
     except MemoryConnectionError as e:
         console.print(f"[yellow]Warning: Memory not available: {e}[/yellow]")
         _memory = None
+        # Still set project name for logging even without memory
+        set_project_name(project.name)
 
     # Step 7: Initialize session context
     context = SessionContext(
@@ -1416,6 +1667,56 @@ def ping() -> None:
         console.print(f"[green]GLM API OK:[/green] {message}")
     else:
         console.print(f"[red]GLM API failed:[/red] {message}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def logs(
+    log_type: str = typer.Option("all", "--type", "-t", help="Log type: glm, claude, session, all"),
+    since: str = typer.Option(None, "--since", "-s", help="Time filter (ISO or relative: 1h, 30m, 2d)"),
+    session: str = typer.Option(None, "--session", help="Filter by session ID"),
+    tail: int = typer.Option(20, "--tail", "-n", help="Show last N entries"),
+    stats: bool = typer.Option(False, "--stats", help="Show statistics instead of entries"),
+) -> None:
+    """View and analyze Vibe logs."""
+    try:
+        # Query logs with filters
+        entries = query_logs(
+            log_type=log_type,
+            since=since,
+            session_id=session,
+            limit=tail if not stats else 1000,  # Get more for stats
+        )
+
+        if not entries:
+            console.print("[dim]No log entries found[/dim]")
+            return
+
+        if stats:
+            # Calculate and display statistics
+            stats_data = calculate_stats(entries)
+            console.print(format_stats(stats_data))
+        else:
+            # Display log entries (most recent last)
+            for entry in reversed(entries[:tail]):
+                line = format_entry_line(entry)
+                # Color based on source
+                source = entry.get("_source", "")
+                if source == "glm":
+                    console.print(f"[cyan]{line}[/cyan]")
+                elif source == "claude":
+                    if entry.get("success"):
+                        console.print(f"[green]{line}[/green]")
+                    else:
+                        console.print(f"[red]{line}[/red]")
+                else:
+                    console.print(f"[dim]{line}[/dim]")
+
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Error reading logs:[/red] {e}")
         raise typer.Exit(1)
 
 

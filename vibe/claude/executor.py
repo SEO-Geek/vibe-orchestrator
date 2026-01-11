@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import shutil
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
@@ -22,6 +23,12 @@ from vibe.exceptions import (
     ClaudeExecutionError,
     ClaudeNotFoundError,
     ClaudeTimeoutError,
+)
+from vibe.logging import (
+    claude_logger,
+    ClaudeLogEntry,
+    now_iso,
+    get_session_id,
 )
 from vibe.orchestrator.task_enforcer import TaskEnforcer, TaskType
 
@@ -307,6 +314,20 @@ class ClaudeExecutor:
         cmd = self._build_command(prompt)
         env = self._clean_environment()
 
+        # Prepare log entry for this execution
+        execution_id = str(uuid.uuid4())
+        log_entry = ClaudeLogEntry(
+            timestamp=now_iso(),
+            execution_id=execution_id,
+            session_id=get_session_id(),
+            prompt=prompt[:20000],  # Truncate for log size
+            files=files or [],
+            constraints=constraints or [],
+            timeout_tier=timeout_tier or "code",
+            allowed_tools=self.allowed_tools,
+            project_path=self.project_path,
+        )
+
         tool_calls: list[ToolCall] = []
         file_changes: list[str] = []
         result_text = ""
@@ -418,6 +439,25 @@ class ClaudeExecutor:
                 if stderr:
                     error_message += f": {stderr.decode()[:200]}"
 
+            # Update log entry with results
+            log_entry.result = result_text[:5000] if result_text else None
+            log_entry.success = not is_error
+            log_entry.error = error_message if is_error else None
+            log_entry.tool_calls = [
+                {"name": tc.name, "input": tc.input, "timestamp": tc.timestamp.isoformat()}
+                for tc in tool_calls
+            ]
+            log_entry.file_changes = file_changes
+            log_entry.duration_ms = duration_ms
+            log_entry.cost_usd = cost_usd
+            log_entry.num_turns = num_turns
+
+            # Log the execution
+            if is_error:
+                claude_logger.error(log_entry.to_json())
+            else:
+                claude_logger.info(log_entry.to_json())
+
             return TaskResult(
                 success=not is_error,
                 result=result_text if not is_error else None,
@@ -431,6 +471,10 @@ class ClaudeExecutor:
             )
 
         except ClaudeTimeoutError:
+            # Log timeout
+            log_entry.error = f"Timeout after {self.timeout}s"
+            log_entry.success = False
+            claude_logger.error(log_entry.to_json())
             raise
         except Exception as e:
             # Ensure subprocess is cleaned up on any exception
@@ -441,6 +485,12 @@ class ClaudeExecutor:
                 except Exception:
                     pass  # Best effort cleanup
             logger.exception("Claude execution failed")
+
+            # Log the exception
+            log_entry.error = str(e)[:500]
+            log_entry.success = False
+            claude_logger.error(log_entry.to_json())
+
             raise ClaudeExecutionError(
                 f"Execution failed: {str(e)}",
                 exit_code=-1,

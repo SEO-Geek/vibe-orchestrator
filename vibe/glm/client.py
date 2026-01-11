@@ -6,8 +6,11 @@ Uses OpenAI-compatible API with custom base URL.
 """
 
 import asyncio
+import json
 import logging
 import re
+import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, AsyncIterator
@@ -20,6 +23,15 @@ from vibe.glm.prompts import (
     SUPERVISOR_SYSTEM_PROMPT,
     REVIEWER_SYSTEM_PROMPT,
     TASK_DECOMPOSITION_PROMPT,
+    DEBUG_TASK_PROMPT,
+    DEBUG_REVIEW_PROMPT,
+)
+from vibe.logging import (
+    glm_logger,
+    GLMLogEntry,
+    now_iso,
+    get_session_id,
+    get_project_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -204,6 +216,7 @@ class GLMClient:
         messages: list[dict[str, str]],
         temperature: float | None = None,
         max_tokens: int | None = None,
+        method: str = "chat",  # For logging which method called this
     ) -> GLMResponse:
         """
         Send a chat request to GLM.
@@ -213,6 +226,7 @@ class GLMClient:
             messages: List of message dicts with 'role' and 'content'
             temperature: Override default temperature
             max_tokens: Override default max tokens
+            method: Method name for logging (internal use)
 
         Returns:
             GLMResponse with content and metadata
@@ -223,6 +237,23 @@ class GLMClient:
             GLMResponseError: If response is invalid
         """
         all_messages = [{"role": "system", "content": system_prompt}] + messages
+
+        # Prepare log entry
+        request_id = str(uuid.uuid4())
+        start_time = time.monotonic()
+        user_prompt = messages[-1].get("content", "") if messages else ""
+
+        log_entry = GLMLogEntry(
+            timestamp=now_iso(),
+            request_id=request_id,
+            session_id=get_session_id(),
+            method=method,
+            system_prompt=system_prompt[:2000],  # Truncate for log size
+            user_prompt=user_prompt[:5000],  # Truncate for log size
+            temperature=temperature or self.temperature,
+            max_tokens=max_tokens or self.max_tokens,
+            project_name=get_project_name(),
+        )
 
         try:
             response = await self._client.chat.completions.create(
@@ -246,6 +277,18 @@ class GLMClient:
 
             content = choice.message.content or ""
 
+            # Update log entry with response data
+            log_entry.response_content = content[:10000]  # Truncate for log size
+            log_entry.model = response.model or self.model
+            log_entry.finish_reason = choice.finish_reason or ""
+            log_entry.prompt_tokens = response.usage.prompt_tokens if response.usage else 0
+            log_entry.completion_tokens = response.usage.completion_tokens if response.usage else 0
+            log_entry.total_tokens = response.usage.total_tokens if response.usage else 0
+            log_entry.latency_ms = int((time.monotonic() - start_time) * 1000)
+
+            # Log the successful call
+            glm_logger.info(log_entry.to_json())
+
             return GLMResponse(
                 content=content,
                 model=response.model or self.model,
@@ -259,13 +302,26 @@ class GLMClient:
 
         except OpenAIError as e:
             error_msg = str(e)
+            log_entry.error = error_msg[:500]
+            log_entry.error_type = type(e).__name__
+            log_entry.latency_ms = int((time.monotonic() - start_time) * 1000)
+            glm_logger.error(log_entry.to_json())
+
             if "rate_limit" in error_msg.lower():
                 raise GLMRateLimitError(f"Rate limited: {error_msg}")
             elif "authentication" in error_msg.lower():
                 raise GLMConnectionError(f"Authentication failed: {error_msg}")
             else:
                 raise GLMConnectionError(f"API error: {error_msg}")
+        except GLMResponseError:
+            log_entry.latency_ms = int((time.monotonic() - start_time) * 1000)
+            glm_logger.error(log_entry.to_json())
+            raise
         except Exception as e:
+            log_entry.error = str(e)[:500]
+            log_entry.error_type = type(e).__name__
+            log_entry.latency_ms = int((time.monotonic() - start_time) * 1000)
+            glm_logger.error(log_entry.to_json())
             raise GLMConnectionError(f"Unexpected error: {str(e)}")
 
     async def chat_stream(
@@ -337,6 +393,7 @@ class GLMClient:
                     system_prompt=SUPERVISOR_SYSTEM_PROMPT,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.1,
+                    method="decompose_task",
                 ),
                 timeout=DEFAULT_TIMEOUT,
             )
@@ -414,6 +471,7 @@ Output JSON: {{"approved": true/false, "issues": [...], "feedback": "..."}}"""
             system_prompt=REVIEWER_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": review_prompt}],
             temperature=0.1,
+            method="review_changes",
         )
 
         try:
@@ -496,6 +554,7 @@ If you MUST ask (see rules above), ask ONE brief question about a DECISION the u
                         system_prompt=SUPERVISOR_SYSTEM_PROMPT,
                         messages=[{"role": "user", "content": prompt}],
                         temperature=0.2,
+                        method="ask_clarification",
                     ),
                     timeout=timeout,
                 )
@@ -553,6 +612,128 @@ If you MUST ask (see rules above), ask ONE brief question about a DECISION the u
         # Delegate to Claude (fail-safe)
         logger.warning(f"All GLM attempts failed ({last_error}), forcing delegation to Claude")
         return None
+
+    # =========================================================================
+    # DEBUG WORKFLOW METHODS
+    # =========================================================================
+
+    async def generate_debug_task(
+        self,
+        problem: str,
+        iterations_summary: str = "No previous attempts.",
+        hypothesis: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Generate a specific debugging task for Claude.
+
+        Args:
+            problem: The problem being debugged
+            iterations_summary: Summary of previous attempts
+            hypothesis: Current hypothesis (if any)
+
+        Returns:
+            Dict with task details: task, starting_points, what_to_look_for, success_criteria
+        """
+        prompt = DEBUG_TASK_PROMPT.format(
+            problem=problem,
+            iterations_summary=iterations_summary,
+            hypothesis=hypothesis or "None yet - this is the initial investigation",
+        )
+
+        try:
+            response = await self.chat(
+                system_prompt="You are GLM generating debugging tasks. Output valid JSON only.",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                method="generate_debug_task",
+            )
+            content = response.content
+
+            # Parse JSON from response
+            json_match = re.search(r'```(?:json)?\s*([\s\S]*?)```', content)
+            if json_match:
+                content = json_match.group(1).strip()
+
+            result = json.loads(content)
+            logger.debug(f"Generated debug task: {result.get('task', '')[:100]}")
+            return result
+
+        except Exception as e:
+            logger.warning(f"Failed to generate debug task: {e}")
+            # Fallback: generic investigation task
+            return {
+                "task": f"Investigate: {problem}. Explore the codebase, find relevant files, and identify the root cause.",
+                "starting_points": ["Search codebase for relevant keywords"],
+                "what_to_look_for": "Error messages, stack traces, related code",
+                "success_criteria": "Root cause identified with evidence",
+            }
+
+    async def review_debug_iteration(
+        self,
+        problem: str,
+        task: str,
+        output: str,
+        files_changed: list[str],
+        must_preserve: list[str],
+        previous_iterations: str = "",
+    ) -> dict[str, Any]:
+        """
+        Review Claude's debugging work and decide next steps.
+
+        Args:
+            problem: The original problem
+            task: What Claude was asked to do
+            output: Claude's output
+            files_changed: Files Claude modified
+            must_preserve: Features that must still work
+            previous_iterations: Summary of previous iterations
+
+        Returns:
+            Dict with: approved, is_problem_solved, feedback, next_task
+        """
+        prompt = DEBUG_REVIEW_PROMPT.format(
+            problem=problem,
+            task=task,
+            output=output[:5000],  # Truncate very long outputs
+            files_changed=", ".join(files_changed) if files_changed else "None",
+            must_preserve="\n".join(f"- {f}" for f in must_preserve) if must_preserve else "None specified",
+            previous_iterations=previous_iterations or "This is the first iteration.",
+        )
+
+        try:
+            response = await self.chat(
+                system_prompt="You are GLM reviewing Claude's debugging work. Output valid JSON only.",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                method="review_debug_iteration",
+            )
+            content = response.content
+
+            # Parse JSON from response
+            json_match = re.search(r'```(?:json)?\s*([\s\S]*?)```', content)
+            if json_match:
+                content = json_match.group(1).strip()
+
+            result = json.loads(content)
+
+            # Ensure required fields
+            result.setdefault("approved", False)
+            result.setdefault("is_problem_solved", False)
+            result.setdefault("feedback", "No feedback provided")
+            result.setdefault("next_task", None)
+
+            logger.debug(f"Debug review: approved={result['approved']}, solved={result['is_problem_solved']}")
+            return result
+
+        except Exception as e:
+            logger.warning(f"Failed to review debug iteration: {e}")
+            # Fallback: request more information
+            return {
+                "approved": False,
+                "is_problem_solved": False,
+                "feedback": f"GLM review failed ({e}). Please provide more details about what you found.",
+                "next_task": "Continue investigation and provide detailed findings.",
+            }
 
     def get_usage_stats(self) -> dict[str, Any]:
         """Get usage statistics."""
