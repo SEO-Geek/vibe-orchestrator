@@ -131,6 +131,7 @@ Unified persistence layer - single source of truth:
 
 ## CLI Commands
 
+### Interactive Commands
 | Command | Description |
 |---------|-------------|
 | `/help` | Show available commands |
@@ -144,6 +145,16 @@ Unified persistence layer - single source of truth:
 | `/convention` | Manage global conventions |
 | `/debug start` | Start debug session |
 | `/quit` | Exit gracefully |
+
+### Subcommands
+| Command | Description |
+|---------|-------------|
+| `vibe list` | List all registered projects |
+| `vibe add <name> <path>` | Add a new project |
+| `vibe remove <name>` | Remove a project |
+| `vibe ping` | Test GLM API connectivity |
+| `vibe restore` | List/recover crashed sessions |
+| `vibe logs` | View and analyze logs |
 
 ## Configuration
 

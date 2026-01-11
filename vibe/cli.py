@@ -84,6 +84,7 @@ _repository: VibeRepository | None = None  # New unified persistence
 _perplexity: PerplexityClient | None = None
 _github: GitHubOps | None = None
 _debug_session: DebugSession | None = None
+_current_repo_session_id: str | None = None  # Track current session for signal handler
 
 
 def handle_shutdown(signum: int, frame: types.FrameType | None) -> NoReturn:
@@ -95,11 +96,19 @@ def handle_shutdown(signum: int, frame: types.FrameType | None) -> NoReturn:
             _memory.end_session("Session ended via signal")
         except Exception:
             pass  # Best effort on shutdown
-    # Also end new persistence session
+    # End new persistence session with summary
+    if _repository and _current_repo_session_id:
+        try:
+            _repository.end_session(
+                _current_repo_session_id,
+                summary="Session ended via signal (SIGINT/SIGTERM)",
+                status=SessionStatus.COMPLETED,
+            )
+        except Exception:
+            pass
+    # Close repository connection
     if _repository:
         try:
-            # Get current session from SessionContext would be ideal,
-            # but we don't have access here. Let's just close the repository.
             _repository.close()
         except Exception:
             pass
@@ -778,6 +787,15 @@ async def process_user_request(
             console.print(f"[red]Error decomposing task: {e}[/red]")
             return
 
+    # Persist GLM decomposition response
+    if tasks:
+        import json as json_module
+        decomposition_content = json_module.dumps([
+            {"description": t.get("description", ""), "files": t.get("files", []), "constraints": t.get("constraints", [])}
+            for t in tasks
+        ])
+        persist_message(context.repo_session_id, MessageRole.GLM, decomposition_content, MessageType.DECOMPOSITION)
+
     # Show task plan
     console.print(
         Panel.fit(
@@ -850,6 +868,22 @@ async def process_user_request(
     failed = 0
     all_file_changes: list[str] = []  # Track all modified files
     all_summaries: list[str] = []  # Track all task summaries
+    task_ids: dict[int, str] = {}  # Map task index to persistence task ID
+
+    # Create tasks in persistence before execution
+    if _repository and context.repo_session_id:
+        for idx, t in enumerate(tasks, 1):
+            try:
+                repo_task = _repository.create_task(
+                    session_id=context.repo_session_id,
+                    description=t.get("description", ""),
+                    files=t.get("files", []),
+                    constraints=t.get("constraints", []),
+                    original_request=user_request[:200] if user_request else None,
+                )
+                task_ids[idx] = repo_task.id
+            except Exception as e:
+                logger.debug(f"Failed to create task in persistence: {e}")
 
     MAX_RETRIES = 3  # Maximum retry attempts per task
 
@@ -929,6 +963,16 @@ async def process_user_request(
                         "feedback": f"Auto-approved due to review error: {str(review_error)[:100]}",
                     }
 
+                # Persist GLM review response to new persistence
+                import json as json_module
+                review_content = json_module.dumps({
+                    "task": task.get("description", "")[:100],
+                    "approved": review.get("approved", False),
+                    "issues": review.get("issues", []),
+                    "feedback": review.get("feedback", "")[:500],
+                })
+                persist_message(context.repo_session_id, MessageRole.GLM, review_content, MessageType.REVIEW)
+
                 # If tool verification failed, add that to review issues
                 if not tool_verification["passed"]:
                     existing_issues = review.get("issues", [])
@@ -960,6 +1004,14 @@ async def process_user_request(
                             summary=result.result or "",
                             files_changed=result.file_changes,
                         )
+                    # Update task status in new persistence
+                    if _repository and i in task_ids:
+                        try:
+                            _repository.update_task_status(
+                                task_ids[i], TaskStatus.COMPLETED, reason="Approved by GLM review"
+                            )
+                        except Exception as e:
+                            logger.debug(f"Failed to update task status: {e}")
                 else:
                     # Task rejected - prepare for retry with meaningful default feedback
                     feedback_text = review.get("feedback", "")
@@ -990,6 +1042,15 @@ async def process_user_request(
                                 success=False,
                                 summary=f"Rejected after {MAX_RETRIES} attempts: {previous_feedback}",
                             )
+                        # Update task status in new persistence
+                        if _repository and i in task_ids:
+                            try:
+                                _repository.update_task_status(
+                                    task_ids[i], TaskStatus.FAILED,
+                                    reason=f"Rejected after {MAX_RETRIES} attempts"
+                                )
+                            except Exception as e:
+                                logger.debug(f"Failed to update task status: {e}")
 
                 context.transition_to(SessionState.EXECUTING)
 
@@ -1003,6 +1064,15 @@ async def process_user_request(
                     success=False,
                     summary=f"Error: {str(e)[:200]}",
                 )
+                # Update task status in new persistence
+                if _repository and i in task_ids:
+                    try:
+                        _repository.update_task_status(
+                            task_ids[i], TaskStatus.FAILED,
+                            reason=f"Claude error: {str(e)[:100]}"
+                        )
+                    except Exception:
+                        pass  # Non-critical
                 break  # Don't retry on Claude errors
 
     # Final summary with GLM usage
@@ -1140,6 +1210,14 @@ def conversation_loop(
             if user_input.lower().strip() in ("exit", "quit", "q"):
                 if memory and memory.session_id:
                     memory.end_session("Session ended by user")
+                # End new persistence session with summary
+                if _repository and context.repo_session_id:
+                    try:
+                        stats = context.get_stats()
+                        summary = f"Completed {stats['completed_tasks']} tasks, {stats['error_count']} errors, duration {stats['duration_seconds']:.0f}s"
+                        _repository.end_session(context.repo_session_id, summary=summary)
+                    except Exception:
+                        pass
                 console.print("[yellow]Goodbye![/yellow]")
                 break
 
@@ -1150,6 +1228,14 @@ def conversation_loop(
                     # End memory session before exiting
                     if memory and memory.session_id:
                         memory.end_session("Session ended by user")
+                    # End new persistence session with summary
+                    if _repository and context.repo_session_id:
+                        try:
+                            stats = context.get_stats()
+                            summary = f"Completed {stats['completed_tasks']} tasks, {stats['error_count']} errors, duration {stats['duration_seconds']:.0f}s"
+                            _repository.end_session(context.repo_session_id, summary=summary)
+                        except Exception:
+                            pass
                     console.print("[yellow]Goodbye![/yellow]")
                     break
                 elif cmd == "/help":
@@ -1727,8 +1813,10 @@ def main(
                 console.print(f"  [dim]- Session {orphan.id[:8]}... started {orphan.started_at}[/dim]")
 
         # Start new session in persistence layer
+        global _current_repo_session_id
         repo_session = _repository.start_session(repo_project.id)
         repo_session_id = repo_session.id
+        _current_repo_session_id = repo_session_id  # Track for signal handler
         console.print(f"  [dim]Persistence: session {repo_session_id[:8]}...[/dim]")
 
     except Exception as e:
@@ -1831,6 +1919,184 @@ def list_projects() -> None:
     except ConfigError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         raise typer.Exit(1)
+
+
+@app.command()
+def restore(
+    session_id: str = typer.Argument(None, help="Session ID to restore (or 'list' to see all)"),
+    show_messages: bool = typer.Option(False, "--messages", "-m", help="Show conversation messages"),
+    show_tasks: bool = typer.Option(False, "--tasks", "-t", help="Show task details"),
+) -> None:
+    """Recover from a crashed session.
+
+    Shows orphaned/crashed sessions and their context for recovery.
+
+    Examples:
+        vibe restore              # List all orphaned sessions
+        vibe restore list         # Same as above
+        vibe restore abc123       # Show details for session abc123
+        vibe restore abc123 -m    # Show with conversation messages
+        vibe restore abc123 -t    # Show with task details
+    """
+    from rich.table import Table
+    from rich.panel import Panel
+
+    # Initialize repository
+    try:
+        repo = VibeRepository()
+        repo.initialize()
+    except Exception as e:
+        console.print(f"[red]Failed to initialize persistence:[/red] {e}")
+        raise typer.Exit(1)
+
+    # List mode - show all orphaned sessions
+    if session_id is None or session_id.lower() == "list":
+        orphans = repo.get_orphaned_sessions()
+
+        if not orphans:
+            console.print("[green]No crashed/orphaned sessions found.[/green]")
+            console.print("[dim]All sessions ended gracefully.[/dim]")
+            return
+
+        console.print(f"\n[bold yellow]Found {len(orphans)} crashed session(s):[/bold yellow]\n")
+
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Session ID", style="cyan")
+        table.add_column("Project", style="green")
+        table.add_column("Started", style="dim")
+        table.add_column("Last Heartbeat", style="dim")
+        table.add_column("Tasks", style="yellow")
+
+        for orphan in orphans:
+            session_short = orphan.get("session_id", "")[:12]
+            project = orphan.get("project_name", "unknown")
+            started = orphan.get("started_at", "")[:16] if orphan.get("started_at") else "-"
+            heartbeat = orphan.get("last_heartbeat", "")[:16] if orphan.get("last_heartbeat") else "-"
+            tasks_completed = orphan.get("tasks_completed", 0)
+            tasks_failed = orphan.get("tasks_failed", 0)
+            task_info = f"{tasks_completed} done, {tasks_failed} failed"
+
+            table.add_row(session_short, project, started, heartbeat, task_info)
+
+        console.print(table)
+        console.print("\n[dim]Use 'vibe restore <session_id>' to see full context[/dim]")
+        console.print("[dim]Use 'vibe restore <session_id> -m -t' for messages and tasks[/dim]")
+        return
+
+    # Detail mode - show specific session context
+    # Try to find session by partial ID
+    full_session_id = session_id
+    if len(session_id) < 36:
+        # Search for matching session
+        orphans = repo.get_orphaned_sessions()
+        matches = [o for o in orphans if o.get("session_id", "").startswith(session_id)]
+        if len(matches) == 0:
+            # Also check all sessions
+            all_sessions = repo.list_sessions(limit=100)
+            matches = [{"session_id": s.id} for s in all_sessions if s.id.startswith(session_id)]
+
+        if len(matches) == 0:
+            console.print(f"[red]No session found starting with '{session_id}'[/red]")
+            raise typer.Exit(1)
+        elif len(matches) > 1:
+            console.print(f"[yellow]Multiple sessions match '{session_id}':[/yellow]")
+            for m in matches[:5]:
+                console.print(f"  {m.get('session_id', '')[:12]}")
+            raise typer.Exit(1)
+        else:
+            full_session_id = matches[0].get("session_id", session_id)
+
+    # Get full recovery context
+    context = repo.get_session_recovery_context(full_session_id)
+
+    if "error" in context:
+        console.print(f"[red]{context['error']}[/red]")
+        raise typer.Exit(1)
+
+    session = context["session"]
+    project = context["project"]
+    summary = context["summary"]
+    tasks_info = context["tasks"]
+
+    # Display session summary
+    console.print(Panel(
+        f"[bold]Session:[/bold] {session.id[:12]}...\n"
+        f"[bold]Project:[/bold] {project.name if project else 'unknown'}\n"
+        f"[bold]Status:[/bold] {session.status}\n"
+        f"[bold]Started:[/bold] {session.started_at}\n"
+        f"[bold]Last Heartbeat:[/bold] {session.last_heartbeat_at or 'never'}\n"
+        f"\n"
+        f"[bold]Messages:[/bold] {summary['total_messages']} ({summary['user_messages']} from user)\n"
+        f"[bold]Tasks:[/bold] {summary['pending_tasks']} pending, {summary['completed_tasks']} completed, {summary['failed_tasks']} failed",
+        title="[bold cyan]Recovery Context[/bold cyan]",
+        border_style="cyan",
+    ))
+
+    # Show last user request
+    if context["last_request"]:
+        console.print(Panel(
+            context["last_request"][:500] + ("..." if len(context["last_request"]) > 500 else ""),
+            title="[bold yellow]Last User Request[/bold yellow]",
+            border_style="yellow",
+        ))
+
+    # Show pending tasks
+    if tasks_info["pending"]:
+        console.print("\n[bold red]Pending/In-Progress Tasks:[/bold red]")
+        for i, task in enumerate(tasks_info["pending"], 1):
+            status_color = "yellow" if task.status == TaskStatus.PENDING else "blue"
+            console.print(f"  [{status_color}]{i}. [{task.status.value}][/{status_color}] {task.description[:80]}")
+
+    # Show messages if requested
+    if show_messages:
+        messages = context["messages"]
+        if messages:
+            console.print("\n[bold]Conversation History:[/bold]")
+            for msg in messages[-20:]:  # Last 20 messages
+                role_color = {
+                    "user": "green",
+                    "glm": "cyan",
+                    "system": "dim",
+                    "assistant": "blue",
+                }.get(msg.role.value, "white")
+                content_preview = msg.content[:100].replace("\n", " ")
+                console.print(f"  [{role_color}][{msg.role.value}][/{role_color}] {content_preview}...")
+
+    # Show task details if requested
+    if show_tasks:
+        all_tasks = tasks_info["pending"] + tasks_info["completed"] + tasks_info["failed"]
+        if all_tasks:
+            console.print("\n[bold]All Tasks:[/bold]")
+            table = Table(show_header=True, header_style="bold")
+            table.add_column("#", style="dim", width=3)
+            table.add_column("Status", width=10)
+            table.add_column("Description")
+            table.add_column("Created", style="dim", width=16)
+
+            for i, task in enumerate(all_tasks, 1):
+                status_style = {
+                    "completed": "green",
+                    "failed": "red",
+                    "pending": "yellow",
+                    "queued": "yellow",
+                    "executing": "blue",
+                    "in_progress": "blue",
+                }.get(task.status.value, "white")
+
+                table.add_row(
+                    str(i),
+                    f"[{status_style}]{task.status.value}[/{status_style}]",
+                    task.description[:60],
+                    task.created_at[:16] if task.created_at else "-",
+                )
+
+            console.print(table)
+
+    # Offer recovery action
+    console.print("\n[bold]Recovery Options:[/bold]")
+    console.print(f"  1. Start vibe with this project: [cyan]vibe {project.name if project else ''}[/cyan]")
+    console.print("     (Orphaned session will be auto-marked as recovered)")
+    console.print("  2. The pending tasks above can be re-requested in the new session")
 
 
 @app.command()

@@ -57,6 +57,51 @@ All notable changes to Vibe Orchestrator will be documented in this file.
 - `vibe/cli.py` - Repository initialization, message persistence, heartbeat, crash detection
 - `vibe/state.py` - Added `repo_session_id` field to SessionContext
 
+#### Crash Recovery Command (2026-01-11)
+
+**New Command**: `vibe restore`
+
+Allows users to recover from crashed sessions by viewing orphaned session context.
+
+```bash
+vibe restore              # List all orphaned sessions
+vibe restore list         # Same as above
+vibe restore abc123       # Show details for session abc123
+vibe restore abc123 -m    # Show with conversation messages
+vibe restore abc123 -t    # Show with task details
+```
+
+**Features**:
+- Lists orphaned sessions with project, timestamps, and task counts
+- Partial session ID matching (just first few characters)
+- Shows last user request, pending tasks, and recovery options
+- Full conversation history with `-m` flag
+- Task details table with `-t` flag
+
+#### Full Persistence Migration (2026-01-11)
+
+**Completed migration of all critical data to new persistence layer**:
+
+1. **GLM Responses**:
+   - Task decomposition responses saved with `MessageType.DECOMPOSITION`
+   - Review responses saved with `MessageType.REVIEW`
+   - Full JSON content preserved for analysis
+
+2. **Task Lifecycle**:
+   - Tasks created in persistence before execution
+   - Status updated to COMPLETED/FAILED after each task
+   - Failure reasons tracked for debugging
+
+3. **Session Summary**:
+   - Sessions properly ended on `/quit`, `exit`, or signal
+   - Summary includes task counts, error counts, duration
+   - Signal handler (SIGINT/SIGTERM) ends sessions gracefully
+
+**Files Modified**:
+- `vibe/persistence/repository.py` - Added `get_session_recovery_context()`, `recover_session()`, `get_project_by_id()`
+- `vibe/persistence/models.py` - Added `SessionStatus.RECOVERED`
+- `vibe/cli.py` - Added `restore` command, GLM response persistence, task persistence, session summary on exit
+
 ### Fixed
 
 #### Rock-Solid Clarification System (2026-01-11)

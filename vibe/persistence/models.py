@@ -30,6 +30,7 @@ class SessionStatus(str, Enum):
     INITIALIZING = "initializing"
     ACTIVE = "active"
     CRASHED = "crashed"
+    RECOVERED = "recovered"  # Crashed session that was recovered
     COMPLETED = "completed"
     ERROR = "error"
 

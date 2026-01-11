@@ -427,6 +427,113 @@ class VibeRepository:
         columns = [desc[0] for desc in cursor.description]
         return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
+    def get_session_recovery_context(self, session_id: str) -> dict[str, Any]:
+        """
+        Get full recovery context for a crashed/orphaned session.
+
+        Returns all messages, tasks, and relevant state for resumption.
+        """
+        session = self.get_session(session_id)
+        if not session:
+            return {"error": f"Session {session_id} not found"}
+
+        # Get all messages from the session
+        messages = self.get_messages(session_id, limit=500)
+
+        # Get all tasks (pending, completed, failed)
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """SELECT * FROM tasks WHERE session_id = ?
+               ORDER BY sequence_num ASC""",
+            (session_id,)
+        )
+        tasks = [Task.from_row(row) for row in cursor.fetchall()]
+
+        # Get pending tasks specifically
+        pending_tasks = [t for t in tasks if t.status in (TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.EXECUTING)]
+        completed_tasks = [t for t in tasks if t.status == TaskStatus.COMPLETED]
+        failed_tasks = [t for t in tasks if t.status == TaskStatus.FAILED]
+
+        # Get the last user request
+        user_messages = [m for m in messages if m.role == MessageRole.USER]
+        last_request = user_messages[-1].content if user_messages else None
+
+        # Get project info
+        project = self.get_project_by_id(session.project_id)
+
+        return {
+            "session": session,
+            "project": project,
+            "messages": messages,
+            "last_request": last_request,
+            "tasks": {
+                "pending": pending_tasks,
+                "completed": completed_tasks,
+                "failed": failed_tasks,
+                "total": len(tasks),
+            },
+            "summary": {
+                "total_messages": len(messages),
+                "user_messages": len(user_messages),
+                "pending_tasks": len(pending_tasks),
+                "completed_tasks": len(completed_tasks),
+                "failed_tasks": len(failed_tasks),
+                "started_at": session.started_at,
+                "last_heartbeat": session.last_heartbeat_at,
+            },
+        }
+
+    def recover_session(
+        self,
+        session_id: str,
+        new_session_id: str | None = None,
+    ) -> Session | None:
+        """
+        Mark a crashed session as recovered and optionally link to a new session.
+
+        Args:
+            session_id: The crashed session to recover from
+            new_session_id: Optional new session that is continuing the work
+
+        Returns:
+            The updated (marked as recovered) session, or None if not found
+        """
+        cursor = self.conn.cursor()
+
+        # Update the crashed session to mark it as recovered
+        cursor.execute(
+            """UPDATE sessions
+               SET status = 'recovered',
+                   summary = COALESCE(summary, '') || ' [Recovered]',
+                   ended_at = ?
+               WHERE id = ?""",
+            (now_iso(), session_id)
+        )
+
+        if cursor.rowcount == 0:
+            return None
+
+        logger.info(f"Marked session {session_id[:8]} as recovered")
+
+        # If we have a new session, record the link
+        if new_session_id:
+            # Add a system message linking the sessions
+            self.add_message(
+                new_session_id,
+                MessageRole.SYSTEM,
+                f"Recovered from crashed session {session_id[:8]}",
+                MessageType.CHAT,
+            )
+
+        return self.get_session(session_id)
+
+    def get_project_by_id(self, project_id: str) -> Project | None:
+        """Get project by ID."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM projects WHERE id = ?", (project_id,))
+        row = cursor.fetchone()
+        return Project.from_row(row) if row else None
+
     # =========================================================================
     # MESSAGE OPERATIONS
     # =========================================================================
