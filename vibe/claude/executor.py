@@ -3,6 +3,9 @@ Claude Code Executor
 
 Executes tasks via Claude Code CLI with proper subprocess management,
 timeout handling, streaming output parsing, and tool call tracking.
+
+Includes tool enforcement to ensure Claude uses appropriate tools
+(e.g., Playwright for browser testing, not curl).
 """
 
 import asyncio
@@ -20,6 +23,7 @@ from vibe.exceptions import (
     ClaudeNotFoundError,
     ClaudeTimeoutError,
 )
+from vibe.orchestrator.task_enforcer import TaskEnforcer, TaskType
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +85,7 @@ class ClaudeExecutor:
         timeout_tier: str = "code",
         allowed_tools: list[str] | None = None,
         permission_mode: str = "acceptEdits",
+        global_conventions: list[str] | None = None,
     ):
         """
         Initialize Claude executor.
@@ -90,6 +95,7 @@ class ClaudeExecutor:
             timeout_tier: One of 'quick', 'code', 'debug', 'research'
             allowed_tools: List of allowed tool names (default: standard set)
             permission_mode: Permission mode for Claude (default: acceptEdits)
+            global_conventions: List of global conventions to enforce
         """
         self.project_path = project_path
         self.timeout = TIMEOUT_TIERS.get(timeout_tier, TIMEOUT_TIERS["code"])
@@ -103,6 +109,9 @@ class ClaudeExecutor:
         ]
         self.permission_mode = permission_mode
 
+        # Task enforcer for tool requirements
+        self.task_enforcer = TaskEnforcer(global_conventions=global_conventions)
+
         # Verify Claude CLI is installed
         if not shutil.which("claude"):
             raise ClaudeNotFoundError("Claude Code CLI not found in PATH")
@@ -112,6 +121,7 @@ class ClaudeExecutor:
         task_description: str,
         files: list[str] | None = None,
         constraints: list[str] | None = None,
+        enforce_tools: bool = True,
     ) -> str:
         """
         Build the prompt for Claude.
@@ -120,6 +130,7 @@ class ClaudeExecutor:
             task_description: Main task description
             files: Files to work with
             constraints: Constraints to follow
+            enforce_tools: Whether to include tool enforcement section
 
         Returns:
             Formatted prompt string
@@ -147,10 +158,34 @@ class ClaudeExecutor:
             parts.append("- Follow existing code patterns")
             parts.append("- Do NOT make changes outside the task scope")
 
+        # Add tool enforcement section
+        if enforce_tools:
+            enforcement = self.task_enforcer.generate_enforcement_prompt(task_description)
+            parts.append(enforcement)
+
         parts.append("")
         parts.append("When complete, summarize what you did in 1-2 sentences.")
 
         return "\n".join(parts)
+
+    def verify_tool_usage(
+        self,
+        task_description: str,
+        tool_calls: list[ToolCall],
+    ) -> dict[str, Any]:
+        """
+        Verify that Claude used the required tools for the task.
+
+        Args:
+            task_description: The task that was executed
+            tool_calls: List of tool calls made by Claude
+
+        Returns:
+            Verification result with passed, missing_tools, violations
+        """
+        # Convert ToolCall objects to dicts for the enforcer
+        calls = [{"name": tc.name, "input": tc.input} for tc in tool_calls]
+        return self.task_enforcer.verify_tool_usage(task_description, calls)
 
     def _build_command(self, prompt: str) -> list[str]:
         """Build the Claude CLI command."""

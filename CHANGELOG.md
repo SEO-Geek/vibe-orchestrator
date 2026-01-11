@@ -8,6 +8,19 @@ All notable changes to Vibe Orchestrator will be documented in this file.
 
 #### Phase 8: Polish (2026-01-11)
 
+- **Task Enforcer System**:
+  - Automatic task type detection from description
+  - Required/preferred/forbidden tools per task type
+  - Completion checklists generated for each task type
+  - Tool usage verification after Claude execution
+  - Prevents Claude from using curl for browser testing
+
+- **Global Conventions**:
+  - Cross-project "we always do X" rules stored in memory-keeper
+  - `/convention` command to add/list/delete conventions
+  - Loaded automatically for every Claude task
+  - Enforced alongside task-specific tool requirements
+
 - **Perplexity Research Integration**:
   - PerplexityClient using OpenAI-compatible API
   - `/research` command for technical documentation lookup
@@ -21,11 +34,17 @@ All notable changes to Vibe Orchestrator will be documented in this file.
   - Branch creation and repo sync
   - `/github`, `/issues`, `/prs` commands in CLI
 
+- **MCP Server Documentation**:
+  - Recommended MCP servers for vibe coding (docs/MCP_SERVERS.md)
+  - Browser automation, code analysis, Docker, database tools
+  - Tool requirements mapped to task types
+
 - **CLI Commands**:
   - `/research <query>` - Research via Perplexity API
   - `/github` - Show GitHub repo info
   - `/issues` - List open issues
   - `/prs` - List open pull requests
+  - `/convention` - Manage global conventions
 
 - **New Exceptions**:
   - `ResearchError` for Perplexity API errors

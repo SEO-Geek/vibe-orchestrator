@@ -286,7 +286,7 @@ async def execute_task_with_claude(
     task: dict,
     task_num: int,
     total_tasks: int,
-) -> TaskResult:
+) -> tuple[TaskResult, dict]:
     """
     Execute a single task with Claude, showing progress.
 
@@ -297,7 +297,7 @@ async def execute_task_with_claude(
         total_tasks: Total number of tasks
 
     Returns:
-        TaskResult from Claude
+        Tuple of (TaskResult, tool_verification_result)
     """
     description = task.get("description", "No description")
     files = task.get("files")
@@ -329,7 +329,21 @@ async def execute_task_with_claude(
             on_tool_call=on_tool_call,
         )
 
-    return result
+    # Verify tool usage
+    tool_verification = executor.verify_tool_usage(description, result.tool_calls)
+
+    # Show tool verification result if there are issues
+    if not tool_verification["passed"]:
+        console.print()
+        console.print(
+            Panel(
+                f"[bold yellow]Tool Usage Warning[/bold yellow]\n\n"
+                f"{tool_verification['feedback']}",
+                border_style="yellow",
+            )
+        )
+
+    return result, tool_verification
 
 
 async def review_with_glm(
@@ -494,11 +508,22 @@ async def process_user_request(
         except Exception as e:
             console.print(f"  [dim]Warning: Could not create checkpoint: {e}[/dim]")
 
-    # Initialize Claude executor
+    # Load global conventions from memory
+    global_conventions = []
+    if memory:
+        try:
+            global_conventions = memory.load_conventions()
+            if global_conventions:
+                console.print(f"  [dim]Loaded {len(global_conventions)} global conventions[/dim]")
+        except Exception:
+            pass  # Non-critical
+
+    # Initialize Claude executor with conventions
     try:
         executor = ClaudeExecutor(
             project_path=project.path,
             timeout_tier="code",
+            global_conventions=global_conventions,
         )
     except ClaudeError as e:
         console.print(f"[red]Claude error: {e}[/red]")
@@ -514,7 +539,7 @@ async def process_user_request(
     for i, task in enumerate(tasks, 1):
         try:
             # Execute with Claude
-            result = await execute_task_with_claude(
+            result, tool_verification = await execute_task_with_claude(
                 executor=executor,
                 task=task,
                 task_num=i,
@@ -534,6 +559,12 @@ async def process_user_request(
                     )
                 continue
 
+            # Check if tool verification failed (missing required tools)
+            if not tool_verification["passed"] and tool_verification.get("missing_required"):
+                console.print(
+                    f"[yellow]Warning: Task may be incomplete - missing required tools[/yellow]"
+                )
+
             # Review with GLM
             context.transition_to(SessionState.REVIEWING)
             review = await review_with_glm(
@@ -542,6 +573,12 @@ async def process_user_request(
                 result=result,
                 project_path=project.path,
             )
+
+            # If tool verification failed, add that to review issues
+            if not tool_verification["passed"]:
+                existing_issues = review.get("issues", [])
+                existing_issues.append(f"Tool verification: {tool_verification['feedback']}")
+                review["issues"] = existing_issues
 
             # Show result
             show_task_result(result, review)
@@ -662,16 +699,17 @@ def conversation_loop(
                     break
                 elif cmd == "/help":
                     console.print("\n[bold]Commands:[/bold]")
-                    console.print("  /quit      - Exit Vibe")
-                    console.print("  /status    - Show session status")
-                    console.print("  /usage     - Show GLM usage stats")
-                    console.print("  /memory    - Show memory stats")
-                    console.print("  /research  - Research a topic via Perplexity")
-                    console.print("  /github    - Show GitHub repo info")
-                    console.print("  /issues    - List GitHub issues")
-                    console.print("  /prs       - List GitHub pull requests")
-                    console.print("  /project   - Switch project")
-                    console.print("  /help      - Show this help")
+                    console.print("  /quit       - Exit Vibe")
+                    console.print("  /status     - Show session status")
+                    console.print("  /usage      - Show GLM usage stats")
+                    console.print("  /memory     - Show memory stats")
+                    console.print("  /convention - Manage global conventions")
+                    console.print("  /research   - Research a topic via Perplexity")
+                    console.print("  /github     - Show GitHub repo info")
+                    console.print("  /issues     - List GitHub issues")
+                    console.print("  /prs        - List GitHub pull requests")
+                    console.print("  /project    - Switch project")
+                    console.print("  /help       - Show this help")
                     console.print()
                 elif cmd == "/status":
                     stats = context.get_stats()
@@ -703,6 +741,53 @@ def conversation_loop(
                         console.print()
                     else:
                         console.print("[yellow]Memory not available[/yellow]")
+                elif cmd.startswith("/convention"):
+                    # /convention - Manage global conventions
+                    if not memory:
+                        console.print("[yellow]Memory not available[/yellow]")
+                        continue
+
+                    parts = user_input.split(maxsplit=2)
+                    subcommand = parts[1] if len(parts) > 1 else "list"
+
+                    if subcommand == "list":
+                        conventions = memory.list_conventions()
+                        if conventions:
+                            console.print(f"\n[bold]Global Conventions ({len(conventions)}):[/bold]")
+                            for conv in conventions:
+                                console.print(f"\n  [cyan]{conv['key']}[/cyan] ({conv['applies_to']})")
+                                console.print(f"    {conv['convention']}")
+                            console.print()
+                        else:
+                            console.print("[dim]No conventions defined yet.[/dim]")
+                            console.print("[dim]Use: /convention add <key> <convention text>[/dim]")
+                    elif subcommand == "add":
+                        if len(parts) < 3:
+                            console.print("[red]Usage: /convention add <key> <convention text>[/red]")
+                            continue
+                        rest = parts[2]
+                        # Split key from convention text
+                        key_parts = rest.split(maxsplit=1)
+                        if len(key_parts) < 2:
+                            console.print("[red]Usage: /convention add <key> <convention text>[/red]")
+                            continue
+                        key, convention = key_parts
+                        memory.save_convention(key, convention)
+                        console.print(f"[green]Saved convention: {key}[/green]")
+                    elif subcommand == "delete":
+                        if len(parts) < 3:
+                            console.print("[red]Usage: /convention delete <key>[/red]")
+                            continue
+                        key = parts[2]
+                        if memory.delete_convention(key):
+                            console.print(f"[green]Deleted convention: {key}[/green]")
+                        else:
+                            console.print(f"[yellow]Convention not found: {key}[/yellow]")
+                    else:
+                        console.print("[dim]Usage:[/dim]")
+                        console.print("  /convention list               - List all conventions")
+                        console.print("  /convention add <key> <text>   - Add a convention")
+                        console.print("  /convention delete <key>       - Delete a convention")
                 elif cmd.startswith("/research"):
                     # /research <query> - Research a topic via Perplexity
                     if not _perplexity or not _perplexity.is_available:

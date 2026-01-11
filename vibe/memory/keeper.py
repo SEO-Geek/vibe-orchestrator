@@ -26,6 +26,9 @@ from vibe.exceptions import MemoryConnectionError, MemoryNotFoundError
 
 logger = logging.getLogger(__name__)
 
+# Global channel for cross-project conventions
+GLOBAL_CHANNEL = "_vibe_global"
+
 
 @dataclass
 class ContextItem:
@@ -647,3 +650,168 @@ class VibeMemory:
             "checkpoint_count": checkpoint_count,
             "current_session": self.session_id[:8] if self.session_id else None,
         }
+
+    # Global Conventions Methods (cross-project)
+
+    def save_convention(
+        self,
+        key: str,
+        convention: str,
+        applies_to: str = "all",
+    ) -> None:
+        """
+        Save a global convention that applies across projects.
+
+        Args:
+            key: Convention identifier (e.g., "browser-testing", "code-style")
+            convention: The convention text (e.g., "Always use Playwright for browser testing")
+            applies_to: Project type this applies to ("all", "python", "javascript", etc.)
+        """
+        if not self.session_id:
+            raise MemoryConnectionError("No active session")
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        now = datetime.now().isoformat()
+        value = json.dumps({
+            "convention": convention,
+            "applies_to": applies_to,
+            "created_by": self.project_name,
+        })
+
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO context_items
+            (id, session_id, key, value, category, priority, channel, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid.uuid4()),
+                self.session_id,
+                f"convention:{key}",
+                value,
+                "decision",
+                "high",
+                GLOBAL_CHANNEL,
+                now,
+                now,
+            ),
+        )
+
+        conn.commit()
+        conn.close()
+        logger.info(f"Saved global convention: {key}")
+
+    def load_conventions(self, applies_to: str = "all") -> list[str]:
+        """
+        Load global conventions.
+
+        Args:
+            applies_to: Filter by project type ("all" returns everything)
+
+        Returns:
+            List of convention strings
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT key, value
+            FROM context_items
+            WHERE channel = ?
+              AND key LIKE 'convention:%'
+            ORDER BY created_at DESC
+            """,
+            (GLOBAL_CHANNEL,),
+        )
+
+        conventions = []
+        for row in cursor.fetchall():
+            try:
+                data = json.loads(row[1])
+                # Filter by applies_to
+                if applies_to == "all" or data.get("applies_to") in ("all", applies_to):
+                    conventions.append(data.get("convention", ""))
+            except json.JSONDecodeError:
+                # Fallback for plain text conventions
+                conventions.append(row[1])
+
+        conn.close()
+        return conventions
+
+    def list_conventions(self) -> list[dict[str, Any]]:
+        """
+        List all global conventions with metadata.
+
+        Returns:
+            List of convention dicts with key, convention, applies_to
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT key, value, created_at
+            FROM context_items
+            WHERE channel = ?
+              AND key LIKE 'convention:%'
+            ORDER BY created_at DESC
+            """,
+            (GLOBAL_CHANNEL,),
+        )
+
+        conventions = []
+        for row in cursor.fetchall():
+            key = row[0].replace("convention:", "")
+            try:
+                data = json.loads(row[1])
+                conventions.append({
+                    "key": key,
+                    "convention": data.get("convention", ""),
+                    "applies_to": data.get("applies_to", "all"),
+                    "created_by": data.get("created_by", "unknown"),
+                    "created_at": row[2],
+                })
+            except json.JSONDecodeError:
+                conventions.append({
+                    "key": key,
+                    "convention": row[1],
+                    "applies_to": "all",
+                    "created_by": "unknown",
+                    "created_at": row[2],
+                })
+
+        conn.close()
+        return conventions
+
+    def delete_convention(self, key: str) -> bool:
+        """
+        Delete a global convention.
+
+        Args:
+            key: Convention key to delete
+
+        Returns:
+            True if deleted, False if not found
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            DELETE FROM context_items
+            WHERE channel = ?
+              AND key = ?
+            """,
+            (GLOBAL_CHANNEL, f"convention:{key}"),
+        )
+
+        deleted = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+
+        if deleted:
+            logger.info(f"Deleted global convention: {key}")
+        return deleted
