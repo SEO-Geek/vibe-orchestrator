@@ -6,6 +6,27 @@ All notable changes to Vibe Orchestrator will be documented in this file.
 
 ### Added
 
+#### CLI Module Refactoring (2026-01-13)
+
+**Problem**: `vibe/cli.py` was a 2268-line god module with 18+ imports, making it hard to maintain and test.
+
+**Solution**: Split into focused, single-responsibility modules:
+
+- `vibe/cli/startup.py` (130 lines): Startup validation and system checks
+- `vibe/cli/project.py` (100 lines): Project selection and context loading
+- `vibe/cli/debug.py` (190 lines): Debug workflow with GLM/Claude
+- `vibe/cli/execution.py` (160 lines): Task execution and GLM review
+- `vibe/cli/commands.py` (450 lines): Slash command handlers (/help, /debug, etc.)
+- `vibe/cli/interactive.py` (420 lines): Main conversation loop
+- `vibe/cli/typer_commands.py` (380 lines): CLI entry points (add, remove, list)
+- `vibe/cli/prompt.py` (240 lines): Enhanced prompt with history/completion
+
+**Impact**:
+- Each module now has a clear single responsibility
+- Easy to locate and modify specific functionality
+- `vibe/cli.py` is now a thin shim for backward compatibility
+- All 131 tests still passing
+
 #### World-Class Vibe Improvements (2026-01-13)
 
 **Problem**: Research using 4 parallel senior agents identified significant gaps: zero test coverage, TUI bypassed review gate, no command history, unnecessary clarification/review steps adding latency.
