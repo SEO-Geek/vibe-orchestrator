@@ -30,6 +30,9 @@ class Project:
     claude_md: str = "CLAUDE.md"
     test_command: str = "pytest -v"
     description: str = ""
+    # Hook scripts (paths relative to project directory)
+    pre_task_hooks: list[str] = field(default_factory=list)
+    post_task_hooks: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # Expand ~ in path
@@ -63,6 +66,8 @@ class Project:
             "claude_md": self.claude_md,
             "test_command": self.test_command,
             "description": self.description,
+            "pre_task_hooks": self.pre_task_hooks,
+            "post_task_hooks": self.post_task_hooks,
         }
 
     @classmethod
@@ -75,6 +80,8 @@ class Project:
             claude_md=data.get("claude_md", "CLAUDE.md"),
             test_command=data.get("test_command", "pytest -v"),
             description=data.get("description", ""),
+            pre_task_hooks=data.get("pre_task_hooks", []),
+            post_task_hooks=data.get("post_task_hooks", []),
         )
 
 

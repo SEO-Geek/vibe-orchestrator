@@ -9,14 +9,17 @@ Workflow:
 2. GLM asks for clarification if needed
 3. GLM decomposes request into atomic tasks
 4. For each task:
-   a. Claude executes the task
-   b. GLM reviews the output
-   c. If rejected, retry with feedback (max 3 attempts)
+   a. Run pre-task hooks (if configured)
+   b. Claude executes the task
+   c. GLM reviews the output
+   d. If rejected, retry with feedback (max 3 attempts)
+   e. Run post-task hooks (if configured)
 5. Return structured result with all changes
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -176,6 +179,73 @@ class Supervisor:
         logger.error(message)
         if self.callbacks.on_error:
             self.callbacks.on_error(message)
+
+    async def _run_hooks(self, hooks: list[str], phase: str) -> bool:
+        """
+        Run hook scripts before/after task execution.
+
+        Args:
+            hooks: List of hook script paths (relative to project directory)
+            phase: Phase name for logging ('pre-task' or 'post-task')
+
+        Returns:
+            True if all hooks succeeded, False if any failed
+        """
+        import os
+
+        if not hooks:
+            return True
+
+        project_path = Path(self.project.path).resolve()
+
+        for hook in hooks:
+            hook_path = (project_path / hook).resolve()
+
+            # Security: Ensure hook is within project directory (prevent path traversal)
+            try:
+                hook_path.relative_to(project_path)
+            except ValueError:
+                self._emit_error(f"{phase} hook path traversal detected: {hook}")
+                return False
+
+            # Check hook exists and is executable
+            if not hook_path.is_file():
+                self._emit_error(f"{phase} hook not found: {hook}")
+                return False
+
+            if not os.access(hook_path, os.X_OK):
+                self._emit_error(f"{phase} hook not executable: {hook}")
+                return False
+
+            self._emit_progress(f"Running {phase} hook: {hook}")
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    str(hook_path),
+                    cwd=self.project.path,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(),
+                    timeout=60.0,  # 60 second timeout for hooks
+                )
+
+                if proc.returncode != 0:
+                    error_output = stderr.decode("utf-8", errors="replace") if stderr else stdout.decode("utf-8", errors="replace")
+                    self._emit_error(f"{phase} hook failed: {hook}\n{error_output[:200]}")
+                    return False
+
+                if stdout:
+                    self._emit_progress(f"Hook output: {stdout.decode('utf-8', errors='replace')[:100]}")
+
+            except asyncio.TimeoutError:
+                self._emit_error(f"{phase} hook timed out: {hook}")
+                return False
+            except Exception as e:
+                self._emit_error(f"{phase} hook error: {hook}: {e}")
+                return False
+
+        return True
 
     def _load_project_context(self) -> str:
         """
@@ -449,6 +519,11 @@ class Supervisor:
         result = TaskExecutionResult(task=task, success=False)
         previous_feedback: str | None = None
 
+        # Run pre-task hooks before any attempts
+        if not await self._run_hooks(self.project.pre_task_hooks, "pre-task"):
+            result.error = "Pre-task hook failed"
+            return result
+
         for attempt in range(1, self.max_retries + 1):
             result.attempts = attempt
             self._emit_progress(f"Attempt {attempt}/{self.max_retries}")
@@ -507,6 +582,9 @@ class Supervisor:
                     )
 
                     self._emit_progress("Task approved by GLM")
+
+                    # Run post-task hooks after successful completion
+                    await self._run_hooks(self.project.post_task_hooks, "post-task")
                     break
                 else:
                     # Rejected - prepare for retry with meaningful feedback

@@ -6,6 +6,67 @@ All notable changes to Vibe Orchestrator will be documented in this file.
 
 ### Added
 
+#### Claude-like Features for TUI (2026-01-13)
+
+**Problem**: TUI lacked visual feedback and advanced workflow features that Claude Code provides. No task progress tracking, cost visibility, pre/post hooks, or context management.
+
+**Solution**: Five Claude-inspired features to improve the GLM workflow:
+
+1. **Task Progress Panel**:
+   - Visual todo list in sidebar showing task status
+   - Icons: ✓ done, ✗ failed, ⏳ running, ○ pending
+   - Updates in real-time as tasks execute
+   - Shows task descriptions truncated to fit
+
+2. **Session Cost Tracker**:
+   - CostBar widget showing GLM + Claude costs
+   - New `vibe/pricing.py` module with cost calculation
+   - CostTracker class for session-wide accumulation
+   - `/cost` command shows detailed breakdown
+
+3. **Pre-Task Hooks**:
+   - Run shell scripts before Claude executes tasks
+   - Configure per-project in `projects.json`:
+     ```json
+     {
+       "pre_task_hooks": ["scripts/lint.sh"],
+       "post_task_hooks": ["scripts/run-tests.sh"]
+     }
+     ```
+   - Security: Path traversal prevention, executable check
+   - 60-second timeout per hook
+
+4. **Plan Review Mode**:
+   - Modal dialog after GLM decomposes tasks
+   - Review tasks before execution starts
+   - Edit/delete tasks with keyboard navigation (↑/↓/d)
+   - `/review` command toggles mode on/off
+   - Press Enter to approve, Escape to cancel
+
+5. **Context Compaction**:
+   - `/compact` command compresses old context items
+   - Summarizes items older than 24h using GLM
+   - Groups by category for coherent summaries
+   - Reduces token usage for project context
+   - New `vibe/memory/compaction.py` module
+
+**New Commands**:
+- `/cost` - Show session cost breakdown
+- `/review` - Toggle plan review mode
+- `/compact` - Compact old context items
+- `/help` - Updated with all commands
+
+**Files Created**:
+- `vibe/pricing.py` - Cost calculation and tracking
+- `vibe/memory/compaction.py` - Context compaction logic
+
+**Files Modified**:
+- `vibe/tui/app.py` - TaskPanel, CostBar, PlanReviewScreen, updated commands
+- `vibe/config.py` - Added pre_task_hooks, post_task_hooks to Project
+- `vibe/orchestrator/supervisor.py` - Hook execution with security validation
+
+---
+
 #### Textual TUI with Escape-to-Cancel (2026-01-13)
 
 **Problem**: Old CLI used blocking input() - no way to cancel GLM or Claude mid-operation. If Claude went off track, users had to wait or kill the process.
