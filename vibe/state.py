@@ -127,6 +127,31 @@ class SessionContext:
             return True
         return False
 
+    def require_transition(self, new_state: SessionState) -> None:
+        """
+        Transition to a new state, raising an exception if invalid.
+
+        Use this instead of transition_to() when the transition MUST succeed
+        and failure indicates a bug in the state machine logic.
+
+        Args:
+            new_state: The target state
+
+        Raises:
+            StateTransitionError: If the transition is not valid
+        """
+        from vibe.exceptions import StateTransitionError
+
+        if not self.transition_to(new_state):
+            valid_targets = VALID_TRANSITIONS.get(self.state, set())
+            valid_names = ", ".join(s.name for s in valid_targets) or "none"
+            raise StateTransitionError(
+                f"Invalid state transition: {self.state.name} -> {new_state.name}. "
+                f"Valid transitions from {self.state.name}: {valid_names}",
+                from_state=self.state.name,
+                to_state=new_state.name,
+            )
+
     def can_transition_to(self, new_state: SessionState) -> bool:
         """Check if transition to new_state is valid from current state."""
         return new_state in VALID_TRANSITIONS.get(self.state, set())

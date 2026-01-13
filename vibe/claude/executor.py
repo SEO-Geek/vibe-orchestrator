@@ -86,6 +86,10 @@ TIMEOUT_TIERS = {
     "research": 900,  # Research and exploration (15 min)
 }
 
+# Maximum output buffer size to prevent memory issues
+# 500KB should be plenty for most Claude outputs
+MAX_OUTPUT_BYTES = 500 * 1024
+
 
 @dataclass
 class ToolCall:
@@ -220,6 +224,47 @@ class ClaudeExecutor:
     def clear_checkpoint(self) -> None:
         """Clear the last saved checkpoint."""
         self._last_checkpoint = None
+
+    def close(self) -> None:
+        """
+        Release subprocess resources and clear state.
+
+        Should be called when done with the executor to prevent resource leaks.
+        Safe to call multiple times.
+        """
+        # Terminate any running subprocess
+        if self._current_process and self._current_process.returncode is None:
+            try:
+                self._current_process.terminate()
+                # Note: can't await in sync method, but terminate() is sufficient
+            except Exception as e:
+                logger.debug(f"Error terminating subprocess: {e}")
+            finally:
+                self._current_process = None
+
+        # Clear checkpoint to free memory
+        self._last_checkpoint = None
+
+        # Reset cancellation flag
+        self._cancelled = False
+
+        logger.debug("ClaudeExecutor closed")
+
+    def __enter__(self) -> "ClaudeExecutor":
+        """Context manager entry (sync)."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Context manager exit (sync) - ensures cleanup."""
+        self.close()
+
+    async def __aenter__(self) -> "ClaudeExecutor":
+        """Async context manager entry."""
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Async context manager exit - ensures cleanup."""
+        self.close()
 
     def cancel(self) -> None:
         """Cancel the current execution."""
@@ -466,11 +511,20 @@ class ClaudeExecutor:
 
             # Read and parse streaming output with timeout
             start_time = datetime.now()
+            output_truncated = False
             try:
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(),
                     timeout=self.timeout,
                 )
+
+                # Truncate output if exceeds MAX_OUTPUT_BYTES to prevent memory issues
+                if len(stdout) > MAX_OUTPUT_BYTES:
+                    logger.warning(
+                        f"Claude output truncated: {len(stdout)} bytes -> {MAX_OUTPUT_BYTES} bytes"
+                    )
+                    stdout = stdout[:MAX_OUTPUT_BYTES]
+                    output_truncated = True
             except asyncio.TimeoutError:
                 # Calculate elapsed time for checkpoint
                 elapsed = (datetime.now() - start_time).total_seconds()
@@ -493,9 +547,18 @@ class ClaudeExecutor:
                 if process and process.returncode is None:
                     process.kill()
                     await process.wait()
+
+                # Include checkpoint info in error for visibility
+                checkpoint_msg = ""
+                if tool_calls or file_changes:
+                    checkpoint_msg = f" | Partial work: {len(tool_calls)} tool calls, {len(file_changes)} files modified"
+
                 raise ClaudeTimeoutError(
-                    f"Task timed out after {self.timeout}s (checkpoint saved)",
-                    self.timeout,
+                    f"Task timed out after {self.timeout}s{checkpoint_msg}",
+                    timeout_seconds=self.timeout,
+                    checkpoint_summary=self._last_checkpoint.summary() if self._last_checkpoint else None,
+                    files_modified=file_changes,
+                    tool_calls_count=len(tool_calls),
                 )
 
             # Parse each line of JSON output

@@ -31,7 +31,9 @@ from vibe.exceptions import (
     ClaudeCircuitOpenError,
     ClaudeError,
     GLMError,
+    ReviewFailedError,
     ReviewRejectedError,
+    ReviewTimeoutError,
     TaskError,
     VibeError,
 )
@@ -106,6 +108,19 @@ MCP_ROUTING_TABLE: dict[str, dict[str, list[str]]] = {
 
 # Maximum retry attempts for rejected tasks
 MAX_RETRY_ATTEMPTS = 3
+
+# Retry backoff delays (seconds) - exponential backoff
+RETRY_BACKOFF_DELAYS = [2.0, 5.0, 10.0]
+
+# GLM API timeout for review calls (seconds)
+GLM_REVIEW_TIMEOUT = 60.0
+
+# Token budget for GLM context (approximate)
+# GLM-4 has ~128K context, but we want to leave room for response
+# Using conservative estimate: 1 token ~= 4 characters
+MAX_CONTEXT_TOKENS = 32000  # ~128K chars
+CHARS_PER_TOKEN = 4  # Rough approximation
+MAX_CONTEXT_CHARS = MAX_CONTEXT_TOKENS * CHARS_PER_TOKEN
 
 
 @dataclass
@@ -456,20 +471,28 @@ class Supervisor:
         """
         Load project context for GLM including starmap and recent memory.
 
+        Enforces token budget and truncates content if needed.
+
         Returns:
             Formatted context string for GLM prompts
         """
         context_parts = []
+        total_chars = 0
+
+        # Helper to track and warn about budget
+        def add_context(label: str, content: str, max_chars: int) -> None:
+            nonlocal total_chars
+            if len(content) > max_chars:
+                content = content[:max_chars] + "\n... [truncated]"
+            context_parts.append(f"{label}:\n{content}")
+            total_chars += len(content)
 
         # Load STARMAP.md if it exists
         starmap_path = self.project.starmap_path
         if starmap_path.exists():
             try:
                 starmap_content = starmap_path.read_text()
-                # Truncate if too long (keep first 4000 chars)
-                if len(starmap_content) > 4000:
-                    starmap_content = starmap_content[:4000] + "\n... [truncated]"
-                context_parts.append(f"PROJECT STARMAP:\n{starmap_content}")
+                add_context("PROJECT STARMAP", starmap_content, 4000)
             except Exception as e:
                 logger.warning(f"Could not read STARMAP.md: {e}")
 
@@ -478,9 +501,7 @@ class Supervisor:
         if claude_md_path.exists():
             try:
                 claude_content = claude_md_path.read_text()
-                if len(claude_content) > 2000:
-                    claude_content = claude_content[:2000] + "\n... [truncated]"
-                context_parts.append(f"PROJECT CONVENTIONS:\n{claude_content}")
+                add_context("PROJECT CONVENTIONS", claude_content, 2000)
             except Exception as e:
                 logger.warning(f"Could not read CLAUDE.md: {e}")
 
@@ -493,16 +514,31 @@ class Supervisor:
                         f"- [{item.category}] {item.key}: {item.value[:200]}"
                         for item in recent_items
                     )
-                    context_parts.append(f"RECENT CONTEXT:\n{memory_context}")
+                    add_context("RECENT CONTEXT", memory_context, 3000)
             except Exception as e:
                 logger.warning(f"Could not load memory context: {e}")
 
         # Add project metadata
-        context_parts.append(
+        metadata = (
             f"PROJECT: {self.project.name}\n"
             f"PATH: {self.project.path}\n"
             f"TEST COMMAND: {self.project.test_command}"
         )
+        context_parts.append(metadata)
+        total_chars += len(metadata)
+
+        # Check token budget and warn if exceeded
+        estimated_tokens = total_chars // CHARS_PER_TOKEN
+        if total_chars > MAX_CONTEXT_CHARS:
+            logger.warning(
+                f"Context size ({estimated_tokens} tokens) exceeds budget "
+                f"({MAX_CONTEXT_TOKENS} tokens). Consider reducing context."
+            )
+        else:
+            logger.debug(
+                f"Context loaded: ~{estimated_tokens} tokens "
+                f"({total_chars} chars, {100 * total_chars // MAX_CONTEXT_CHARS}% of budget)"
+            )
 
         return "\n\n".join(context_parts)
 
@@ -586,8 +622,8 @@ class Supervisor:
         )
 
         try:
-            # Transition to planning state
-            self.context.transition_to(SessionState.PLANNING)
+            # Transition to planning state (must succeed from IDLE/AWAITING_INPUT)
+            self.context.require_transition(SessionState.PLANNING)
             self._emit_status("Loading project context...")
 
             # Step 1: Load project context
@@ -746,8 +782,8 @@ class Supervisor:
             result.attempts = attempt
             self._emit_progress(f"Attempt {attempt}/{self.max_retries}")
 
-            # Transition to executing state
-            self.context.transition_to(SessionState.EXECUTING)
+            # Transition to executing state (must succeed)
+            self.context.require_transition(SessionState.EXECUTING)
 
             # Execute the task
             try:
@@ -777,8 +813,8 @@ class Supervisor:
             # Track cost
             self._total_cost_usd += execution_result.cost_usd
 
-            # Transition to reviewing state
-            self.context.transition_to(SessionState.REVIEWING)
+            # Transition to reviewing state (must succeed after EXECUTING)
+            self.context.require_transition(SessionState.REVIEWING)
 
             # Review the task
             try:
@@ -839,12 +875,27 @@ class Supervisor:
                         except Exception:
                             pass
 
+                    # Backoff before retry (exponential backoff)
+                    if attempt < self.max_retries:
+                        backoff_idx = min(attempt - 1, len(RETRY_BACKOFF_DELAYS) - 1)
+                        backoff_delay = RETRY_BACKOFF_DELAYS[backoff_idx]
+                        self._emit_progress(f"Waiting {backoff_delay}s before retry...")
+                        await asyncio.sleep(backoff_delay)
+
+            except asyncio.TimeoutError:
+                # Review timed out - FAIL the task (never auto-approve)
+                logger.error(f"GLM review timed out after {GLM_REVIEW_TIMEOUT}s")
+                result.error = f"GLM review timed out after {GLM_REVIEW_TIMEOUT}s"
+                result.review_approved = False
+                self._emit_error(f"Review timeout - cannot approve without review")
+                break
+
             except GLMError as e:
-                # Review failed - assume approved to avoid blocking
-                logger.warning(f"GLM review failed, assuming approved: {e}")
-                result.review_approved = True
-                result.success = True
-                result.files_changed = execution_result.file_changes
+                # Review failed - FAIL the task (never auto-approve unreviewed code)
+                logger.error(f"GLM review failed: {e}")
+                result.error = f"Cannot approve without review: {e}"
+                result.review_approved = False
+                self._emit_error(f"Review failed - cannot approve: {e}")
                 break
 
         # If we exhausted retries without success
@@ -907,13 +958,6 @@ class Supervisor:
             except Exception as e:
                 logger.warning(f"Could not load conventions: {e}")
 
-        # Create executor for this task
-        executor = ClaudeExecutor(
-            project_path=self.project.path,
-            timeout_tier="code",
-            global_conventions=global_conventions,
-        )
-
         # Build constraints including previous feedback and MCP hints
         constraints = list(task.constraints) if task.constraints else []
         if previous_feedback:
@@ -924,29 +968,36 @@ class Supervisor:
         if mcp_hints:
             constraints.append(mcp_hints)
 
-        # Execute with circuit breaker tracking
-        try:
-            result = await executor.execute(
-                task_description=task.description,
-                files=task.files if task.files else None,
-                constraints=constraints if constraints else None,
-                on_progress=self.callbacks.on_progress,
-            )
+        # Create executor for this task using context manager for proper cleanup
+        # This ensures subprocess resources are released even if an exception occurs
+        async with ClaudeExecutor(
+            project_path=self.project.path,
+            timeout_tier="code",
+            global_conventions=global_conventions,
+        ) as executor:
+            # Execute with circuit breaker tracking
+            try:
+                result = await executor.execute(
+                    task_description=task.description,
+                    files=task.files if task.files else None,
+                    constraints=constraints if constraints else None,
+                    on_progress=self.callbacks.on_progress,
+                )
 
-            # Record success/failure in circuit breaker
-            if self._circuit_breaker:
-                if result.success:
-                    self._circuit_breaker.record_success()
-                else:
+                # Record success/failure in circuit breaker
+                if self._circuit_breaker:
+                    if result.success:
+                        self._circuit_breaker.record_success()
+                    else:
+                        self._circuit_breaker.record_failure()
+
+                return result
+
+            except Exception as e:
+                # Record failure in circuit breaker
+                if self._circuit_breaker:
                     self._circuit_breaker.record_failure()
-
-            return result
-
-        except Exception as e:
-            # Record failure in circuit breaker
-            if self._circuit_breaker:
-                self._circuit_breaker.record_failure()
-            raise
+                raise
 
     async def review_task(
         self,
@@ -988,11 +1039,15 @@ class Supervisor:
         # Get Claude's summary
         claude_summary = result.result or "(no summary provided)"
 
-        # Call GLM for review
-        review_result = await self.glm_client.review_changes(
-            task_description=task.description,
-            changes_diff=changes_diff,
-            claude_summary=claude_summary,
+        # Call GLM for review with timeout protection
+        # Timeout is handled by the caller via asyncio.TimeoutError exception
+        review_result = await asyncio.wait_for(
+            self.glm_client.review_changes(
+                task_description=task.description,
+                changes_diff=changes_diff,
+                claude_summary=claude_summary,
+            ),
+            timeout=GLM_REVIEW_TIMEOUT,
         )
 
         return review_result

@@ -82,11 +82,29 @@ class ClaudeNotFoundError(ClaudeError):
 
 
 class ClaudeTimeoutError(ClaudeError):
-    """Raised when Claude task times out."""
+    """Raised when Claude task times out.
 
-    def __init__(self, message: str, timeout_seconds: int):
-        super().__init__(message, {"timeout_seconds": timeout_seconds})
+    Includes optional checkpoint info with partial work done before timeout.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        timeout_seconds: int,
+        checkpoint_summary: str | None = None,
+        files_modified: list[str] | None = None,
+        tool_calls_count: int = 0,
+    ):
+        super().__init__(message, {
+            "timeout_seconds": timeout_seconds,
+            "checkpoint_summary": checkpoint_summary,
+            "files_modified": files_modified or [],
+            "tool_calls_count": tool_calls_count,
+        })
         self.timeout_seconds = timeout_seconds
+        self.checkpoint_summary = checkpoint_summary
+        self.files_modified = files_modified or []
+        self.tool_calls_count = tool_calls_count
 
 
 class ClaudeExecutionError(ClaudeError):
@@ -142,6 +160,20 @@ class ReviewRejectedError(ReviewError):
         self.feedback = feedback
 
 
+class ReviewTimeoutError(ReviewError):
+    """Raised when GLM review times out."""
+
+    def __init__(self, message: str, timeout_seconds: float):
+        super().__init__(message, {"timeout_seconds": timeout_seconds})
+        self.timeout_seconds = timeout_seconds
+
+
+class ReviewFailedError(ReviewError):
+    """Raised when GLM review fails and cannot verify code quality."""
+
+    pass
+
+
 # Task Errors
 class TaskError(VibeError):
     """Base exception for task-related errors."""
@@ -159,6 +191,19 @@ class TaskQueueFullError(TaskError):
     """Raised when task queue is at capacity."""
 
     pass
+
+
+# State Errors
+class StateTransitionError(VibeError):
+    """Raised when an invalid state transition is attempted.
+
+    Includes the current state and the attempted target state for debugging.
+    """
+
+    def __init__(self, message: str, from_state: str, to_state: str):
+        super().__init__(message, {"from_state": from_state, "to_state": to_state})
+        self.from_state = from_state
+        self.to_state = to_state
 
 
 # Integration Errors

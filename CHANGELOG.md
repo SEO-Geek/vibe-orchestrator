@@ -62,6 +62,133 @@ All notable changes to Vibe Orchestrator will be documented in this file.
 
 **Impact**: Better observability, fewer silent context losses, configurable limits.
 
+#### Stability & Security Improvements (2026-01-13)
+
+**Problem**: Comprehensive analysis using 6 parallel agents identified 25 issues across the codebase - 3 critical (security/data loss), 10 high priority (reliability), and 12 medium (performance). Critical issues included auto-approving code on GLM failure, subprocess file descriptor leaks, and unbounded memory growth.
+
+**Solution**: Implemented Phase 1 critical fixes and Phase 2 reliability improvements:
+
+1. **Fixed GLM Auto-Approve Security Vulnerability** (`vibe/orchestrator/supervisor.py`):
+   - **CRITICAL**: GLM review failures were auto-approving code without review
+   - Now properly fails the task when review cannot be completed
+   - Added `ReviewTimeoutError` and `ReviewFailedError` exceptions
+   - Code is NEVER approved without successful review
+
+2. **Added Executor Subprocess Cleanup** (`vibe/claude/executor.py`):
+   - **CRITICAL**: Executor subprocess was never closed, causing FD leaks
+   - Added `close()` method to terminate subprocess and clear state
+   - Added context manager support (`__enter__`, `__exit__`, `__aenter__`, `__aexit__`)
+   - Supervisor now uses `async with ClaudeExecutor(...) as executor:`
+
+3. **Added Reviewer Memory Bounds** (`vibe/orchestrator/reviewer.py`):
+   - **CRITICAL**: `_attempt_counts` and `_last_reviews` dicts grew forever
+   - Added `MAX_TRACKED_TASKS = 100` constant
+   - Added `_enforce_max_size()` with LRU eviction policy
+   - Oldest tasks (by review timestamp) evicted when limit exceeded
+
+4. **Added GLM Call Timeout** (`vibe/orchestrator/supervisor.py`):
+   - GLM review calls had no timeout - could hang forever
+   - Added `GLM_REVIEW_TIMEOUT = 60.0` seconds
+   - Wrapped review call with `asyncio.wait_for(timeout=60.0)`
+   - Timeout raises `ReviewTimeoutError` instead of hanging
+
+5. **Added Retry Backoff** (`vibe/orchestrator/supervisor.py`):
+   - Failed tasks retried immediately, hammering failing services
+   - Added `RETRY_BACKOFF_DELAYS = [2.0, 5.0, 10.0]` seconds
+   - Exponential backoff between retry attempts
+   - Prevents cascading failures and gives services time to recover
+
+6. **Added Circuit Breaker to All GLM Methods** (`vibe/glm/client.py`):
+   - Only `ask_clarification()` had circuit breaker protection
+   - Added circuit breaker checks to `decompose_task()` and `review_changes()`
+   - `decompose_task()` returns fallback task when circuit open
+   - `review_changes()` raises error (never auto-approve) when circuit open
+   - All methods now call `_record_success()` / `_record_failure()`
+
+7. **Deleted Dead Code** (`vibe/orchestrator/task_queue.py`):
+   - 97 lines never imported anywhere in codebase
+   - Removed from `vibe/orchestrator/__init__.py` exports
+   - Deleted file entirely
+
+**New Exceptions** (`vibe/exceptions.py`):
+```python
+class ReviewTimeoutError(ReviewError):
+    """Raised when GLM review times out."""
+    def __init__(self, message: str, timeout_seconds: float): ...
+
+class ReviewFailedError(ReviewError):
+    """Raised when GLM review fails and cannot verify code quality."""
+    pass
+```
+
+**Constants Added**:
+- `RETRY_BACKOFF_DELAYS = [2.0, 5.0, 10.0]` - Seconds between retries
+- `GLM_REVIEW_TIMEOUT = 60.0` - Review call timeout
+- `MAX_TRACKED_TASKS = 100` - Reviewer memory limit
+
+8. **Parallel Startup Validation** (`vibe/cli.py`):
+   - Startup checks (GLM ping, Claude CLI, memory, GitHub) ran sequentially
+   - Now runs all 4 checks in parallel using `ThreadPoolExecutor(max_workers=4)`
+   - Reduces startup time when GLM ping is slow (15s timeout)
+   - Extracted checks to separate functions for parallel execution
+
+9. **Output Buffer Limit** (`vibe/claude/executor.py`):
+   - `process.communicate()` buffered ALL output in memory
+   - Added `MAX_OUTPUT_BYTES = 500KB` constant
+   - Truncates stdout after reading if exceeds limit
+   - Logs warning when truncation occurs
+
+10. **Enhanced Timeout Error with Checkpoint Info** (`vibe/exceptions.py`):
+    - `ClaudeTimeoutError` now includes checkpoint details
+    - Added `checkpoint_summary`, `files_modified`, `tool_calls_count` fields
+    - Error message shows partial work done before timeout
+    - Enables better visibility into what was accomplished
+
+**Files Modified**:
+- `vibe/exceptions.py` - New exception classes, enhanced ClaudeTimeoutError
+- `vibe/orchestrator/supervisor.py` - Timeout, backoff, context manager usage
+- `vibe/orchestrator/reviewer.py` - Memory bounds with LRU eviction
+- `vibe/claude/executor.py` - Resource cleanup, output limit, checkpoint info in errors
+- `vibe/glm/client.py` - Circuit breaker on all methods
+- `vibe/orchestrator/__init__.py` - Removed TaskQueue export
+- `vibe/cli.py` - Parallel startup validation
+
+**Files Deleted**:
+- `vibe/orchestrator/task_queue.py` - 97 lines of dead code
+
+**Impact**: System is now fail-safe (never auto-approve without review), resource-safe (no FD leaks), memory-safe (bounded reviewer state), and faster startup with parallel validation.
+
+#### Additional Reliability Improvements (2026-01-13)
+
+**Additional fixes from comprehensive analysis:**
+
+11. **State Transition Validation** (`vibe/state.py`, `vibe/exceptions.py`):
+    - Added `require_transition()` method that raises on invalid transitions
+    - Added `StateTransitionError` exception with from_state/to_state info
+    - Critical transitions in Supervisor now use `require_transition()`
+    - Catches state machine bugs early instead of silent failures
+
+12. **Execution Details Retention Policy** (`vibe/memory/keeper.py`):
+    - Added `cleanup_old_execution_details(retention_days=30)` method
+    - Prevents unbounded database growth from old execution records
+    - Added `get_execution_details_stats()` for monitoring record counts
+    - Default 30-day retention, configurable per call
+
+13. **Token Budget Enforcement** (`vibe/orchestrator/supervisor.py`):
+    - Added `MAX_CONTEXT_TOKENS = 32000` (~128K chars) budget
+    - Context loading now tracks total size and warns if exceeded
+    - Individual sections have per-section limits (STARMAP: 4K, CLAUDE.md: 2K, memory: 3K)
+    - Logs context size as percentage of budget at debug level
+
+**New Constants**:
+- `MAX_CONTEXT_TOKENS = 32000` - Token budget for GLM context
+- `MAX_CONTEXT_CHARS = 128000` - Character limit (4 chars/token estimate)
+
+**New Methods**:
+- `SessionContext.require_transition(state)` - Raises on invalid transition
+- `VibeMemory.cleanup_old_execution_details(days)` - Retention cleanup
+- `VibeMemory.get_execution_details_stats()` - Record statistics
+
 #### Performance & Reliability Optimizations (2026-01-13)
 
 **Problem**: Senior code review agents identified 8 optimization opportunities across the codebase: memory leaks, redundant object creation, missing integrations, and missing fault tolerance.

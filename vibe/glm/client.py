@@ -393,6 +393,7 @@ class GLMClient:
         Have GLM decompose a user request into atomic tasks.
 
         NEVER FAILS - if GLM returns garbage, create fallback task.
+        Uses circuit breaker to prevent cascading failures.
 
         Args:
             user_request: The user's request
@@ -406,6 +407,17 @@ class GLMClient:
             List of task dictionaries with id, description, files, constraints
             If use_workflow_engine=True, returns ExpandedTask.to_dict() format
         """
+        # Circuit breaker check - if open, create fallback task immediately
+        if self._is_circuit_open():
+            logger.warning("Circuit breaker open, creating fallback task for decomposition")
+            return [{
+                "id": "task-1",
+                "description": f"Handle request (GLM unavailable): {user_request[:200]}",
+                "files": [],
+                "constraints": ["GLM circuit breaker open - proceed with caution"],
+                "success_criteria": "Task addressed to best ability",
+            }]
+
         # Build the decomposition prompt
         prompt = TASK_DECOMPOSITION_PROMPT.format(
             user_request=user_request,
@@ -422,6 +434,9 @@ class GLMClient:
                 ),
                 timeout=DEFAULT_TIMEOUT,
             )
+
+            # Record success
+            self._record_success()
 
             tasks = parse_task_list(response.content)
             if not tasks:
@@ -456,9 +471,11 @@ class GLMClient:
             return tasks
 
         except asyncio.TimeoutError:
+            self._record_failure()
             logger.error(f"GLM timeout after {DEFAULT_TIMEOUT}s in decompose_task")
             raise GLMConnectionError(f"GLM timed out after {DEFAULT_TIMEOUT}s - try a shorter request or check API status")
         except Exception as e:
+            self._record_failure()
             logger.error(f"GLM decomposition failed: {e}")
             raise GLMConnectionError(f"GLM failed to decompose task: {e}")
 
@@ -471,6 +488,10 @@ class GLMClient:
         """
         Have GLM review Claude's code changes.
 
+        Uses circuit breaker to prevent cascading failures.
+        IMPORTANT: If circuit breaker is open, raises GLMConnectionError
+        rather than auto-approving (security requirement).
+
         Args:
             task_description: The original task description
             changes_diff: Git diff or file changes
@@ -480,8 +501,17 @@ class GLMClient:
             Review result with approved (bool), issues (list), feedback (str)
 
         Raises:
+            GLMConnectionError: If circuit breaker is open
             GLMResponseError: If response cannot be parsed
         """
+        # Circuit breaker check - if open, raise error (never auto-approve)
+        if self._is_circuit_open():
+            logger.error("Circuit breaker open, cannot review changes")
+            raise GLMConnectionError(
+                "GLM circuit breaker is open - cannot review changes safely. "
+                "Task will be marked as failed (never auto-approve without review)."
+            )
+
         review_prompt = f"""Review this code change:
 
 ORIGINAL TASK:
@@ -503,22 +533,30 @@ Evaluate:
 
 Output JSON: {{"approved": true/false, "issues": [...], "feedback": "..."}}"""
 
-        response = await self.chat(
-            system_prompt=REVIEWER_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": review_prompt}],
-            temperature=0.1,
-            max_tokens=8192,  # Higher limit for review responses
-            method="review_changes",
-        )
-
         try:
+            response = await self.chat(
+                system_prompt=REVIEWER_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": review_prompt}],
+                temperature=0.1,
+                max_tokens=8192,  # Higher limit for review responses
+                method="review_changes",
+            )
+
+            # Record success
+            self._record_success()
+
             result = parse_review_result(response.content)
             logger.info(f"Review result: {'APPROVED' if result['approved'] else 'REJECTED'}")
             return result
+
+        except GLMResponseError:
+            self._record_failure()
+            raise
         except Exception as e:
+            self._record_failure()
             raise GLMResponseError(
-                f"Failed to parse review result: {e}",
-                {"response": response.content[:500]},
+                f"Failed to review changes: {e}",
+                {"task": task_description[:200]},
             )
 
     async def ask_clarification(

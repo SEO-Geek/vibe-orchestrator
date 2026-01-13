@@ -1260,3 +1260,88 @@ class VibeMemory:
         """
         details_list = self.get_execution_details(task_id)
         return details_list[-1] if details_list else None
+
+    def cleanup_old_execution_details(self, retention_days: int = 30) -> int:
+        """
+        Delete execution details older than retention period.
+
+        Prevents unbounded database growth by removing old records.
+        Default retention is 30 days.
+
+        Args:
+            retention_days: Number of days to retain records (default: 30)
+
+        Returns:
+            Number of records deleted
+        """
+        from datetime import timedelta
+
+        cutoff_date = (datetime.now() - timedelta(days=retention_days)).isoformat()
+
+        with self._db_connection() as conn:
+            cursor = conn.cursor()
+
+            # Count records to delete
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM execution_details
+                WHERE created_at < ?
+                """,
+                (cutoff_date,),
+            )
+            count = cursor.fetchone()[0]
+
+            if count > 0:
+                # Delete old records
+                cursor.execute(
+                    """
+                    DELETE FROM execution_details
+                    WHERE created_at < ?
+                    """,
+                    (cutoff_date,),
+                )
+                logger.info(
+                    f"Cleaned up {count} execution details older than {retention_days} days"
+                )
+
+        return count
+
+    def get_execution_details_stats(self) -> dict[str, Any]:
+        """
+        Get statistics about stored execution details.
+
+        Returns:
+            Dict with total count, oldest record, total size estimate
+        """
+        with self._db_connection() as conn:
+            cursor = conn.cursor()
+
+            # Total count
+            cursor.execute("SELECT COUNT(*) FROM execution_details")
+            total_count = cursor.fetchone()[0]
+
+            # Oldest record
+            cursor.execute(
+                "SELECT MIN(created_at) FROM execution_details"
+            )
+            oldest = cursor.fetchone()[0]
+
+            # Approved vs rejected counts
+            cursor.execute(
+                """
+                SELECT review_approved, COUNT(*) as cnt
+                FROM execution_details
+                GROUP BY review_approved
+                """
+            )
+            by_approval = {
+                row[0]: row[1] for row in cursor.fetchall()
+            }
+
+        return {
+            "total_records": total_count,
+            "oldest_record": oldest,
+            "approved_count": by_approval.get(1, 0),
+            "rejected_count": by_approval.get(0, 0),
+            "pending_count": by_approval.get(None, 0),
+        }

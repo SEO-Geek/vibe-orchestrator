@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 # Maximum retry attempts before giving up
 MAX_REVIEW_ATTEMPTS = 3
 
+# Maximum number of tasks to track in memory (prevents unbounded growth)
+# Uses LRU eviction - oldest tasks are removed when limit is exceeded
+MAX_TRACKED_TASKS = 100
+
 
 @dataclass
 class ReviewResult:
@@ -272,9 +276,38 @@ class Reviewer:
         self._last_reviews.clear()
         logger.debug("Reset all reviewer state")
 
+    def _enforce_max_size(self) -> None:
+        """
+        Enforce maximum tracked tasks limit using LRU eviction.
+
+        Removes the oldest tasks (by review timestamp) when the number
+        of tracked tasks exceeds MAX_TRACKED_TASKS. This prevents
+        unbounded memory growth in long-running sessions.
+        """
+        if len(self._last_reviews) <= MAX_TRACKED_TASKS:
+            return
+
+        # Sort tasks by review timestamp (oldest first)
+        sorted_tasks = sorted(
+            self._last_reviews.items(),
+            key=lambda x: x[1].reviewed_at
+        )
+
+        # Calculate how many to evict (keep newest MAX_TRACKED_TASKS)
+        evict_count = len(sorted_tasks) - MAX_TRACKED_TASKS
+
+        # Evict oldest tasks
+        for task_id, _ in sorted_tasks[:evict_count]:
+            self._attempt_counts.pop(task_id, None)
+            self._last_reviews.pop(task_id, None)
+
+        logger.debug(f"Evicted {evict_count} old tasks from reviewer (LRU)")
+
     def _increment_attempt(self, task_id: str) -> int:
         """
         Increment and return the attempt count for a task.
+
+        Also enforces memory bounds by evicting old tasks if limit exceeded.
 
         Args:
             task_id: The task identifier
@@ -284,6 +317,10 @@ class Reviewer:
         """
         current = self._attempt_counts.get(task_id, 0)
         self._attempt_counts[task_id] = current + 1
+
+        # Enforce memory bounds after adding
+        self._enforce_max_size()
+
         return current + 1
 
     def get_last_review(self, task_id: str) -> ReviewResult | None:
