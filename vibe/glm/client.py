@@ -25,6 +25,7 @@ from vibe.glm.prompts import (
     TASK_DECOMPOSITION_PROMPT,
     DEBUG_TASK_PROMPT,
     DEBUG_REVIEW_PROMPT,
+    WORKFLOW_GUIDANCE,
 )
 from vibe.logging import (
     glm_logger,
@@ -385,6 +386,8 @@ class GLMClient:
         self,
         user_request: str,
         project_context: str,
+        use_workflow_engine: bool = False,
+        enable_injection: bool = True,
     ) -> list[dict[str, Any]]:
         """
         Have GLM decompose a user request into atomic tasks.
@@ -394,9 +397,14 @@ class GLMClient:
         Args:
             user_request: The user's request
             project_context: Context about the project (starmap, recent changes, etc.)
+            use_workflow_engine: If True, post-process with WorkflowEngine for
+                                phase expansion and sub-task injection
+            enable_injection: If True and use_workflow_engine is True, inject
+                            sub-tasks based on task content
 
         Returns:
             List of task dictionaries with id, description, files, constraints
+            If use_workflow_engine=True, returns ExpandedTask.to_dict() format
         """
         # Build the decomposition prompt
         prompt = TASK_DECOMPOSITION_PROMPT.format(
@@ -416,19 +424,36 @@ class GLMClient:
             )
 
             tasks = parse_task_list(response.content)
-            if tasks:
-                logger.info(f"Decomposed request into {len(tasks)} tasks")
-                return tasks
+            if not tasks:
+                # Empty task list - create fallback investigation task
+                logger.warning("GLM returned empty task list, creating fallback task")
+                tasks = [{
+                    "id": "task-1",
+                    "description": f"Investigate and address: {user_request[:200]}",
+                    "files": ["investigate relevant files"],
+                    "constraints": ["Report findings before making changes"],
+                    "success_criteria": "Issue understood and addressed",
+                }]
 
-            # Empty task list - create fallback investigation task
-            logger.warning("GLM returned empty task list, creating fallback task")
-            return [{
-                "id": "task-1",
-                "description": f"Investigate and address: {user_request[:200]}",
-                "files": ["investigate relevant files"],
-                "constraints": ["Report findings before making changes"],
-                "success_criteria": "Issue understood and addressed",
-            }]
+            # Post-process with WorkflowEngine if enabled
+            if use_workflow_engine:
+                try:
+                    from vibe.orchestrator.workflows import WorkflowEngine
+                    engine = WorkflowEngine(
+                        enable_workflows=True,
+                        enable_injection=enable_injection,
+                    )
+                    expanded = engine.process_tasks(tasks, expand_to_phases=True)
+                    # Convert ExpandedTask objects to dicts
+                    tasks = [t.to_dict() for t in expanded]
+                    logger.info(f"WorkflowEngine expanded to {len(tasks)} tasks/phases")
+                except ImportError as e:
+                    logger.warning(f"WorkflowEngine not available: {e}")
+                except Exception as e:
+                    logger.warning(f"WorkflowEngine failed, using raw tasks: {e}")
+
+            logger.info(f"Decomposed request into {len(tasks)} tasks")
+            return tasks
 
         except asyncio.TimeoutError:
             logger.error(f"GLM timeout after {DEFAULT_TIMEOUT}s in decompose_task")

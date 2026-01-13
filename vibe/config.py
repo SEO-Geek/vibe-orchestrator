@@ -33,6 +33,9 @@ class Project:
     # Hook scripts (paths relative to project directory)
     pre_task_hooks: list[str] = field(default_factory=list)
     post_task_hooks: list[str] = field(default_factory=list)
+    # Workflow settings for intelligent task orchestration
+    use_workflows: bool = True       # Enable workflow phase expansion
+    inject_subtasks: bool = True     # Enable automatic sub-task injection
 
     def __post_init__(self) -> None:
         # Expand ~ in path
@@ -68,6 +71,8 @@ class Project:
             "description": self.description,
             "pre_task_hooks": self.pre_task_hooks,
             "post_task_hooks": self.post_task_hooks,
+            "use_workflows": self.use_workflows,
+            "inject_subtasks": self.inject_subtasks,
         }
 
     @classmethod
@@ -82,6 +87,8 @@ class Project:
             description=data.get("description", ""),
             pre_task_hooks=data.get("pre_task_hooks", []),
             post_task_hooks=data.get("post_task_hooks", []),
+            use_workflows=data.get("use_workflows", True),
+            inject_subtasks=data.get("inject_subtasks", True),
         )
 
 

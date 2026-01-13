@@ -5,10 +5,11 @@ Detects task types and enforces tool usage rules to prevent
 Claude from taking shortcuts (like using curl instead of real browsers).
 
 Key Features:
-- Task type detection from description
+- Task type detection from description with confidence scoring
 - Required/forbidden tool lists per task type
 - Completion checklist generation
 - Post-execution verification of tool usage
+- SmartTaskDetector with intent pattern matching
 """
 
 import logging
@@ -18,6 +19,94 @@ from enum import Enum
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# INTENT PATTERNS FOR SMART DETECTION
+# Patterns with confidence scores for more accurate task type detection
+# =============================================================================
+
+# Each pattern is a tuple of (regex_pattern, confidence_score)
+# Confidence ranges from 0.0 to 1.0, with 1.0 being absolute certainty
+INTENT_PATTERNS: dict[str, list[tuple[str, float]]] = {
+    "debug": [
+        (r"(is|are)\s+(broken|failing|not working)", 0.95),
+        (r"(error|exception|crash|stack\s*trace)", 0.85),
+        (r"(bug|issue|problem)\s+(in|with|when)", 0.85),
+        (r"why\s+(is|does|doesn't|won't)", 0.80),
+        (r"(fix|debug|troubleshoot|diagnose)", 0.90),
+        (r"(doesn't|does not|won't|cannot)\s+work", 0.85),
+        (r"(investigate|find out why)", 0.80),
+    ],
+    "code_write": [
+        (r"(create|implement|add|build)\s+(a|an|the|new)", 0.90),
+        (r"(write|develop)\s+(a|an|the|new)", 0.90),
+        (r"(add|implement)\s+(function|class|method|feature)", 0.90),
+        (r"(new|create)\s+(endpoint|api|route)", 0.85),
+        (r"(write|generate)\s+(code|script)", 0.85),
+    ],
+    "code_refactor": [
+        (r"(refactor|restructure|reorganize)", 0.95),
+        (r"(rename|move)\s+(the|this)?\s*(function|class|method|variable)", 0.90),
+        (r"(extract|split)\s+(into|to)", 0.85),
+        (r"(clean\s*up|simplify|improve)\s+(the|this)?\s*code", 0.80),
+        (r"(consolidate|merge)\s+(the|these)", 0.80),
+    ],
+    "research": [
+        (r"(research|look\s*up|find\s*out)\s+(about|how|what)", 0.90),
+        (r"(what\s+is|how\s+does|how\s+do\s+i)", 0.85),
+        (r"(documentation|docs)\s+(for|about)", 0.85),
+        (r"(best\s+practice|recommended\s+way)", 0.85),
+        (r"(compare|difference\s+between)", 0.80),
+    ],
+    "ui_test": [
+        (r"(test|verify)\s+(the|this)?\s*(ui|interface|page|form)", 0.95),
+        (r"(browser|e2e|end-to-end)\s+test", 0.95),
+        (r"(check|verify)\s+in\s+(the|a)?\s*browser", 0.90),
+        (r"(screenshot|visual)\s+(test|verify)", 0.90),
+        (r"(click|fill|submit)\s+(the|a)?\s*(button|form|input)", 0.85),
+    ],
+    "api_test": [
+        (r"(test|verify)\s+(the|this)?\s*(api|endpoint|route)", 0.95),
+        (r"(http|rest|graphql)\s+test", 0.90),
+        (r"(test|check)\s+(the|this)?\s*(response|status)", 0.85),
+    ],
+    "database": [
+        (r"(database|db|sql|query|table|schema|migration)", 0.85),
+        (r"(select|insert|update|delete)\s+from", 0.90),
+        (r"(postgres|mysql|sqlite|mongodb)", 0.85),
+    ],
+    "docker": [
+        (r"(docker|container|compose|kubernetes|k8s)", 0.90),
+        (r"(build|run|deploy)\s+(the|a)?\s*container", 0.85),
+        (r"(dockerfile|docker-compose)", 0.95),
+    ],
+    "browser_work": [
+        (r"(navigate|go)\s+to\s+(url|page|site)", 0.90),
+        (r"(open|view)\s+(in|the)?\s*browser", 0.90),
+        (r"(browse|visit)\s+(the|this)?\s*(page|site|url)", 0.85),
+    ],
+}
+
+
+@dataclass
+class TaskTypeDetection:
+    """Result of smart task type detection with confidence score."""
+
+    task_type: "TaskType"
+    confidence: float  # 0.0 to 1.0
+    matched_pattern: str  # The pattern that matched
+    detection_method: str  # "intent_pattern", "keyword", or "default"
+
+    @property
+    def is_confident(self) -> bool:
+        """Check if detection has high confidence (>= 0.7)."""
+        return self.confidence >= 0.7
+
+    @property
+    def needs_confirmation(self) -> bool:
+        """Check if detection should be confirmed by GLM (< 0.6)."""
+        return self.confidence < 0.6
 
 
 class TaskType(Enum):
@@ -568,3 +657,188 @@ def detect_task_type(description: str) -> TaskType:
     """Quick function to detect task type from description."""
     enforcer = TaskEnforcer()
     return enforcer.detect_task_type(description)
+
+
+# =============================================================================
+# SMART TASK DETECTOR
+# Enhanced detection with confidence scoring and intent patterns
+# =============================================================================
+
+# Mapping from intent pattern keys to TaskType enum values
+INTENT_TO_TASK_TYPE: dict[str, TaskType] = {
+    "debug": TaskType.DEBUG,
+    "code_write": TaskType.CODE_WRITE,
+    "code_refactor": TaskType.CODE_REFACTOR,
+    "research": TaskType.RESEARCH,
+    "ui_test": TaskType.UI_TEST,
+    "api_test": TaskType.API_TEST,
+    "database": TaskType.DATABASE,
+    "docker": TaskType.DOCKER,
+    "browser_work": TaskType.BROWSER_WORK,
+}
+
+
+class SmartTaskDetector:
+    """
+    Enhanced task type detector with confidence scoring.
+
+    Uses multiple detection strategies:
+    1. Intent patterns (highest priority) - Regex patterns with confidence scores
+    2. Keyword matching (fallback) - Simple keyword detection
+    3. Default (lowest priority) - Returns GENERAL with low confidence
+
+    The confidence score helps decide when to ask GLM for clarification.
+    """
+
+    def __init__(self):
+        """Initialize detector with pre-compiled patterns."""
+        # Pre-compile all intent patterns for performance
+        self._compiled_patterns: dict[str, list[tuple[re.Pattern, float]]] = {}
+        for intent_key, patterns in INTENT_PATTERNS.items():
+            self._compiled_patterns[intent_key] = [
+                (re.compile(pattern, re.IGNORECASE), confidence)
+                for pattern, confidence in patterns
+            ]
+
+    def detect(self, description: str) -> TaskTypeDetection:
+        """
+        Detect task type with confidence scoring.
+
+        Uses intent patterns first (higher confidence), then falls back
+        to keyword matching (medium confidence), then defaults to GENERAL.
+
+        Args:
+            description: The task description to analyze
+
+        Returns:
+            TaskTypeDetection with type, confidence, and method used
+        """
+        # Strategy 1: Intent pattern matching (highest confidence)
+        best_match: TaskTypeDetection | None = None
+
+        for intent_key, compiled_patterns in self._compiled_patterns.items():
+            task_type = INTENT_TO_TASK_TYPE.get(intent_key, TaskType.GENERAL)
+
+            for pattern, confidence in compiled_patterns:
+                match = pattern.search(description)
+                if match:
+                    current = TaskTypeDetection(
+                        task_type=task_type,
+                        confidence=confidence,
+                        matched_pattern=pattern.pattern,
+                        detection_method="intent_pattern",
+                    )
+                    # Keep highest confidence match
+                    if best_match is None or current.confidence > best_match.confidence:
+                        best_match = current
+                        logger.debug(
+                            f"Intent pattern match: {task_type.value} "
+                            f"(confidence={confidence:.2f})"
+                        )
+
+        if best_match is not None:
+            return best_match
+
+        # Strategy 2: Keyword matching (medium confidence)
+        keyword_result = self._detect_by_keyword(description)
+        if keyword_result.task_type != TaskType.GENERAL:
+            return keyword_result
+
+        # Strategy 3: Default to GENERAL with low confidence
+        return TaskTypeDetection(
+            task_type=TaskType.GENERAL,
+            confidence=0.3,
+            matched_pattern="",
+            detection_method="default",
+        )
+
+    def _detect_by_keyword(self, description: str) -> TaskTypeDetection:
+        """
+        Fall back to keyword-based detection.
+
+        Uses the existing TASK_TYPE_KEYWORDS dictionary for matching.
+        Returns medium confidence (0.5-0.6) for keyword matches.
+
+        Args:
+            description: The task description
+
+        Returns:
+            TaskTypeDetection with keyword-based result
+        """
+        description_lower = description.lower()
+
+        for task_type, keywords in TASK_TYPE_KEYWORDS.items():
+            for keyword in keywords:
+                if keyword in description_lower:
+                    return TaskTypeDetection(
+                        task_type=task_type,
+                        confidence=0.55,  # Medium confidence for keyword match
+                        matched_pattern=keyword,
+                        detection_method="keyword",
+                    )
+
+        return TaskTypeDetection(
+            task_type=TaskType.GENERAL,
+            confidence=0.3,
+            matched_pattern="",
+            detection_method="default",
+        )
+
+    def get_all_matches(self, description: str) -> list[TaskTypeDetection]:
+        """
+        Get all matching task types with their confidence scores.
+
+        Useful for debugging or when GLM needs to choose between options.
+
+        Args:
+            description: The task description
+
+        Returns:
+            List of all matching TaskTypeDetection, sorted by confidence
+        """
+        matches = []
+
+        # Check all intent patterns
+        for intent_key, compiled_patterns in self._compiled_patterns.items():
+            task_type = INTENT_TO_TASK_TYPE.get(intent_key, TaskType.GENERAL)
+
+            for pattern, confidence in compiled_patterns:
+                if pattern.search(description):
+                    matches.append(TaskTypeDetection(
+                        task_type=task_type,
+                        confidence=confidence,
+                        matched_pattern=pattern.pattern,
+                        detection_method="intent_pattern",
+                    ))
+
+        # Check keyword matches
+        description_lower = description.lower()
+        for task_type, keywords in TASK_TYPE_KEYWORDS.items():
+            for keyword in keywords:
+                if keyword in description_lower:
+                    matches.append(TaskTypeDetection(
+                        task_type=task_type,
+                        confidence=0.55,
+                        matched_pattern=keyword,
+                        detection_method="keyword",
+                    ))
+                    break  # Only one match per task type from keywords
+
+        # Sort by confidence (highest first)
+        matches.sort(key=lambda x: x.confidence, reverse=True)
+        return matches
+
+
+# Convenience function for smart detection
+def smart_detect_task_type(description: str) -> TaskTypeDetection:
+    """
+    Quick function to detect task type with confidence scoring.
+
+    Args:
+        description: Task description
+
+    Returns:
+        TaskTypeDetection with type, confidence, and method
+    """
+    detector = SmartTaskDetector()
+    return detector.detect(description)

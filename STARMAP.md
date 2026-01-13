@@ -51,8 +51,13 @@ User <-> GLM (brain) <-> Claude (worker)
 │   │   ├── supervisor.py  # CORE: Main orchestration loop
 │   │   ├── reviewer.py    # GLM review gate with retry logic
 │   │   ├── task_queue.py  # Async task management
-│   │   ├── task_enforcer.py # Tool requirements per task type
-│   │   └── project_updater.py # Auto-update STARMAP/CHANGELOG
+│   │   ├── task_enforcer.py # Tool requirements + SmartTaskDetector
+│   │   ├── project_updater.py # Auto-update STARMAP/CHANGELOG
+│   │   └── workflows/      # Intelligent task orchestration
+│   │       ├── __init__.py
+│   │       ├── templates.py  # WorkflowPhase, WorkflowTemplate
+│   │       ├── injector.py   # SubTaskInjector, InjectionRule
+│   │       └── engine.py     # WorkflowEngine
 │   │
 │   ├── memory/
 │   │   ├── __init__.py
@@ -160,6 +165,26 @@ Custom scripts before/after Claude tasks:
 - Security: path traversal prevention, executable check, 60s timeout
 - Runs in project directory with captured stdout/stderr
 
+### Intelligent Task Orchestration (`orchestrator/workflows/`)
+Multi-phase workflow system for smarter task decomposition:
+- **WorkflowTemplate**: Multi-phase pipelines per task type (DEBUG, CODE_WRITE, REFACTOR)
+- **SubTaskInjector**: Automatically injects relevant sub-tasks based on content
+- **SmartTaskDetector**: Intent pattern matching with confidence scoring (0.0-1.0)
+- **WorkflowEngine**: Expands GLM tasks into workflow phases
+
+Workflow patterns:
+| Task Type | Phases |
+|-----------|--------|
+| CODE_WRITE | analyze → implement → document → verify |
+| DEBUG | reproduce → investigate → fix → verify_fix → add_test |
+| CODE_REFACTOR | analyze_dependencies → refactor → verify_behavior |
+| RESEARCH | gather_info → summarize |
+
+Injection rules auto-add tasks:
+- Writing code → "Add inline comments", "Run tests"
+- Fixing bugs → "Verify fix", "Check regressions"
+- Refactoring → "Analyze usages first", "Update references"
+
 ## CLI Commands
 
 ### Interactive Commands
@@ -207,6 +232,7 @@ Projects are registered in `~/.config/vibe/projects.json`:
 
 ## Recent Changes
 
+- **2026-01-13**: Intelligent GLM Orchestration (WorkflowEngine, SubTaskInjector, SmartTaskDetector)
 - **2026-01-13**: Claude-like TUI features (TaskPanel, CostBar, PlanReview, Hooks, Compaction)
 - **2026-01-13**: Critical bug fixes (executor.py double-prompt, method name typo)
 - **2026-01-11**: Unified persistence layer (VibeRepository, crash recovery, full task tracking)

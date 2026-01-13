@@ -6,6 +6,79 @@ All notable changes to Vibe Orchestrator will be documented in this file.
 
 ### Added
 
+#### Intelligent GLM Orchestration System (2026-01-13)
+
+**Problem**: GLM task decomposition was static - it would create tasks without considering what workflows and sub-tasks are typically needed for different types of work. For example, when building a feature, it wouldn't automatically add "analyze dependencies", "add comments", or "run tests" phases.
+
+**Solution**: A multi-component intelligent orchestration system:
+
+1. **WorkflowEngine** (`vibe/orchestrator/workflows/engine.py`):
+   - Expands single tasks into multi-phase workflows
+   - Phases: ANALYZE → IMPLEMENT → DOCUMENT → VERIFY
+   - Skips expansion for simple read/show tasks
+   - Configurable via `use_workflows` project setting
+
+2. **WorkflowTemplates** (`vibe/orchestrator/workflows/templates.py`):
+   - Pre-built workflows for each task type:
+     - CODE_WRITE: analyze_context → implement → add_comments → verify
+     - DEBUG: reproduce_bug → investigate → fix_bug → verify_fix → add_test
+     - CODE_REFACTOR: analyze_dependencies → refactor → verify_behavior
+     - RESEARCH: gather_info → summarize
+     - UI_TEST: setup_test → execute_test → capture_evidence
+   - Each phase has: required_tools, recommended_agents, success_criteria
+
+3. **SubTaskInjector** (`vibe/orchestrator/workflows/injector.py`):
+   - Automatically injects sub-tasks based on task content
+   - Injection rules with trigger patterns:
+     - Writing code → "Add inline comments", "Run tests"
+     - Fixing bugs → "Verify fix", "Check regressions"
+     - Refactoring → "Analyze usages first", "Update references"
+   - Priority-based rule matching
+   - Configurable via `inject_subtasks` project setting
+
+4. **SmartTaskDetector** (`vibe/orchestrator/task_enforcer.py`):
+   - Intent pattern matching with confidence scores (0.0-1.0)
+   - Three-tier detection: intent patterns → keywords → default
+   - Example detections:
+     - "Fix the login bug" → DEBUG (0.90 confidence)
+     - "Create a new user model" → CODE_WRITE (0.90 confidence)
+     - "Refactor the database module" → CODE_REFACTOR (0.95 confidence)
+   - `needs_confirmation` property for low-confidence cases (<0.6)
+
+5. **WORKFLOW_GUIDANCE** (`vibe/glm/prompts.py`):
+   - Added to TASK_DECOMPOSITION_PROMPT
+   - Guides GLM to follow workflow patterns
+   - Tool recommendations by task type
+
+**Example Transformation**:
+
+Before (single task):
+```
+1. Add user authentication
+```
+
+After (with intelligent orchestration):
+```
+1. [ANALYZE] Read existing auth patterns and dependencies
+2. [IMPLEMENT] Create authentication module
+3. [DOCUMENT] Add inline comments explaining auth logic
+4. [VERIFY] Run tests to verify no regressions
+```
+
+**New Files**:
+- `vibe/orchestrator/workflows/__init__.py`
+- `vibe/orchestrator/workflows/templates.py` (~300 lines)
+- `vibe/orchestrator/workflows/injector.py` (~220 lines)
+- `vibe/orchestrator/workflows/engine.py` (~200 lines)
+
+**Modified Files**:
+- `vibe/orchestrator/task_enforcer.py` - Added SmartTaskDetector, INTENT_PATTERNS
+- `vibe/glm/prompts.py` - Added WORKFLOW_GUIDANCE constant
+- `vibe/glm/client.py` - Added `use_workflow_engine` parameter to decompose_task()
+- `vibe/config.py` - Added `use_workflows`, `inject_subtasks` project settings
+
+---
+
 #### Claude-like Features for TUI (2026-01-13)
 
 **Problem**: TUI lacked visual feedback and advanced workflow features that Claude Code provides. No task progress tracking, cost visibility, pre/post hooks, or context management.

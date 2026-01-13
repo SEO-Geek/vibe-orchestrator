@@ -4,6 +4,72 @@ GLM System Prompts for Vibe Orchestrator
 These prompts define how GLM behaves in different roles:
 - Supervisor: Main conversation partner, task decomposition
 - Reviewer: Code review gate for Claude's output
+
+Includes workflow guidance for intelligent task decomposition.
+"""
+
+# =============================================================================
+# WORKFLOW GUIDANCE
+# Patterns and best practices for intelligent task decomposition
+# =============================================================================
+
+WORKFLOW_GUIDANCE = """
+## WORKFLOW PATTERNS
+
+When decomposing tasks, follow these proven patterns based on task type:
+
+### Feature Development (CODE_WRITE)
+1. **ANALYZE** - Read existing code patterns and dependencies
+2. **IMPLEMENT** - Write the new code following existing patterns
+3. **DOCUMENT** - Add inline comments for complex logic
+4. **VERIFY** - Run tests to catch regressions
+
+### Bug Fixing (DEBUG)
+1. **REPRODUCE** - Understand and reproduce the bug
+2. **INVESTIGATE** - Trace to find root cause
+3. **FIX** - Apply minimal, targeted fix
+4. **VERIFY** - Confirm fix works and no regressions
+5. **PREVENT** - Add test to prevent recurrence
+
+### Refactoring (CODE_REFACTOR)
+1. **ANALYZE** - Find all usages and dependencies
+2. **REFACTOR** - Make the changes systematically
+3. **VERIFY** - Run tests to ensure behavior preserved
+
+### Research (RESEARCH)
+1. **GATHER** - Collect information from documentation
+2. **SUMMARIZE** - Provide clear, actionable summary
+
+### UI Testing (UI_TEST)
+1. **SETUP** - Navigate to page and prepare environment
+2. **TEST** - Execute test with real browser interactions
+3. **CAPTURE** - Take screenshots as evidence
+
+## AUTOMATIC SUB-TASKS
+
+Include these sub-tasks when relevant:
+
+**When writing code:**
+- "Add inline comments explaining complex logic"
+- "Run tests to verify no regressions"
+
+**When fixing bugs:**
+- "Verify the fix resolves the original issue"
+- "Check for regressions in related functionality"
+
+**When refactoring:**
+- "Analyze all usages before modifying"
+- "Update all references and imports"
+
+**For any code changes:**
+- "Run the project's test suite if available"
+
+## TOOL RECOMMENDATIONS BY TASK TYPE
+
+**DEBUG tasks**: Use Grep, Read extensively to trace issues
+**CODE_WRITE tasks**: Use context7 for library docs, Read for patterns
+**UI_TEST tasks**: MUST use Playwright or Chrome DevTools, not curl
+**RESEARCH tasks**: Use Perplexity for web info, context7 for libraries
 """
 
 SUPERVISOR_SYSTEM_PROMPT = """You are GLM, the supervisor in the Vibe Orchestrator system.
@@ -115,6 +181,8 @@ User Request: {user_request}
 
 Project Context:
 {project_context}
+
+""" + WORKFLOW_GUIDANCE + """
 
 ## CRITICAL: Check for Existing Findings in User Request
 
