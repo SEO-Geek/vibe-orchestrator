@@ -6,6 +6,26 @@ All notable changes to Vibe Orchestrator will be documented in this file.
 
 ### Added
 
+#### Split Terminal Mode (2026-01-13)
+
+**Two-terminal workflow**: Run `vibe-split` for the recommended setup:
+- **Left pane**: Vibe orchestrator (GLM brain) - your conversation
+- **Right pane**: Live Claude output - see what Claude is doing in real-time
+
+**Components**:
+- `bin/vibe-split`: tmux launcher script
+- `CLAUDE_LIVE_LOG`: `~/.config/vibe/claude-live.log` for real-time streaming
+- Modified executor to stream line-by-line instead of buffering
+
+**Installation**:
+```bash
+cd /home/brian/vibe
+python3 -m venv venv
+source venv/bin/activate
+pip install -e .
+# Run with: vibe-split
+```
+
 #### CLI Module Refactoring (2026-01-13)
 
 **Problem**: `vibe/cli.py` was a 2268-line god module with 18+ imports, making it hard to maintain and test.

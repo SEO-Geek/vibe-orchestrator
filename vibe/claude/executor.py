@@ -94,6 +94,9 @@ TIMEOUT_TIERS = {
 # 500KB should be plenty for most Claude outputs
 MAX_OUTPUT_BYTES = 500 * 1024
 
+# Live log file for real-time Claude output (used by split terminal view)
+CLAUDE_LIVE_LOG = os.path.expanduser("~/.config/vibe/claude-live.log")
+
 
 @dataclass
 class ToolCall:
@@ -530,21 +533,74 @@ class ClaudeExecutor:
                 process.stdin.close()
 
             # Read and parse streaming output with timeout
+            # Stream line-by-line for real-time display in split terminal
             start_time = datetime.now()
+            stdout_lines: list[bytes] = []
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(),
-                    timeout=self.timeout,
-                )
+                # Ensure log directory exists
+                os.makedirs(os.path.dirname(CLAUDE_LIVE_LOG), exist_ok=True)
 
-                # Truncate output to prevent memory exhaustion on pathological cases.
-                # Claude occasionally produces extremely verbose output (e.g., dumping
-                # large files in error messages). 500KB is generous for normal use.
-                if len(stdout) > MAX_OUTPUT_BYTES:
-                    logger.warning(
-                        f"Claude output truncated: {len(stdout)} bytes -> {MAX_OUTPUT_BYTES} bytes"
+                # Open live log for real-time output (split terminal tails this)
+                with open(CLAUDE_LIVE_LOG, "a") as live_log:
+                    timestamp = datetime.now().isoformat()
+                    task_short = task_description[:80]
+                    live_log.write(f"\n{'='*60}\n")
+                    live_log.write(f"[{timestamp}] Task: {task_short}\n")
+                    live_log.write(f"{'='*60}\n")
+                    live_log.flush()
+
+                    async def read_with_timeout() -> bytes:
+                        """Read stdout line-by-line, streaming to log file."""
+                        output = b""
+                        while True:
+                            if process.stdout is None:
+                                break
+                            line = await process.stdout.readline()
+                            if not line:
+                                break
+                            output += line
+                            stdout_lines.append(line)
+
+                            # Stream to live log for split terminal view
+                            try:
+                                decoded = line.decode().strip()
+                                if decoded:
+                                    # Parse JSON to show human-readable output
+                                    try:
+                                        data = json.loads(decoded)
+                                        msg_type = data.get("type", "")
+                                        if msg_type == "assistant":
+                                            content = data.get("message", {}).get("content", [])
+                                            for block in content:
+                                                if block.get("type") == "text":
+                                                    live_log.write(f"{block.get('text', '')}\n")
+                                                elif block.get("type") == "tool_use":
+                                                    tool_name = block.get("name", "")
+                                                    live_log.write(f"[TOOL] {tool_name}\n")
+                                        elif msg_type == "result":
+                                            cost = data.get('total_cost_usd', 0)
+                                            live_log.write(f"\n[DONE] Cost: ${cost:.4f}\n")
+                                    except json.JSONDecodeError:
+                                        live_log.write(f"{decoded}\n")
+                                    live_log.flush()
+                            except Exception:
+                                pass  # Don't fail main execution for log issues
+
+                            # Check output size limit
+                            if len(output) > MAX_OUTPUT_BYTES:
+                                logger.warning(
+                                    f"Output truncated: {len(output)} -> {MAX_OUTPUT_BYTES}B"
+                                )
+                                break
+                        return output
+
+                    stdout = await asyncio.wait_for(
+                        read_with_timeout(),
+                        timeout=self.timeout,
                     )
-                    stdout = stdout[:MAX_OUTPUT_BYTES]
+                    # Read any remaining stderr
+                    stderr = await process.stderr.read() if process.stderr else b""
+
             except TimeoutError:
                 elapsed = (datetime.now() - start_time).total_seconds()
 

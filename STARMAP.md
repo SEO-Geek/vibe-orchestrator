@@ -27,6 +27,8 @@ User <-> GLM (brain) <-> Claude (worker)
 
 ```
 /home/brian/vibe/
+├── bin/
+│   └── vibe-split           # tmux launcher (vibe left, claude right)
 ├── vibe/
 │   ├── __init__.py
 │   ├── cli.py             # Backward-compatibility shim (imports from cli/)
@@ -254,6 +256,9 @@ Injection rules auto-add tasks:
 ### Subcommands
 | Command | Description |
 |---------|-------------|
+| `vibe` | Start interactive session (single terminal) |
+| `vibe --tui` | Start with Textual TUI (escape-to-cancel) |
+| `vibe-split` | **Recommended**: Split terminal (vibe left, claude right) |
 | `vibe list` | List all registered projects |
 | `vibe add <name> <path>` | Add a new project |
 | `vibe remove <name>` | Remove a project |
@@ -281,6 +286,11 @@ Projects are registered in `~/.config/vibe/projects.json`:
 
 ## Recent Changes
 
+- **2026-01-13**: Split Terminal Mode & Installation
+  - `vibe-split` command: tmux launcher with left=vibe, right=claude output
+  - Real-time Claude output streaming to `~/.config/vibe/claude-live.log`
+  - Executor streams line-by-line for live display
+  - `pip install -e .` installs `vibe` command
 - **2026-01-13**: Comprehensive Inline Comments & Final Linting
   - 81 inline comments added to 4 key modules (supervisor, executor, reviewer, client)
   - Zero linting errors (all E501, F841, E741, N806 issues resolved)
