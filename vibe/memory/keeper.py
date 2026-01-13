@@ -15,6 +15,7 @@ import json
 import logging
 import sqlite3
 import subprocess
+import threading
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -29,6 +30,95 @@ logger = logging.getLogger(__name__)
 
 # Global channel for cross-project conventions
 GLOBAL_CHANNEL = "_vibe_global"
+
+
+# =============================================================================
+# CONNECTION POOL
+# Thread-local connection pool for better performance
+# =============================================================================
+
+class ConnectionPool:
+    """
+    Thread-local SQLite connection pool.
+
+    Each thread gets its own connection to avoid SQLite threading issues.
+    Connections are reused within the same thread for better performance.
+    """
+
+    def __init__(self, db_path: Path, max_idle_time: float = 300.0):
+        """
+        Initialize connection pool.
+
+        Args:
+            db_path: Path to SQLite database
+            max_idle_time: Close connections idle longer than this (seconds)
+        """
+        self.db_path = db_path
+        self.max_idle_time = max_idle_time
+        self._local = threading.local()
+        self._lock = threading.Lock()
+
+    def get_connection(self) -> sqlite3.Connection:
+        """
+        Get or create a connection for the current thread.
+
+        Returns:
+            SQLite connection for current thread
+        """
+        # Check if current thread has a connection
+        conn = getattr(self._local, 'connection', None)
+
+        # Check if connection exists and is still valid
+        if conn is not None:
+            try:
+                # Test connection is still alive
+                conn.execute("SELECT 1")
+                self._local.last_used = datetime.now()
+                return conn
+            except sqlite3.Error:
+                # Connection is dead, close it
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                self._local.connection = None
+
+        # Create new connection for this thread
+        conn = sqlite3.connect(
+            str(self.db_path),
+            timeout=30.0,
+            check_same_thread=False,  # We manage thread safety ourselves
+        )
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")  # Better concurrency
+        conn.execute("PRAGMA foreign_keys=ON")
+
+        self._local.connection = conn
+        self._local.last_used = datetime.now()
+
+        return conn
+
+    def close_all(self) -> None:
+        """Close all connections (call at shutdown)."""
+        conn = getattr(self._local, 'connection', None)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            self._local.connection = None
+
+
+# Module-level connection pool (lazy initialization)
+_connection_pool: ConnectionPool | None = None
+
+
+def get_connection_pool() -> ConnectionPool:
+    """Get or create the global connection pool."""
+    global _connection_pool
+    if _connection_pool is None:
+        _connection_pool = ConnectionPool(MEMORY_DB_PATH)
+    return _connection_pool
 
 
 @dataclass
@@ -63,24 +153,36 @@ class VibeMemory:
     Uses channel = project_name for isolation between projects.
     """
 
-    def __init__(self, project_name: str):
+    def __init__(self, project_name: str, use_pool: bool = True):
         """
         Initialize memory connection.
 
         Args:
             project_name: Project name (used as channel for isolation)
+            use_pool: Use connection pooling for better performance (default: True)
         """
         self.project_name = project_name
         self.session_id: str | None = None
         self._db_path = MEMORY_DB_PATH
+        self._use_pool = use_pool
 
     def _get_connection(self) -> sqlite3.Connection:
-        """Get database connection."""
+        """
+        Get database connection.
+
+        Uses connection pooling if enabled for better performance.
+        Pool connections are thread-local and reused.
+        """
         if not self._db_path.exists():
             raise MemoryConnectionError(
                 f"Memory-keeper database not found at {self._db_path}"
             )
 
+        if self._use_pool:
+            # Use global connection pool for thread-local reuse
+            return get_connection_pool().get_connection()
+
+        # Fallback to creating a new connection each time
         return sqlite3.connect(self._db_path)
 
     @contextmanager
@@ -88,8 +190,8 @@ class VibeMemory:
         """
         Context manager for database connections.
 
-        Ensures connections are always closed, even on exceptions.
-        Commits on success, connection is closed on exit.
+        When using pool: connection is reused, only commits/rollbacks
+        When not using pool: connection is created and closed each time
         """
         conn = self._get_connection()
         try:
@@ -99,7 +201,9 @@ class VibeMemory:
             conn.rollback()
             raise
         finally:
-            conn.close()
+            # Only close if not using pool (pool connections are reused)
+            if not self._use_pool:
+                conn.close()
 
     def start_session(self, description: str = "") -> str:
         """
@@ -139,7 +243,11 @@ class VibeMemory:
         priority: str = "normal",
     ) -> None:
         """
-        Save a context item.
+        Save a context item (upsert semantics).
+
+        If an item with the same key and channel already exists, it will be
+        updated with the new value while preserving the original id and created_at.
+        Otherwise, a new item is created.
 
         Args:
             key: Unique key for the item
@@ -154,24 +262,50 @@ class VibeMemory:
 
         with self._db_connection() as conn:
             cursor = conn.cursor()
+
+            # Check if item with same key+channel exists (proper upsert logic)
             cursor.execute(
                 """
-                INSERT OR REPLACE INTO context_items
-                (id, session_id, key, value, category, priority, channel, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                SELECT id, created_at FROM context_items
+                WHERE key = ? AND channel = ?
                 """,
-                (
-                    str(uuid.uuid4()),
-                    self.session_id,
-                    key,
-                    value,
-                    category,
-                    priority,
-                    self.project_name,
-                    now,
-                    now,
-                ),
+                (key, self.project_name),
             )
+            existing = cursor.fetchone()
+
+            if existing:
+                # Update existing item, preserve original id and created_at
+                cursor.execute(
+                    """
+                    UPDATE context_items
+                    SET value = ?, category = ?, priority = ?,
+                        session_id = ?, updated_at = ?
+                    WHERE key = ? AND channel = ?
+                    """,
+                    (value, category, priority, self.session_id, now, key, self.project_name),
+                )
+                logger.debug(f"Updated existing context item: {key}")
+            else:
+                # Insert new item
+                cursor.execute(
+                    """
+                    INSERT INTO context_items
+                    (id, session_id, key, value, category, priority, channel, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid.uuid4()),
+                        self.session_id,
+                        key,
+                        value,
+                        category,
+                        priority,
+                        self.project_name,
+                        now,
+                        now,
+                    ),
+                )
+                logger.debug(f"Created new context item: {key}")
 
     def load_project_context(self, limit: int = 50) -> list[ContextItem]:
         """
@@ -652,6 +786,9 @@ class VibeMemory:
         """
         Save a global convention that applies across projects.
 
+        Uses proper upsert logic to preserve original id and created_at
+        when updating an existing convention.
+
         Args:
             key: Convention identifier (e.g., "browser-testing", "code-style")
             convention: The convention text (e.g., "Always use Playwright for browser testing")
@@ -661,6 +798,7 @@ class VibeMemory:
             raise MemoryConnectionError("No active session")
 
         now = datetime.now().isoformat()
+        full_key = f"convention:{key}"
         value = json.dumps({
             "convention": convention,
             "applies_to": applies_to,
@@ -669,24 +807,47 @@ class VibeMemory:
 
         with self._db_connection() as conn:
             cursor = conn.cursor()
+
+            # Check if convention exists (proper upsert logic)
             cursor.execute(
                 """
-                INSERT OR REPLACE INTO context_items
-                (id, session_id, key, value, category, priority, channel, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                SELECT id FROM context_items
+                WHERE key = ? AND channel = ?
                 """,
-                (
-                    str(uuid.uuid4()),
-                    self.session_id,
-                    f"convention:{key}",
-                    value,
-                    "decision",
-                    "high",
-                    GLOBAL_CHANNEL,
-                    now,
-                    now,
-                ),
+                (full_key, GLOBAL_CHANNEL),
             )
+            existing = cursor.fetchone()
+
+            if existing:
+                # Update existing convention, preserve id and created_at
+                cursor.execute(
+                    """
+                    UPDATE context_items
+                    SET value = ?, session_id = ?, updated_at = ?
+                    WHERE key = ? AND channel = ?
+                    """,
+                    (value, self.session_id, now, full_key, GLOBAL_CHANNEL),
+                )
+            else:
+                # Insert new convention
+                cursor.execute(
+                    """
+                    INSERT INTO context_items
+                    (id, session_id, key, value, category, priority, channel, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid.uuid4()),
+                        self.session_id,
+                        full_key,
+                        value,
+                        "decision",
+                        "high",
+                        GLOBAL_CHANNEL,
+                        now,
+                        now,
+                    ),
+                )
 
         logger.info(f"Saved global convention: {key}")
 
@@ -801,6 +962,9 @@ class VibeMemory:
         """
         Save a debug session to memory.
 
+        Uses proper upsert logic to preserve original id and created_at
+        when updating an existing debug session.
+
         Args:
             session_data: Serialized debug session dict
         """
@@ -809,27 +973,51 @@ class VibeMemory:
 
         now = datetime.now().isoformat()
         key = f"debug-session:{session_data.get('problem', 'unknown')[:50]}"
+        value = json.dumps(session_data)
 
         with self._db_connection() as conn:
             cursor = conn.cursor()
+
+            # Check if debug session exists (proper upsert logic)
             cursor.execute(
                 """
-                INSERT OR REPLACE INTO context_items
-                (id, session_id, key, value, category, priority, channel, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                SELECT id FROM context_items
+                WHERE key = ? AND channel = ?
                 """,
-                (
-                    str(uuid.uuid4()),
-                    self.session_id,
-                    key,
-                    json.dumps(session_data),
-                    "progress",
-                    "high",
-                    self.project_name,
-                    now,
-                    now,
-                ),
+                (key, self.project_name),
             )
+            existing = cursor.fetchone()
+
+            if existing:
+                # Update existing session, preserve id and created_at
+                cursor.execute(
+                    """
+                    UPDATE context_items
+                    SET value = ?, session_id = ?, updated_at = ?
+                    WHERE key = ? AND channel = ?
+                    """,
+                    (value, self.session_id, now, key, self.project_name),
+                )
+            else:
+                # Insert new session
+                cursor.execute(
+                    """
+                    INSERT INTO context_items
+                    (id, session_id, key, value, category, priority, channel, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid.uuid4()),
+                        self.session_id,
+                        key,
+                        value,
+                        "progress",
+                        "high",
+                        self.project_name,
+                        now,
+                        now,
+                    ),
+                )
 
         logger.info(f"Saved debug session: {key}")
 

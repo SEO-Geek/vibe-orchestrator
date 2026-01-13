@@ -652,10 +652,68 @@ class TaskEnforcer:
         }
 
 
-# Convenience function for quick task type detection
+# =============================================================================
+# CACHED INSTANCES (Singleton pattern for performance)
+# Prevents redundant object creation on every convenience function call
+# =============================================================================
+
+# Module-level cached instances (lazy initialization)
+_cached_enforcer: TaskEnforcer | None = None
+_cached_detector: "SmartTaskDetector | None" = None
+
+
+def get_task_enforcer(global_conventions: list[str] | None = None) -> TaskEnforcer:
+    """
+    Get cached TaskEnforcer instance for performance.
+
+    Creates instance on first call, reuses on subsequent calls.
+    Pass global_conventions only on first call or when conventions change.
+
+    Args:
+        global_conventions: Optional list of conventions (only used on first call)
+
+    Returns:
+        Cached TaskEnforcer instance
+    """
+    global _cached_enforcer
+    if _cached_enforcer is None:
+        _cached_enforcer = TaskEnforcer(global_conventions)
+    return _cached_enforcer
+
+
+def get_smart_detector() -> "SmartTaskDetector":
+    """
+    Get cached SmartTaskDetector instance for performance.
+
+    Creates instance on first call (compiles all regex patterns),
+    reuses on subsequent calls to avoid redundant compilation.
+
+    Returns:
+        Cached SmartTaskDetector instance
+    """
+    global _cached_detector
+    if _cached_detector is None:
+        _cached_detector = SmartTaskDetector()
+    return _cached_detector
+
+
+def reset_cached_instances() -> None:
+    """
+    Reset cached instances.
+
+    Call this if you need to recreate instances with different settings,
+    such as updated global conventions.
+    """
+    global _cached_enforcer, _cached_detector
+    _cached_enforcer = None
+    _cached_detector = None
+    logger.debug("Reset cached TaskEnforcer and SmartTaskDetector instances")
+
+
+# Convenience function for quick task type detection (uses cached instance)
 def detect_task_type(description: str) -> TaskType:
     """Quick function to detect task type from description."""
-    enforcer = TaskEnforcer()
+    enforcer = get_task_enforcer()
     return enforcer.detect_task_type(description)
 
 
@@ -829,10 +887,12 @@ class SmartTaskDetector:
         return matches
 
 
-# Convenience function for smart detection
+# Convenience function for smart detection (uses cached instance)
 def smart_detect_task_type(description: str) -> TaskTypeDetection:
     """
     Quick function to detect task type with confidence scoring.
+
+    Uses cached SmartTaskDetector instance for performance.
 
     Args:
         description: Task description
@@ -840,5 +900,5 @@ def smart_detect_task_type(description: str) -> TaskTypeDetection:
     Returns:
         TaskTypeDetection with type, confidence, and method
     """
-    detector = SmartTaskDetector()
+    detector = get_smart_detector()
     return detector.detect(description)

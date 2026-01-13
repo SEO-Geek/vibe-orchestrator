@@ -302,3 +302,49 @@ class Reviewer:
             "rejected": rejected_count,
             "max_attempts": self.max_attempts,
         }
+
+    def cleanup_completed_task(self, task_id: str) -> None:
+        """
+        Clean up tracking data for a completed task.
+
+        Call this after a task is approved OR after max retries exhausted
+        to prevent memory leak from unbounded dict growth.
+
+        Args:
+            task_id: The task identifier to clean up
+        """
+        self._attempt_counts.pop(task_id, None)
+        self._last_reviews.pop(task_id, None)
+        logger.debug(f"Cleaned up tracking data for task '{task_id}'")
+
+    def cleanup_stale_tasks(self, max_age_seconds: int = 3600) -> int:
+        """
+        Clean up tasks that have been idle for too long.
+
+        Prevents memory leak from abandoned tasks that were never completed.
+        Default cleanup age is 1 hour.
+
+        Args:
+            max_age_seconds: Maximum age in seconds before cleanup (default: 1 hour)
+
+        Returns:
+            Number of stale tasks cleaned up
+        """
+        now = datetime.now()
+        stale_tasks = []
+
+        # Find tasks with reviews older than max_age
+        for task_id, review in self._last_reviews.items():
+            age = (now - review.reviewed_at).total_seconds()
+            if age > max_age_seconds:
+                stale_tasks.append(task_id)
+
+        # Clean up stale tasks
+        for task_id in stale_tasks:
+            self._attempt_counts.pop(task_id, None)
+            self._last_reviews.pop(task_id, None)
+
+        if stale_tasks:
+            logger.info(f"Cleaned up {len(stale_tasks)} stale tasks from reviewer")
+
+        return len(stale_tasks)

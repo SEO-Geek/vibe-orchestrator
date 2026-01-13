@@ -6,6 +6,80 @@ All notable changes to Vibe Orchestrator will be documented in this file.
 
 ### Added
 
+#### Performance & Reliability Optimizations (2026-01-13)
+
+**Problem**: Senior code review agents identified 8 optimization opportunities across the codebase: memory leaks, redundant object creation, missing integrations, and missing fault tolerance.
+
+**Solution**: Comprehensive optimization pass implementing all recommendations:
+
+1. **Memory Leak Fix in Reviewer** (`vibe/orchestrator/reviewer.py`):
+   - `_attempt_counts` and `_last_reviews` dicts grew unbounded
+   - Added `cleanup_completed_task()` - clears tracking after task approval
+   - Added `cleanup_stale_tasks(max_age_seconds=3600)` - removes idle tasks older than 1 hour
+   - Called automatically by Supervisor after task completion
+
+2. **Cached SmartTaskDetector Singleton** (`vibe/orchestrator/task_enforcer.py`):
+   - SmartTaskDetector was recreated for every task detection
+   - Added module-level `_cached_detector` variable
+   - `get_smart_detector()` factory function returns cached instance
+   - `reset_cached_instances()` for testing
+
+3. **Fixed UPSERT Bug in Memory Keeper** (`vibe/memory/keeper.py`):
+   - `save()`, `save_convention()`, `save_debug_session()` used INSERT OR REPLACE
+   - This generated new IDs and lost `created_at` timestamps
+   - Changed to check-then-UPDATE/INSERT pattern preserving original IDs
+
+4. **Connection Pooling** (`vibe/memory/keeper.py`):
+   - New `ConnectionPool` class with thread-local storage
+   - Reuses SQLite connections per thread (avoids reconnection overhead)
+   - Validates connections before returning (handles stale)
+   - Configurable `max_idle_time` (default 300s)
+   - `VibeMemory` accepts `use_pool=True` parameter
+
+5. **WorkflowEngine Integration** (`vibe/orchestrator/supervisor.py`):
+   - WorkflowEngine existed but wasn't used in task execution
+   - Added `_expand_tasks_with_workflow()` method
+   - Called after GLM decomposition when `use_workflows=True`
+   - Expands tasks into multi-phase workflows (ANALYZE → IMPLEMENT → VERIFY)
+
+6. **MCP Routing Table** (`vibe/orchestrator/supervisor.py`):
+   - `MCP_ROUTING_TABLE` maps task types to recommended MCP tools
+   - 6 task types: debug, code_write, ui_test, research, code_refactor, database
+   - Each entry has `recommended` tools list and `hint` text
+   - `_get_mcp_hints()` method injects hints into task context
+   - Uses SmartTaskDetector for task type detection
+
+7. **Circuit Breaker Integration** (`vibe/orchestrator/supervisor.py`):
+   - CircuitBreaker existed in `claude/circuit.py` but wasn't used
+   - Added `circuit_breaker` instance in `__init__`
+   - Checks `can_execute()` before each task
+   - Records `record_success()` / `record_failure()` after execution
+   - Fails fast when circuit is OPEN (prevents cascading failures)
+
+8. **Timeout Checkpointing** (`vibe/claude/executor.py`):
+   - `TimeoutCheckpoint` dataclass stores partial work:
+     - `task_description`, `tool_calls`, `file_changes`, `partial_output`, `elapsed_seconds`
+   - `save_checkpoint()` persists to `~/.config/vibe/checkpoints/<task_id>.json`
+   - `get_last_checkpoint(task_id)` retrieves for retry context
+   - `clear_checkpoint(task_id)` removes after successful completion
+   - Checkpoint saved automatically before timeout error raised
+
+**Files Modified**:
+- `vibe/orchestrator/reviewer.py` - Cleanup methods
+- `vibe/orchestrator/task_enforcer.py` - Singleton caching
+- `vibe/memory/keeper.py` - UPSERT fix, ConnectionPool
+- `vibe/orchestrator/supervisor.py` - WorkflowEngine, MCP routing, circuit breaker
+- `vibe/claude/executor.py` - TimeoutCheckpoint
+
+**Verification**:
+- All integrations verified by senior code review agents
+- Circuit breaker state: CLOSED (healthy)
+- MCP routing: 6 task types configured
+- SmartTaskDetector: DEBUG detection at 0.90 confidence
+- WorkflowEngine: Expands tasks to phases correctly
+
+---
+
 #### Intelligent GLM Orchestration System (2026-01-13)
 
 **Problem**: GLM task decomposition was static - it would create tasks without considering what workflows and sub-tasks are typically needed for different types of work. For example, when building a feature, it wouldn't automatically add "analyze dependencies", "add comments", or "run tests" phases.

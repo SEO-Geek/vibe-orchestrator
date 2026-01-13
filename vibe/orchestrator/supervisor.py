@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from vibe.config import Project
 from vibe.exceptions import (
+    ClaudeCircuitOpenError,
     ClaudeError,
     GLMError,
     ReviewRejectedError,
@@ -37,12 +38,71 @@ from vibe.exceptions import (
 from vibe.glm.client import GLMClient
 from vibe.memory.keeper import VibeMemory
 from vibe.state import SessionContext, SessionState, Task
+from vibe.claude.circuit import CircuitBreaker
 
 # Avoid circular import - import lazily in methods that need it
 if TYPE_CHECKING:
     from vibe.claude.executor import ClaudeExecutor, TaskResult
+    from vibe.orchestrator.reviewer import Reviewer
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# MCP ROUTING TABLE
+# Maps task types to recommended MCP tools for Claude to use
+# =============================================================================
+
+MCP_ROUTING_TABLE: dict[str, dict[str, list[str]]] = {
+    "debug": {
+        "recommended": [
+            "mcp__chrome-devtools__list_console_messages",
+            "mcp__chrome-devtools__list_network_requests",
+            "mcp__sequential-thinking__sequentialthinking",
+        ],
+        "hint": "Use Chrome DevTools for browser debugging, sequential-thinking for complex analysis",
+    },
+    "code_write": {
+        "recommended": [
+            "mcp__context7__resolve-library-id",
+            "mcp__context7__query-docs",
+            "mcp__github__search_code",
+        ],
+        "hint": "Use context7 for up-to-date library documentation before implementing",
+    },
+    "ui_test": {
+        "recommended": [
+            "mcp__playwright__playwright_navigate",
+            "mcp__playwright__playwright_screenshot",
+            "mcp__playwright__playwright_click",
+            "mcp__chrome-devtools__take_screenshot",
+        ],
+        "hint": "MUST use Playwright or Chrome DevTools for browser testing - never curl",
+    },
+    "research": {
+        "recommended": [
+            "mcp__perplexity__search",
+            "mcp__perplexity__reason",
+            "mcp__context7__query-docs",
+        ],
+        "hint": "Use Perplexity for web research, context7 for library docs",
+    },
+    "code_refactor": {
+        "recommended": [
+            "mcp__git__git_status",
+            "mcp__git__git_diff",
+            "mcp__memory-keeper__context_save",
+        ],
+        "hint": "Save state before refactoring, verify with git diff after",
+    },
+    "database": {
+        "recommended": [
+            "mcp__sqlite__read_query",
+            "mcp__sqlite__list_tables",
+        ],
+        "hint": "Use SQLite tools for database operations",
+    },
+}
 
 # Maximum retry attempts for rejected tasks
 MAX_RETRY_ATTEMPTS = 3
@@ -133,6 +193,8 @@ class Supervisor:
         memory: VibeMemory | None = None,
         callbacks: SupervisorCallbacks | None = None,
         max_retries: int = MAX_RETRY_ATTEMPTS,
+        use_workflow_engine: bool | None = None,
+        use_circuit_breaker: bool = True,
     ):
         """
         Initialize supervisor.
@@ -143,12 +205,20 @@ class Supervisor:
             memory: Optional VibeMemory for persistence
             callbacks: Optional callbacks for progress updates
             max_retries: Maximum retry attempts for rejected tasks
+            use_workflow_engine: Enable workflow phase expansion (default: from project config)
+            use_circuit_breaker: Enable circuit breaker for Claude calls (default: True)
         """
         self.glm_client = glm_client
         self.project = project
         self.memory = memory
         self.callbacks = callbacks or SupervisorCallbacks()
         self.max_retries = max_retries
+
+        # Workflow engine setting - default from project config
+        self.use_workflow_engine = (
+            use_workflow_engine if use_workflow_engine is not None
+            else project.use_workflows
+        )
 
         # Initialize session context
         self.context = SessionContext(
@@ -158,6 +228,17 @@ class Supervisor:
 
         # Claude executor will be created per-task with appropriate settings
         self._executor: ClaudeExecutor | None = None
+
+        # Circuit breaker for Claude calls - prevents cascading failures
+        self._circuit_breaker: CircuitBreaker | None = None
+        if use_circuit_breaker:
+            self._circuit_breaker = CircuitBreaker(
+                failure_threshold=3,  # Open after 3 consecutive failures
+                reset_timeout=60.0,   # Try again after 60 seconds
+            )
+
+        # Reviewer reference for cleanup (set externally if using shared reviewer)
+        self._reviewer: Reviewer | None = None
 
         # Track total cost across all tasks
         self._total_cost_usd = 0.0
@@ -179,6 +260,95 @@ class Supervisor:
         logger.error(message)
         if self.callbacks.on_error:
             self.callbacks.on_error(message)
+
+    def _get_mcp_hints(self, task_description: str) -> str:
+        """
+        Get MCP tool hints based on detected task type.
+
+        Uses SmartTaskDetector to determine task type and returns
+        appropriate MCP recommendations from the routing table.
+
+        Args:
+            task_description: The task description
+
+        Returns:
+            Formatted string with MCP hints, or empty string if none
+        """
+        try:
+            from vibe.orchestrator.task_enforcer import get_smart_detector
+
+            detector = get_smart_detector()
+            detection = detector.detect(task_description)
+
+            # Get task type name (lowercase for routing table lookup)
+            task_type_name = detection.task_type.name.lower()
+
+            # Look up in routing table
+            if task_type_name in MCP_ROUTING_TABLE:
+                routing = MCP_ROUTING_TABLE[task_type_name]
+                hint = routing.get("hint", "")
+                recommended = routing.get("recommended", [])
+
+                if hint or recommended:
+                    parts = ["\n## MCP TOOL RECOMMENDATIONS"]
+                    if hint:
+                        parts.append(f"HINT: {hint}")
+                    if recommended:
+                        tools_str = ", ".join(recommended[:3])  # Limit to top 3
+                        parts.append(f"Consider using: {tools_str}")
+                    return "\n".join(parts)
+
+        except Exception as e:
+            logger.debug(f"Could not get MCP hints: {e}")
+
+        return ""
+
+    def _expand_tasks_with_workflow(
+        self,
+        task_dicts: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """
+        Expand tasks using WorkflowEngine if enabled.
+
+        Converts simple tasks into multi-phase workflows based on
+        detected task type (e.g., DEBUG → reproduce, investigate, fix, verify).
+
+        Args:
+            task_dicts: List of task dictionaries from GLM
+
+        Returns:
+            Expanded list of tasks (or original if workflow disabled)
+        """
+        if not self.use_workflow_engine:
+            return task_dicts
+
+        try:
+            from vibe.orchestrator.workflows import WorkflowEngine
+
+            engine = WorkflowEngine(
+                enable_workflows=True,
+                enable_injection=self.project.inject_subtasks,
+            )
+
+            expanded = engine.process_tasks(task_dicts, expand_to_phases=True)
+
+            # Convert ExpandedTask objects back to dicts
+            expanded_dicts = [t.to_dict() for t in expanded]
+
+            if len(expanded_dicts) != len(task_dicts):
+                self._emit_progress(
+                    f"WorkflowEngine expanded {len(task_dicts)} tasks "
+                    f"to {len(expanded_dicts)} phases"
+                )
+
+            return expanded_dicts
+
+        except ImportError as e:
+            logger.warning(f"WorkflowEngine not available: {e}")
+            return task_dicts
+        except Exception as e:
+            logger.warning(f"WorkflowEngine expansion failed: {e}")
+            return task_dicts
 
     async def _run_hooks(self, hooks: list[str], phase: str) -> bool:
         """
@@ -434,6 +604,9 @@ class Supervisor:
                 self.context.transition_to(SessionState.ERROR)
                 return result
 
+            # Optionally expand tasks using WorkflowEngine for multi-phase workflows
+            task_dicts = self._expand_tasks_with_workflow(task_dicts)
+
             # Convert to Task objects and queue them
             tasks = []
             for i, td in enumerate(task_dicts, 1):
@@ -552,6 +725,12 @@ class Supervisor:
                     # Don't retry on execution failure (e.g., timeout)
                     break
 
+            except ClaudeCircuitOpenError as e:
+                # Circuit breaker is open - don't retry, fail fast
+                result.error = f"Circuit breaker open: {e}"
+                self._emit_error(f"Circuit breaker prevented execution: {e}")
+                break
+
             except ClaudeError as e:
                 result.error = str(e)
                 self._emit_error(f"Claude error: {e}")
@@ -640,6 +819,14 @@ class Supervisor:
                 files_changed=[],
             )
 
+        # Clean up reviewer tracking to prevent memory leak
+        # Called regardless of success/failure to ensure cleanup
+        if self._reviewer:
+            try:
+                self._reviewer.cleanup_completed_task(task.id)
+            except Exception as e:
+                logger.debug(f"Reviewer cleanup failed: {e}")
+
         return result
 
     async def execute_task(
@@ -650,15 +837,29 @@ class Supervisor:
         """
         Execute a single task via Claude.
 
+        Uses circuit breaker to prevent cascading failures and adds
+        MCP tool hints based on detected task type.
+
         Args:
             task: Task to execute
             previous_feedback: Feedback from previous rejection (for retries)
 
         Returns:
             TaskResult from Claude execution
+
+        Raises:
+            ClaudeCircuitOpenError: If circuit breaker is open
         """
         # Import here to avoid circular import
         from vibe.claude.executor import ClaudeExecutor
+
+        # Check circuit breaker before attempting execution
+        if self._circuit_breaker and not self._circuit_breaker.can_execute():
+            raise ClaudeCircuitOpenError(
+                "Circuit breaker is open - too many consecutive failures",
+                failures=self._circuit_breaker.stats.failed_calls,
+                reset_time=self._circuit_breaker.reset_timeout,
+            )
 
         # Load global conventions from memory if available
         global_conventions: list[str] = []
@@ -675,20 +876,39 @@ class Supervisor:
             global_conventions=global_conventions,
         )
 
-        # Build constraints including previous feedback
+        # Build constraints including previous feedback and MCP hints
         constraints = list(task.constraints) if task.constraints else []
         if previous_feedback:
             constraints.append(f"IMPORTANT - Previous attempt feedback: {previous_feedback}")
 
-        # Execute
-        result = await executor.execute(
-            task_description=task.description,
-            files=task.files if task.files else None,
-            constraints=constraints if constraints else None,
-            on_progress=self.callbacks.on_progress,
-        )
+        # Add MCP tool hints based on task type
+        mcp_hints = self._get_mcp_hints(task.description)
+        if mcp_hints:
+            constraints.append(mcp_hints)
 
-        return result
+        # Execute with circuit breaker tracking
+        try:
+            result = await executor.execute(
+                task_description=task.description,
+                files=task.files if task.files else None,
+                constraints=constraints if constraints else None,
+                on_progress=self.callbacks.on_progress,
+            )
+
+            # Record success/failure in circuit breaker
+            if self._circuit_breaker:
+                if result.success:
+                    self._circuit_breaker.record_success()
+                else:
+                    self._circuit_breaker.record_failure()
+
+            return result
+
+        except Exception as e:
+            # Record failure in circuit breaker
+            if self._circuit_breaker:
+                self._circuit_breaker.record_failure()
+            raise
 
     async def review_task(
         self,
@@ -730,8 +950,8 @@ class Supervisor:
         return review_result
 
     def get_stats(self) -> dict[str, Any]:
-        """Get supervisor statistics."""
-        return {
+        """Get supervisor statistics including circuit breaker status."""
+        stats = {
             "project": self.project.name,
             "session_state": self.context.state.name,
             "completed_tasks": len(self.context.completed_tasks),
@@ -739,4 +959,18 @@ class Supervisor:
             "error_count": self.context.error_count,
             "total_cost_usd": self._total_cost_usd,
             "glm_usage": self.glm_client.get_usage_stats(),
+            "workflow_engine_enabled": self.use_workflow_engine,
         }
+
+        # Add circuit breaker stats if enabled
+        if self._circuit_breaker:
+            cb_stats = self._circuit_breaker.stats
+            stats["circuit_breaker"] = {
+                "state": self._circuit_breaker.state.name,
+                "total_calls": cb_stats.total_calls,
+                "successful_calls": cb_stats.successful_calls,
+                "failed_calls": cb_stats.failed_calls,
+                "rejected_calls": cb_stats.rejected_calls,
+            }
+
+        return stats

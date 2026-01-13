@@ -96,10 +96,19 @@ User <-> GLM (brain) <-> Claude (worker)
 The CORE of Vibe. Coordinates the full GLM → Claude → GLM loop:
 - Loads project context (STARMAP, CLAUDE.md, memory)
 - Asks GLM to decompose user requests into atomic tasks
+- **WorkflowEngine Integration**: Auto-expands tasks into multi-phase workflows
 - Executes each task via Claude subprocess
 - Sends Claude's output to GLM for review
 - Handles retries with feedback injection (max 3 attempts)
 - Persists results to memory-keeper
+- **Circuit Breaker Integration**: Prevents cascading failures
+  - Checks `can_execute()` before each task
+  - Records success/failure to track failure rate
+  - Rejects tasks when circuit is OPEN (fails fast)
+- **MCP Routing Table**: Task-type-aware tool recommendations
+  - 6 task types: debug, code_write, ui_test, research, code_refactor, database
+  - Recommended MCP tools injected into task context
+  - Hints guide Claude to use appropriate tools
 
 ### Reviewer (`orchestrator/reviewer.py`)
 GLM-powered code review gate:
@@ -107,6 +116,9 @@ GLM-powered code review gate:
 - Tracks attempts per task for retry logic
 - Builds retry context with previous rejection feedback
 - Auto-approves if review crashes to avoid losing work
+- **Memory Management**: Prevents unbounded dict growth
+  - `cleanup_completed_task()` clears tracking data after task completion
+  - `cleanup_stale_tasks()` removes idle tasks older than 1 hour
 
 ### ClaudeExecutor (`claude/executor.py`)
 Subprocess integration with Claude Code CLI:
@@ -115,6 +127,10 @@ Subprocess integration with Claude Code CLI:
 - File change detection from Edit/Write tools
 - Timeout protection with configurable tiers
 - Clean environment (removes API keys from subprocess)
+- **Timeout Checkpointing**: Saves partial work before timeout for recovery
+  - `TimeoutCheckpoint` dataclass stores tool calls, file changes, partial output
+  - `save_checkpoint()` persists to `~/.config/vibe/checkpoints/`
+  - `get_last_checkpoint()` retrieves for retry context
 
 ### GLMClient (`glm/client.py`)
 OpenRouter API wrapper for GLM-4.7:
@@ -129,6 +145,10 @@ Direct SQLite access to memory-keeper database:
 - Context persistence (decisions, tasks, progress)
 - Checkpoint creation before risky operations
 - Convention storage for cross-project rules
+- **Connection Pooling**: Thread-local SQLite connections for efficiency
+  - `ConnectionPool` class with automatic connection reuse
+  - Validates connections before returning (handles stale)
+  - WAL mode and foreign keys enabled per connection
 
 ### VibeRepository (`persistence/repository.py`)
 Unified persistence layer - single source of truth:
@@ -232,6 +252,15 @@ Projects are registered in `~/.config/vibe/projects.json`:
 
 ## Recent Changes
 
+- **2026-01-13**: Performance & Reliability Optimizations
+  - MCP routing table with 6 task types (auto-injects tool hints)
+  - Circuit breaker integration in Supervisor (fail-fast)
+  - Connection pooling for memory keeper (thread-local reuse)
+  - Timeout checkpointing (saves partial work for recovery)
+  - Memory leak fix in Reviewer (cleanup methods)
+  - Cached SmartTaskDetector singleton (avoids recreation)
+  - Fixed UPSERT bug in memory keeper (preserves IDs)
+  - WorkflowEngine integration in Supervisor
 - **2026-01-13**: Intelligent GLM Orchestration (WorkflowEngine, SubTaskInjector, SmartTaskDetector)
 - **2026-01-13**: Claude-like TUI features (TaskPanel, CostBar, PlanReview, Hooks, Compaction)
 - **2026-01-13**: Critical bug fixes (executor.py double-prompt, method name typo)

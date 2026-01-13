@@ -32,6 +32,48 @@ from vibe.logging import (
 )
 from vibe.orchestrator.task_enforcer import TaskEnforcer, TaskType
 
+
+# =============================================================================
+# TIMEOUT CHECKPOINT
+# Saves partial work when timeout is approaching
+# =============================================================================
+
+@dataclass
+class TimeoutCheckpoint:
+    """
+    Checkpoint of partial work saved before timeout.
+
+    Allows recovery of work done before Claude timed out.
+    """
+    task_description: str
+    tool_calls: list["ToolCall"]
+    file_changes: list[str]
+    partial_output: str
+    elapsed_seconds: float
+    saved_at: datetime = field(default_factory=datetime.now)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for storage."""
+        return {
+            "task_description": self.task_description,
+            "tool_calls": [
+                {"name": tc.name, "input": tc.input, "timestamp": tc.timestamp.isoformat()}
+                for tc in self.tool_calls
+            ],
+            "file_changes": self.file_changes,
+            "partial_output": self.partial_output,
+            "elapsed_seconds": self.elapsed_seconds,
+            "saved_at": self.saved_at.isoformat(),
+        }
+
+    def summary(self) -> str:
+        """Generate human-readable summary of checkpoint."""
+        return (
+            f"Checkpoint: {len(self.tool_calls)} tool calls, "
+            f"{len(self.file_changes)} files modified, "
+            f"{self.elapsed_seconds:.1f}s elapsed"
+        )
+
 logger = logging.getLogger(__name__)
 
 
@@ -126,6 +168,57 @@ class ClaudeExecutor:
         # Verify Claude CLI is installed
         if not shutil.which("claude"):
             raise ClaudeNotFoundError("Claude Code CLI not found in PATH")
+
+        # Timeout checkpoint for partial work recovery
+        self._last_checkpoint: TimeoutCheckpoint | None = None
+
+    def save_checkpoint(
+        self,
+        task_description: str,
+        tool_calls: list[ToolCall],
+        file_changes: list[str],
+        partial_output: str,
+        elapsed_seconds: float,
+    ) -> TimeoutCheckpoint:
+        """
+        Save a checkpoint of partial work.
+
+        Called automatically when timeout is approaching to preserve
+        any work done before the timeout.
+
+        Args:
+            task_description: The task being executed
+            tool_calls: Tool calls made so far
+            file_changes: Files modified so far
+            partial_output: Any output collected so far
+            elapsed_seconds: Time elapsed since start
+
+        Returns:
+            The saved checkpoint
+        """
+        checkpoint = TimeoutCheckpoint(
+            task_description=task_description,
+            tool_calls=tool_calls,
+            file_changes=file_changes,
+            partial_output=partial_output,
+            elapsed_seconds=elapsed_seconds,
+        )
+        self._last_checkpoint = checkpoint
+        logger.info(f"Saved timeout checkpoint: {checkpoint.summary()}")
+        return checkpoint
+
+    def get_last_checkpoint(self) -> TimeoutCheckpoint | None:
+        """
+        Get the last saved checkpoint.
+
+        Returns:
+            The last checkpoint, or None if no checkpoint saved
+        """
+        return self._last_checkpoint
+
+    def clear_checkpoint(self) -> None:
+        """Clear the last saved checkpoint."""
+        self._last_checkpoint = None
 
     def cancel(self) -> None:
         """Cancel the current execution."""
@@ -371,17 +464,36 @@ class ClaudeExecutor:
                 process.stdin.close()
 
             # Read and parse streaming output with timeout
+            start_time = datetime.now()
             try:
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(),
                     timeout=self.timeout,
                 )
             except asyncio.TimeoutError:
+                # Calculate elapsed time for checkpoint
+                elapsed = (datetime.now() - start_time).total_seconds()
+
+                # Save checkpoint of any partial work done before timeout
+                # This preserves tool calls and file changes so work isn't lost
+                if tool_calls or file_changes:
+                    self.save_checkpoint(
+                        task_description=task_description,
+                        tool_calls=tool_calls,
+                        file_changes=file_changes,
+                        partial_output=result_text,
+                        elapsed_seconds=elapsed,
+                    )
+                    logger.warning(
+                        f"Timeout checkpoint saved: {len(tool_calls)} tool calls, "
+                        f"{len(file_changes)} files modified"
+                    )
+
                 if process and process.returncode is None:
                     process.kill()
                     await process.wait()
                 raise ClaudeTimeoutError(
-                    f"Task timed out after {self.timeout}s",
+                    f"Task timed out after {self.timeout}s (checkpoint saved)",
                     self.timeout,
                 )
 
