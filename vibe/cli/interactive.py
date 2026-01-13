@@ -73,7 +73,7 @@ async def execute_tasks(
     This is the core task execution loop used by both process_user_request
     and /redo command.
     """
-    MAX_RETRIES = 3
+    MAX_RETRIES = 3  # noqa: N806 (constant in function)
     completed = 0
     failed = 0
     all_file_changes: list[str] = []
@@ -168,13 +168,18 @@ async def execute_tasks(
                     )
                 except Exception as review_error:
                     # Review crashed - FAIL the task (never auto-approve unreviewed code)
-                    console.print(
-                        f"[red]Review failed ({review_error}) - rejecting to ensure code quality[/red]"
+                    err_msg = (
+                        f"[red]Review failed ({review_error}) - "
+                        "rejecting to ensure code quality[/red]"
                     )
+                    console.print(err_msg)
                     review = {
                         "approved": False,
                         "issues": [f"Review system error: {str(review_error)[:100]}"],
-                        "feedback": "Task rejected due to review error. Code changes preserved but not approved.",
+                        "feedback": (
+                            "Task rejected due to review error. "
+                            "Code changes preserved but not approved."
+                        ),
                     }
 
                 # Persist GLM review response
@@ -265,9 +270,13 @@ async def execute_tasks(
                     )
 
                     if memory:
+                        rejection_value = (
+                            f"Task: {task.get('description', '')}\n"
+                            f"Feedback: {previous_feedback}"
+                        )
                         memory.save(
                             key=f"rejection-{task.get('id', i)}-{attempt}",
-                            value=f"Task: {task.get('description', '')}\nFeedback: {previous_feedback}",
+                            value=rejection_value,
                             category="warning",
                             priority="high",
                         )
@@ -275,16 +284,24 @@ async def execute_tasks(
                     if attempt >= MAX_RETRIES:
                         failed += 1
                         console.print(f"\n  [red]Task failed after {MAX_RETRIES} attempts[/red]")
+                        fail_summary = (
+                            f"Rejected after {MAX_RETRIES} attempts: "
+                            f"{previous_feedback[:100]}"
+                        )
                         add_task(
                             task.get("description", ""),
                             success=False,
-                            summary=f"Rejected after {MAX_RETRIES} attempts: {previous_feedback[:100]}",
+                            summary=fail_summary,
                         )
                         if memory:
+                            full_fail_summary = (
+                                f"Rejected after {MAX_RETRIES} attempts: "
+                                f"{previous_feedback}"
+                            )
                             memory.save_task_result(
                                 task_description=task.get("description", ""),
                                 success=False,
-                                summary=f"Rejected after {MAX_RETRIES} attempts: {previous_feedback}",
+                                summary=full_fail_summary,
                             )
                         if repository and i in task_ids:
                             try:
@@ -402,7 +419,7 @@ async def process_user_request(
     )
 
     # Check if this is a debug request
-    DEBUG_KEYWORDS = ["debug", "broken", "not working", "bug", "crash", "why is", "what's wrong"]
+    DEBUG_KEYWORDS = ["debug", "broken", "not working", "bug", "crash", "why is", "what's wrong"]  # noqa: N806
     first_line = user_request.split("\n")[0].lower()
     is_debug = any(keyword in first_line for keyword in DEBUG_KEYWORDS)
 
@@ -658,7 +675,10 @@ def conversation_loop(
                 if repository and context.repo_session_id:
                     try:
                         stats = context.get_stats()
-                        summary = f"Completed {stats['completed_tasks']} tasks, {stats['error_count']} errors"
+                        summary = (
+                            f"Completed {stats['completed_tasks']} tasks, "
+                            f"{stats['error_count']} errors"
+                        )
                         repository.end_session(context.repo_session_id, summary=summary)
                     except Exception:
                         pass
@@ -675,7 +695,10 @@ def conversation_loop(
                     if repository and context.repo_session_id:
                         try:
                             stats = context.get_stats()
-                            summary = f"Completed {stats['completed_tasks']} tasks, {stats['error_count']} errors"
+                            summary = (
+                                f"Completed {stats['completed_tasks']} tasks, "
+                                f"{stats['error_count']} errors"
+                            )
                             repository.end_session(context.repo_session_id, summary=summary)
                         except Exception:
                             pass
@@ -720,11 +743,13 @@ def conversation_loop(
                 continue
 
             # Input size validation
-            MAX_INPUT_SIZE = 50000
+            MAX_INPUT_SIZE = 50000  # noqa: N806 (constant in function)
             if len(user_input) > MAX_INPUT_SIZE:
-                console.print(
-                    f"[yellow]Warning: Input is very large ({len(user_input):,} chars). Truncating.[/yellow]"
+                warn_msg = (
+                    f"[yellow]Warning: Input is very large "
+                    f"({len(user_input):,} chars). Truncating.[/yellow]"
                 )
+                console.print(warn_msg)
                 user_input = user_input[:MAX_INPUT_SIZE] + "\n\n[... truncated ...]"
 
             # Persist user message

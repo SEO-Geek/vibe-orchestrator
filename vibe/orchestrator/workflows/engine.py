@@ -270,14 +270,12 @@ class WorkflowEngine:
         parts = []
 
         if expanded_task.required_tools:
-            parts.append(
-                f"\n**REQUIRED Tools**: You MUST use these tools: {', '.join(expanded_task.required_tools)}"
-            )
+            tools_str = ", ".join(expanded_task.required_tools)
+            parts.append(f"\n**REQUIRED Tools**: You MUST use: {tools_str}")
 
         if expanded_task.recommended_agents:
-            parts.append(
-                f"\n**Recommended MCPs/Agents**: Consider using: {', '.join(expanded_task.recommended_agents)}"
-            )
+            agents_str = ", ".join(expanded_task.recommended_agents)
+            parts.append(f"\n**Recommended MCPs/Agents**: Consider: {agents_str}")
 
         return "\n".join(parts)
 

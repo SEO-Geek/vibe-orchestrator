@@ -281,6 +281,11 @@ Projects are registered in `~/.config/vibe/projects.json`:
 
 ## Recent Changes
 
+- **2026-01-13**: Comprehensive Inline Comments & Final Linting
+  - 81 inline comments added to 4 key modules (supervisor, executor, reviewer, client)
+  - Zero linting errors (all E501, F841, E741, N806 issues resolved)
+  - Comments focus on "why" not "what" - design decisions documented
+  - All 141 tests pass (100% pass rate, 2.9s runtime)
 - **2026-01-13**: Code Quality & Security Fixes
   - Fixed security issue: review failures now reject tasks (never auto-approve)
   - Ruff linting fixes (104 auto-fixed issues)

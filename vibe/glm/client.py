@@ -38,6 +38,8 @@ from vibe.logging import (
 logger = logging.getLogger(__name__)
 
 # Keywords that indicate investigation/exploration - ALWAYS delegate, never clarify
+# Rationale: Investigation tasks benefit from Claude exploring the codebase to find answers.
+# Asking clarifying questions for these wastes time - Claude can gather context itself.
 INVESTIGATION_KEYWORDS = re.compile(
     r"\b(check|debug|investigate|find|search|look|review|analyze|test|verify|"
     r"examine|inspect|diagnose|troubleshoot|explore|what\'s wrong|why is|"
@@ -51,6 +53,9 @@ MAX_RETRIES = 2
 RETRY_DELAYS = [1.0, 3.0]  # exponential backoff
 
 # Circuit breaker configuration
+# Pattern: After N consecutive failures, stop calling GLM to prevent cascading failures
+# and allow the service time to recover. This keeps the orchestrator responsive even
+# when GLM is down - we fall back to delegation rather than blocking.
 CIRCUIT_BREAKER_THRESHOLD = 3  # failures before circuit opens
 CIRCUIT_BREAKER_RESET_TIME = 60.0  # seconds before trying again
 
@@ -129,9 +134,10 @@ class GLMClient:
         self.temperature = temperature
         self.max_tokens = max_tokens
 
-        # Initialize async OpenAI client with OpenRouter base URL
+        # Use OpenAI SDK with OpenRouter's API - they expose an OpenAI-compatible endpoint.
+        # The headers are required by OpenRouter for usage tracking and rate limiting.
         self._client = AsyncOpenAI(
-            api_key=api_key,  # Only passed to client, not stored
+            api_key=api_key,  # Only passed to client, not stored (security)
             base_url=OPENROUTER_BASE_URL,
             default_headers={
                 "HTTP-Referer": "https://github.com/SEO-Geek/vibe-orchestrator",
@@ -285,13 +291,14 @@ class GLMClient:
             finish_reason = choice.finish_reason or ""
             current_max = max_tokens or self.max_tokens
 
-            # INTELLIGENT RETRY: If response was truncated, automatically retry with higher limit
+            # INTELLIGENT RETRY: If response was truncated mid-sentence, the task decomposition
+            # or review will be malformed JSON. Rather than fail, double the token limit and retry.
+            # Cap at 16K to prevent runaway costs - if GLM needs more than 16K, something is wrong.
             if finish_reason == "length" and current_max < 16384:
-                new_max = min(current_max * 2, 16384)  # Double up to 16K max
+                new_max = min(current_max * 2, 16384)
                 logger.warning(
                     f"Response truncated at {current_max} tokens, retrying with {new_max}"
                 )
-                # Recursive retry with higher limit
                 return await self.chat(
                     system_prompt=system_prompt,
                     messages=messages,
@@ -445,9 +452,11 @@ class GLMClient:
             # Record success
             self._record_success()
 
+            # Parse JSON task list from GLM's response (handles markdown code blocks, etc.)
             tasks = parse_task_list(response.content)
             if not tasks:
-                # Empty task list - create fallback investigation task
+                # GLM sometimes returns prose instead of JSON when confused by the request.
+                # Fallback to a generic investigation task so work can still proceed.
                 logger.warning("GLM returned empty task list, creating fallback task")
                 tasks = [
                     {
@@ -459,7 +468,9 @@ class GLMClient:
                     }
                 ]
 
-            # Post-process with WorkflowEngine if enabled
+            # Optional post-processing: expand tasks into phases (plan/implement/verify)
+            # and inject sub-tasks for common patterns (e.g., add tests for new functions).
+            # This runs AFTER GLM decomposition to avoid overcomplicating the prompt.
             if use_workflow_engine:
                 try:
                     from vibe.orchestrator.workflows import WorkflowEngine
@@ -484,7 +495,8 @@ class GLMClient:
             self._record_failure()
             logger.error(f"GLM timeout after {DEFAULT_TIMEOUT}s in decompose_task")
             raise GLMConnectionError(
-                f"GLM timed out after {DEFAULT_TIMEOUT}s - try a shorter request or check API status"
+                f"GLM timed out after {DEFAULT_TIMEOUT}s - "
+                "try a shorter request or check API status"
             )
         except Exception as e:
             self._record_failure()
@@ -516,7 +528,9 @@ class GLMClient:
             GLMConnectionError: If circuit breaker is open
             GLMResponseError: If response cannot be parsed
         """
-        # Circuit breaker check - if open, raise error (never auto-approve)
+        # SECURITY: If GLM is down, we must NOT auto-approve changes.
+        # Auto-approval would allow untested code through without any oversight.
+        # Better to fail the task and require human intervention.
         if self._is_circuit_open():
             logger.error("Circuit breaker open, cannot review changes")
             raise GLMConnectionError(
@@ -594,16 +608,19 @@ Output JSON: {{"approved": true/false, "issues": [...], "feedback": "..."}}"""
             Clarification question if needed, None to delegate
         """
         # HARD RULE 1: After 1 clarification, force delegation
+        # Prevents infinite clarification loops - if one question wasn't enough, let Claude investigate.
         if clarification_count >= 1:
             logger.info("Clarification limit reached, forcing delegation")
             return None
 
         # HARD RULE 2: Investigation keywords = instant delegation (no API call needed)
+        # These tasks ALWAYS benefit from Claude exploring rather than asking questions.
         if INVESTIGATION_KEYWORDS.search(user_request):
             logger.info("Investigation keyword detected, skipping clarification")
             return None
 
         # HARD RULE 3: Circuit breaker open = skip GLM, delegate
+        # Don't block the user waiting for a failing service.
         if self._is_circuit_open():
             logger.info("Circuit breaker open, skipping clarification")
             return None
@@ -651,31 +668,34 @@ If you MUST ask (see rules above), ask ONE brief question about a DECISION the u
 
                 content = response.content.strip()
 
-                # AGGRESSIVE DETECTION: Only return as clarification if it's clearly
-                # a SHORT question. Everything else = proceed to task decomposition.
-
-                # Signs that GLM wants to proceed (return None = proceed):
+                # AGGRESSIVE DETECTION: Bias toward delegation (returning None).
+                # GLM sometimes returns long explanations, task JSON, or multi-paragraph
+                # responses when it should just say "CLEAR". Detect these patterns and
+                # proceed to task decomposition rather than showing confusing output to user.
                 should_proceed = (
                     content.upper() == "CLEAR"
                     or content.upper().startswith("CLEAR")
-                    or '"tasks"' in content  # GLM returned task JSON
-                    or '"id":' in content  # Task structure
-                    or "```json" in content  # JSON block
-                    or "delegate" in content.lower()  # Delegation intent
-                    or "let me" in content.lower()  # Starting to work
-                    or len(content) > 500  # Long response = not a simple question
-                    or content.count("\n") > 5  # Multi-line = not a simple question
+                    or '"tasks"' in content  # GLM jumped ahead to task decomposition
+                    or '"id":' in content  # Task structure leaked through
+                    or "```json" in content  # JSON block = not a question
+                    or "delegate" in content.lower()  # Explicit delegation intent
+                    or "let me" in content.lower()  # GLM starting to work
+                    or len(content) > 500  # Long response != simple clarifying question
+                    or content.count("\n") > 5  # Multi-line != simple question
                 )
 
                 if should_proceed:
                     logger.info("GLM indicates ready to proceed")
                     return None
 
-                # Only return as clarification if it ends with "?" and is short
+                # Only return as clarification if it's genuinely a short question.
+                # This prevents verbose responses from becoming confusing clarification prompts.
                 if "?" in content and len(content) < 300:
                     return content
 
-                # Default: proceed (fail-safe)
+                # FAIL-SAFE: When in doubt, delegate to Claude. Better to let Claude
+                # investigate and potentially ask its own questions than to block on
+                # ambiguous GLM output.
                 logger.info("Ambiguous GLM response, defaulting to proceed")
                 return None
 
@@ -691,14 +711,16 @@ If you MUST ask (see rules above), ask ONE brief question about a DECISION the u
                 logger.warning(f"Unexpected error in ask_clarification: {e}")
                 last_error = str(e)
 
-            # Wait before retry (if not last attempt)
+            # Exponential backoff between retries - use the appropriate delay from RETRY_DELAYS
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)])
 
-        # All retries failed - record failure for circuit breaker
+        # All retries exhausted - record for circuit breaker tracking
         self._record_failure()
 
-        # Delegate to Claude (fail-safe)
+        # CRITICAL DESIGN DECISION: Clarification failures ALWAYS delegate to Claude.
+        # We never want GLM issues to block the user's workflow. Claude can always
+        # ask its own questions or investigate the codebase.
         logger.warning(f"All GLM attempts failed ({last_error}), forcing delegation to Claude")
         return None
 
@@ -730,8 +752,11 @@ If you MUST ask (see rules above), ask ONE brief question about a DECISION the u
         )
 
         try:
+            debug_system_prompt = (
+                "You are GLM generating debugging tasks. Output ONLY the JSON object."
+            )
             response = await self.chat(
-                system_prompt="You are GLM generating debugging tasks. Output ONLY the JSON object.",
+                system_prompt=debug_system_prompt,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
                 max_tokens=8192,  # Higher limit to prevent truncation
@@ -739,7 +764,7 @@ If you MUST ask (see rules above), ask ONE brief question about a DECISION the u
             )
             content = response.content
 
-            # Parse JSON from response
+            # Extract JSON from markdown code blocks if present - GLM often wraps JSON in ```
             json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", content)
             if json_match:
                 content = json_match.group(1).strip()
@@ -749,10 +774,15 @@ If you MUST ask (see rules above), ask ONE brief question about a DECISION the u
             return result
 
         except Exception as e:
+            # Debugging must never be blocked by GLM failures - provide a sensible fallback
+            # that allows Claude to investigate the problem independently.
             logger.warning(f"Failed to generate debug task: {e}")
-            # Fallback: generic investigation task
+            fallback_task = (
+                f"Investigate: {problem}. Explore the codebase, "
+                "find relevant files, and identify the root cause."
+            )
             return {
-                "task": f"Investigate: {problem}. Explore the codebase, find relevant files, and identify the root cause.",
+                "task": fallback_task,
                 "starting_points": ["Search codebase for relevant keywords"],
                 "what_to_look_for": "Error messages, stack traces, related code",
                 "success_criteria": "Root cause identified with evidence",
@@ -793,8 +823,12 @@ If you MUST ask (see rules above), ask ONE brief question about a DECISION the u
         )
 
         try:
+            review_system_prompt = (
+                "You are GLM reviewing Claude's debugging work. "
+                "Output ONLY the JSON object, no explanation or reasoning before it."
+            )
             response = await self.chat(
-                system_prompt="You are GLM reviewing Claude's debugging work. Output ONLY the JSON object, no explanation or reasoning before it.",
+                system_prompt=review_system_prompt,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
                 max_tokens=8192,  # Higher limit for review responses
@@ -809,7 +843,8 @@ If you MUST ask (see rules above), ask ONE brief question about a DECISION the u
 
             result = json.loads(content)
 
-            # Ensure required fields
+            # Ensure required fields exist - GLM may omit fields in edge cases.
+            # Default to conservative values: not approved, not solved.
             result.setdefault("approved", False)
             result.setdefault("is_problem_solved", False)
             result.setdefault("feedback", "No feedback provided")
@@ -823,10 +858,14 @@ If you MUST ask (see rules above), ask ONE brief question about a DECISION the u
         except Exception as e:
             logger.warning(f"Failed to review debug iteration: {e}")
             # Fallback: request more information
+            feedback_msg = (
+                f"GLM review failed ({e}). "
+                "Please provide more details about what you found."
+            )
             return {
                 "approved": False,
                 "is_problem_solved": False,
-                "feedback": f"GLM review failed ({e}). Please provide more details about what you found.",
+                "feedback": feedback_msg,
                 "next_task": "Continue investigation and provide detailed findings.",
             }
 
@@ -839,7 +878,8 @@ If you MUST ask (see rules above), ask ONE brief question about a DECISION the u
         }
 
 
-# Synchronous wrapper for startup validation
+# Synchronous wrapper for startup validation - needed because CLI startup is synchronous
+# but we need to test async API connectivity before entering the main event loop.
 def ping_glm_sync(api_key: str, timeout: float = 10.0) -> tuple[bool, str]:
     """
     Synchronous ping for startup validation.
@@ -857,13 +897,14 @@ def ping_glm_sync(api_key: str, timeout: float = 10.0) -> tuple[bool, str]:
 
     try:
         # Check if there's already a running event loop
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()  # Raises RuntimeError if no loop
     except RuntimeError:
-        # No running loop, safe to use asyncio.run()
+        # No running loop - simple case, just use asyncio.run()
         return asyncio.run(client.ping(timeout))
 
-    # If we're here, there's a running loop - use run_until_complete
-    # This shouldn't happen in normal CLI usage, but handle it gracefully
+    # EDGE CASE: If called from within an async context (e.g., pytest-asyncio),
+    # we can't use asyncio.run(). Spawn a thread with its own event loop instead.
+    # This is slower but avoids "cannot run event loop while another is running".
     import concurrent.futures
 
     with concurrent.futures.ThreadPoolExecutor() as executor:

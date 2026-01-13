@@ -653,7 +653,8 @@ class VibeRepository:
             )
         else:
             cursor.execute(
-                "SELECT COALESCE(MAX(sequence_num), 0) + 1 FROM tasks WHERE session_id = ? AND parent_task_id IS NULL",
+                """SELECT COALESCE(MAX(sequence_num), 0) + 1
+                   FROM tasks WHERE session_id = ? AND parent_task_id IS NULL""",
                 (session_id,),
             )
         sequence_num = cursor.fetchone()[0]
@@ -1068,7 +1069,8 @@ class VibeRepository:
 
         # Get next iteration number
         cursor.execute(
-            "SELECT COALESCE(MAX(iteration_num), 0) + 1 FROM debug_iterations WHERE debug_session_id = ?",
+            """SELECT COALESCE(MAX(iteration_num), 0) + 1
+               FROM debug_iterations WHERE debug_session_id = ?""",
             (debug_session_id,),
         )
         iteration_num = cursor.fetchone()[0]
@@ -1458,7 +1460,8 @@ class VibeRepository:
 
         # Total cost
         cursor.execute(
-            "SELECT SUM(cost_usd) FROM task_attempts WHERE task_id IN (SELECT id FROM tasks WHERE session_id = ?)",
+            """SELECT SUM(cost_usd) FROM task_attempts
+               WHERE task_id IN (SELECT id FROM tasks WHERE session_id = ?)""",
             (session_id,),
         )
         total_cost = cursor.fetchone()[0] or 0.0

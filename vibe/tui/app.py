@@ -111,9 +111,10 @@ class CostBar(Static):
     def _refresh(self) -> None:
         """Refresh display."""
         total = self.glm_cost + self.claude_cost
-        self.update(
-            f"[dim]Costs:[/dim] GLM [cyan]${self.glm_cost:.3f}[/cyan] + Claude [green]${self.claude_cost:.3f}[/green] = [bold]${total:.3f}[/bold]"
-        )
+        glm_part = f"GLM [cyan]${self.glm_cost:.3f}[/cyan]"
+        claude_part = f"Claude [green]${self.claude_cost:.3f}[/green]"
+        total_part = f"[bold]${total:.3f}[/bold]"
+        self.update(f"[dim]Costs:[/dim] {glm_part} + {claude_part} = {total_part}")
 
 
 class StatusBar(Static):
@@ -652,9 +653,9 @@ class VibeApp(App):
 
             # Final summary
             if result.success:
-                self._write_system(
-                    f"Request completed: {result.tasks_completed}/{result.total_tasks} tasks succeeded"
-                )
+                completed = result.tasks_completed
+                total = result.total_tasks
+                self._write_system(f"Request completed: {completed}/{total} tasks succeeded")
             else:
                 self._write_error(
                     f"Request failed: {result.tasks_failed}/{result.total_tasks} tasks failed"

@@ -291,7 +291,8 @@ class VibeMemory:
                 cursor.execute(
                     """
                     INSERT INTO context_items
-                    (id, session_id, key, value, category, priority, channel, created_at, updated_at)
+                    (id, session_id, key, value, category, priority, channel,
+                     created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
@@ -446,7 +447,8 @@ class VibeMemory:
             cursor.execute(
                 """
                 SELECT s.id, s.name, s.description, s.default_channel, s.created_at,
-                       (SELECT COUNT(*) FROM context_items ci WHERE ci.session_id = s.id) as item_count
+                       (SELECT COUNT(*) FROM context_items ci
+                        WHERE ci.session_id = s.id) as item_count
                 FROM sessions s
                 WHERE s.default_channel = ?
                 ORDER BY s.created_at DESC
@@ -836,7 +838,8 @@ class VibeMemory:
                 cursor.execute(
                     """
                     INSERT INTO context_items
-                    (id, session_id, key, value, category, priority, channel, created_at, updated_at)
+                    (id, session_id, key, value, category, priority, channel,
+                     created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
@@ -1010,7 +1013,8 @@ class VibeMemory:
                 cursor.execute(
                     """
                     INSERT INTO context_items
-                    (id, session_id, key, value, category, priority, channel, created_at, updated_at)
+                    (id, session_id, key, value, category, priority, channel,
+                     created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (

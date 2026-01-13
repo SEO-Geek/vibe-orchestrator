@@ -38,7 +38,8 @@ from vibe.glm.client import GLMClient
 from vibe.memory.keeper import VibeMemory
 from vibe.state import SessionContext, SessionState, Task
 
-# Avoid circular import - import lazily in methods that need it
+# TYPE_CHECKING imports are only evaluated by type checkers (mypy, pyright),
+# not at runtime. This breaks the circular dependency: supervisor -> executor -> supervisor
 if TYPE_CHECKING:
     from vibe.claude.executor import ClaudeExecutor, TaskResult
     from vibe.orchestrator.reviewer import Reviewer
@@ -48,7 +49,9 @@ logger = logging.getLogger(__name__)
 
 # =============================================================================
 # MCP ROUTING TABLE
-# Maps task types to recommended MCP tools for Claude to use
+# Maps task types to recommended MCP tools for Claude to use.
+# This table guides Claude toward the RIGHT tools for each task type,
+# preventing common mistakes like using curl for UI testing instead of Playwright.
 # =============================================================================
 
 MCP_ROUTING_TABLE: dict[str, dict[str, list[str]]] = {
@@ -58,7 +61,10 @@ MCP_ROUTING_TABLE: dict[str, dict[str, list[str]]] = {
             "mcp__chrome-devtools__list_network_requests",
             "mcp__sequential-thinking__sequentialthinking",
         ],
-        "hint": "Use Chrome DevTools for browser debugging, sequential-thinking for complex analysis",
+        "hint": (
+            "Use Chrome DevTools for browser debugging, "
+            "sequential-thinking for complex analysis"
+        ),
     },
     "code_write": {
         "recommended": [
@@ -102,20 +108,26 @@ MCP_ROUTING_TABLE: dict[str, dict[str, list[str]]] = {
     },
 }
 
-# Maximum retry attempts for rejected tasks
+# Maximum retry attempts for rejected tasks.
+# 3 attempts balances giving Claude a fair chance vs wasting time on impossible tasks.
 MAX_RETRY_ATTEMPTS = 3
 
-# Retry backoff delays (seconds) - exponential backoff
+# Retry backoff delays (seconds) - exponential backoff.
+# Progressive delays prevent hammering the API and allow transient issues to resolve.
 RETRY_BACKOFF_DELAYS = [2.0, 5.0, 10.0]
 
 # GLM API timeout for review calls (seconds)
 GLM_REVIEW_TIMEOUT = 60.0
 
-# Token budget for GLM context (approximate)
-# GLM-4 has ~128K context, but we want to leave room for response
-# Using conservative estimate: 1 token ~= 4 characters
-MAX_CONTEXT_TOKENS = 32000  # ~128K chars
-CHARS_PER_TOKEN = 4  # Rough approximation
+# Token budget for GLM context (approximate).
+# GLM-4 has ~128K context, but we reserve most for the response and actual task content.
+# Using 25% (32K tokens) for project context ensures room for:
+# - Task decomposition output
+# - Review reasoning
+# - Error messages and feedback
+# The 4 chars/token ratio is conservative; actual ratio varies by language.
+MAX_CONTEXT_TOKENS = 32000
+CHARS_PER_TOKEN = 4
 MAX_CONTEXT_CHARS = MAX_CONTEXT_TOKENS * CHARS_PER_TOKEN
 
 
@@ -239,12 +251,15 @@ class Supervisor:
         # Claude executor will be created per-task with appropriate settings
         self._executor: ClaudeExecutor | None = None
 
-        # Circuit breaker for Claude calls - prevents cascading failures
+        # Circuit breaker prevents cascading failures when Claude is unhealthy.
+        # Pattern: After N consecutive failures, "open" the circuit and fail fast
+        # instead of wasting time on doomed requests. After reset_timeout,
+        # allow one "probe" request to check if Claude recovered.
         self._circuit_breaker: CircuitBreaker | None = None
         if use_circuit_breaker:
             self._circuit_breaker = CircuitBreaker(
-                failure_threshold=3,  # Open after 3 consecutive failures
-                reset_timeout=60.0,  # Try again after 60 seconds
+                failure_threshold=3,
+                reset_timeout=60.0,
             )
 
         # Reviewer reference for cleanup (set externally if using shared reviewer)
@@ -290,7 +305,8 @@ class Supervisor:
 
         request_lower = request.lower().strip()
 
-        # Question words (asking for information, not changes)
+        # Question words at START of request indicate information-seeking, not action.
+        # Anchored patterns (^) ensure we only match when these are the request intent.
         question_patterns = [
             r"^what\s",  # "what does X do"
             r"^how\s",  # "how does X work"
@@ -303,7 +319,8 @@ class Supervisor:
             r"^please\s+(find|show|explain|tell|describe|investigate)",
         ]
 
-        # Investigation action keywords
+        # Investigation keywords anywhere in request (word boundaries prevent false matches).
+        # These verbs indicate read-only operations that don't need clarification.
         investigation_keywords = [
             r"\b(find|search|locate|look\s+for)\b",
             r"\b(investigate|analyze|examine|inspect|explore)\b",
@@ -350,6 +367,8 @@ class Supervisor:
         """
         import re
 
+        # Patterns that historically cause huge diffs that exceed review limits.
+        # When diff is truncated, GLM can't verify all changes - risky.
         large_task_patterns = [
             r"refactor\s+(entire|all|whole)",
             r"rename\s+.+\s+across",
@@ -379,6 +398,8 @@ class Supervisor:
         try:
             from vibe.orchestrator.task_enforcer import get_smart_detector
 
+            # SmartTaskDetector uses keyword analysis to classify tasks.
+            # This avoids calling GLM just to determine task type.
             detector = get_smart_detector()
             detection = detector.detect(task_description)
 
@@ -392,11 +413,13 @@ class Supervisor:
                 recommended = routing.get("recommended", [])
 
                 if hint or recommended:
+                    # Format as markdown section that Claude will parse as instructions.
+                    # Limiting to 3 tools prevents overwhelming Claude with options.
                     parts = ["\n## MCP TOOL RECOMMENDATIONS"]
                     if hint:
                         parts.append(f"HINT: {hint}")
                     if recommended:
-                        tools_str = ", ".join(recommended[:3])  # Limit to top 3
+                        tools_str = ", ".join(recommended[:3])
                         parts.append(f"Consider using: {tools_str}")
                     return "\n".join(parts)
 
@@ -413,7 +436,14 @@ class Supervisor:
         Expand tasks using WorkflowEngine if enabled.
 
         Converts simple tasks into multi-phase workflows based on
-        detected task type (e.g., DEBUG → reproduce, investigate, fix, verify).
+        detected task type (e.g., DEBUG -> reproduce, investigate, fix, verify).
+
+        Why expand? Single "fix bug" tasks often fail because Claude rushes
+        to a solution. Multi-phase forces a methodical approach:
+        1. Reproduce (confirm the bug exists)
+        2. Investigate (find root cause)
+        3. Fix (implement solution)
+        4. Verify (confirm fix works)
 
         Args:
             task_dicts: List of task dictionaries from GLM
@@ -432,6 +462,7 @@ class Supervisor:
                 enable_injection=self.project.inject_subtasks,
             )
 
+            # expand_to_phases=True triggers the task type detection and phase injection
             expanded = engine.process_tasks(task_dicts, expand_to_phases=True)
 
             # Convert ExpandedTask objects back to dicts
@@ -456,6 +487,10 @@ class Supervisor:
         """
         Run hook scripts before/after task execution.
 
+        Hooks enable project-specific automation:
+        - pre-task: backup state, validate environment, run linters
+        - post-task: run tests, update docs, notify systems
+
         Args:
             hooks: List of hook script paths (relative to project directory)
             phase: Phase name for logging ('pre-task' or 'post-task')
@@ -468,7 +503,7 @@ class Supervisor:
         if not hooks:
             return True
 
-        # Resolve project path once for security comparisons
+        # resolve() normalizes the path and follows symlinks for consistent comparison
         project_path = Path(self.project.path).resolve()
 
         for hook in hooks:
@@ -495,18 +530,19 @@ class Supervisor:
 
             self._emit_progress(f"Running {phase} hook: {hook}")
             try:
-                # Run hook as subprocess in project directory
-                # Using create_subprocess_exec (not shell=True) for security
+                # create_subprocess_exec avoids shell injection vulnerabilities.
+                # Unlike shell=True, it doesn't interpret special characters.
                 proc = await asyncio.create_subprocess_exec(
                     str(hook_path),
-                    cwd=self.project.path,  # Execute in project context
+                    cwd=self.project.path,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                # Wait with timeout to prevent hanging hooks from blocking the pipeline
+                # Timeout prevents a hung hook from blocking the entire pipeline.
+                # 60s is generous - hooks should do quick validation, not long operations.
                 stdout, stderr = await asyncio.wait_for(
                     proc.communicate(),
-                    timeout=60.0,  # 60 second timeout - hooks should be quick
+                    timeout=60.0,
                 )
 
                 if proc.returncode != 0:
@@ -536,6 +572,12 @@ class Supervisor:
         """
         Load project context for GLM including starmap and recent memory.
 
+        Context prioritization (most important first):
+        1. STARMAP.md - project architecture and goals (4K chars)
+        2. CLAUDE.md - coding conventions (2K chars)
+        3. Recent memory - what we've been working on (3K chars)
+        4. Project metadata - name, path, test command
+
         Enforces token budget and truncates content if needed.
 
         Returns:
@@ -544,7 +586,7 @@ class Supervisor:
         context_parts = []
         total_chars = 0
 
-        # Helper to track and warn about budget
+        # Closure captures total_chars for cumulative tracking across calls
         def add_context(label: str, content: str, max_chars: int) -> None:
             nonlocal total_chars
             if len(content) > max_chars:
@@ -694,8 +736,11 @@ class Supervisor:
             # Step 1: Load project context
             project_context = self._load_project_context()
 
-            # Step 2: Ask for clarification if needed
-            # Skip for investigation/research tasks (no benefit, adds latency)
+            # Step 2: Ask for clarification if needed.
+            # Decision tree:
+            # - skip_clarification=True (CLI flag) -> skip
+            # - Investigation task (questions, research) -> skip (no ambiguity)
+            # - Everything else -> ask GLM if request is ambiguous
             should_ask_clarification = not skip_clarification and not self._is_investigation_task(
                 request
             )
@@ -709,9 +754,11 @@ class Supervisor:
                     )
 
                     if clarification:
-                        # GLM needs more info - return early
+                        # GLM needs more info - return early.
+                        # This is success=True because the system worked correctly;
+                        # we just need user input before proceeding.
                         result.clarification_asked = clarification
-                        result.success = True  # Not a failure, just needs input
+                        result.success = True
                         self.context.transition_to(SessionState.IDLE)
                         return result
 
@@ -741,10 +788,11 @@ class Supervisor:
                 self.context.transition_to(SessionState.ERROR)
                 return result
 
-            # Optionally expand tasks using WorkflowEngine for multi-phase workflows
+            # WorkflowEngine transforms simple tasks into multi-phase workflows.
+            # e.g., "fix login bug" -> [reproduce, investigate, fix, verify]
             task_dicts = self._expand_tasks_with_workflow(task_dicts)
 
-            # Convert to Task objects and queue them
+            # Convert raw dicts to Task objects for type safety and queue management
             tasks = []
             for i, td in enumerate(task_dicts, 1):
                 task = Task(
@@ -759,7 +807,8 @@ class Supervisor:
             result.total_tasks = len(tasks)
             self._emit_status(f"Decomposed into {len(tasks)} tasks")
 
-            # Create checkpoint before execution
+            # Checkpoint enables rollback if task execution goes wrong.
+            # Creates git stash + memory snapshot for recovery.
             self._create_checkpoint(
                 name=f"pre-execution-{datetime.now().strftime('%H%M%S')}",
                 description=f"Before executing: {request[:100]}",
@@ -875,7 +924,8 @@ class Supervisor:
                     break
 
             except ClaudeCircuitOpenError as e:
-                # Circuit breaker is open - don't retry, fail fast
+                # Circuit open = Claude has failed too many times recently.
+                # Fail fast instead of wasting time on likely-to-fail requests.
                 result.error = f"Circuit breaker open: {e}"
                 self._emit_error(f"Circuit breaker prevented execution: {e}")
                 break
@@ -888,11 +938,11 @@ class Supervisor:
             # Track cost
             self._total_cost_usd += execution_result.cost_usd
 
-            # Transition to reviewing state (must succeed after EXECUTING)
+            # State machine enforces valid transitions: IDLE -> PLANNING -> EXECUTING -> REVIEWING
             self.context.require_transition(SessionState.REVIEWING)
 
-            # Skip review if no file changes (nothing to review)
-            # This saves ~5-15s of GLM latency when Claude only did research/analysis
+            # Optimization: Skip review for read-only tasks (research, investigation).
+            # GLM review adds ~5-15s latency; pointless when there's nothing to verify.
             if not execution_result.file_changes:
                 self._emit_progress("No file changes - skipping review (auto-approve)")
                 result.review_approved = True
@@ -946,12 +996,14 @@ class Supervisor:
                     await self._run_hooks(self.project.post_task_hooks, "post-task")
                     break
                 else:
-                    # Rejected - prepare for retry with meaningful feedback
+                    # Rejected - prepare retry with GLM's feedback as guidance.
+                    # This feedback goes into Claude's next prompt so it knows what to fix.
                     issues = review_result.get("issues", [])
                     feedback_text = result.review_feedback or "Task did not meet quality standards"
                     issues_text = ", ".join(issues) if issues else "Not specified"
 
-                    # Limit feedback length to prevent context overflow
+                    # Truncate to 500 chars to avoid bloating Claude's context.
+                    # Long feedback can crowd out actual task instructions.
                     combined_feedback = f"Issues: {issues_text}. Feedback: {feedback_text}"
                     if len(combined_feedback) > 500:
                         combined_feedback = combined_feedback[:497] + "..."
@@ -965,16 +1017,22 @@ class Supervisor:
                     # Save rejection to memory for learning
                     if self.memory:
                         try:
+                            rejection_value = (
+                                f"Task: {task.description}\n"
+                                f"Issues: {issues}\n"
+                                f"Feedback: {result.review_feedback}"
+                            )
                             self.memory.save(
                                 key=f"rejection-{task.id}-{attempt}",
-                                value=f"Task: {task.description}\nIssues: {issues}\nFeedback: {result.review_feedback}",
+                                value=rejection_value,
                                 category="warning",
                                 priority="normal",
                             )
                         except Exception:
                             pass
 
-                    # Backoff before retry (exponential backoff)
+                    # Exponential backoff: 2s -> 5s -> 10s
+                    # Gives transient issues time to resolve; prevents rate limiting.
                     if attempt < self.max_retries:
                         backoff_idx = min(attempt - 1, len(RETRY_BACKOFF_DELAYS) - 1)
                         backoff_delay = RETRY_BACKOFF_DELAYS[backoff_idx]
@@ -982,7 +1040,8 @@ class Supervisor:
                         await asyncio.sleep(backoff_delay)
 
             except TimeoutError:
-                # Review timed out - FAIL the task (never auto-approve)
+                # CRITICAL: Never auto-approve on timeout. Unreviewed code could
+                # contain bugs, security issues, or unintended changes.
                 logger.error(f"GLM review timed out after {GLM_REVIEW_TIMEOUT}s")
                 result.error = f"GLM review timed out after {GLM_REVIEW_TIMEOUT}s"
                 result.review_approved = False
@@ -990,7 +1049,8 @@ class Supervisor:
                 break
 
             except GLMError as e:
-                # Review failed - FAIL the task (never auto-approve unreviewed code)
+                # CRITICAL: Never auto-approve on GLM failure. Same reasoning as
+                # timeout - we must verify changes before accepting them.
                 logger.error(f"GLM review failed: {e}")
                 result.error = f"Cannot approve without review: {e}"
                 result.review_approved = False
@@ -999,7 +1059,10 @@ class Supervisor:
 
         # If we exhausted retries without success
         if not result.success and result.attempts >= self.max_retries:
-            result.error = f"Task failed after {self.max_retries} attempts. Last feedback: {result.review_feedback}"
+            result.error = (
+                f"Task failed after {self.max_retries} attempts. "
+                f"Last feedback: {result.review_feedback}"
+            )
             self._save_task_result(
                 task=task,
                 success=False,
@@ -1007,8 +1070,8 @@ class Supervisor:
                 files_changed=[],
             )
 
-        # Clean up reviewer tracking to prevent memory leak
-        # Called regardless of success/failure to ensure cleanup
+        # Reviewer tracks per-task state (review history, rejection count).
+        # Must clean up to prevent memory growth in long-running sessions.
         if self._reviewer:
             try:
                 self._reviewer.cleanup_completed_task(task.id)
@@ -1067,11 +1130,11 @@ class Supervisor:
         if mcp_hints:
             constraints.append(mcp_hints)
 
-        # Create executor for this task using context manager for proper cleanup
-        # This ensures subprocess resources are released even if an exception occurs
+        # async with ensures executor cleanup (subprocess termination, temp files)
+        # even if execute() raises an exception or times out.
         async with ClaudeExecutor(
             project_path=self.project.path,
-            timeout_tier="code",
+            timeout_tier="code",  # "code" tier = longer timeout for complex tasks
             global_conventions=global_conventions,
         ) as executor:
             # Execute with circuit breaker tracking
@@ -1116,7 +1179,9 @@ class Supervisor:
         # Import here to avoid circular import
         from vibe.claude.executor import get_git_diff
 
-        # Get git diff for the changed files
+        # Git diff is the primary evidence GLM uses for review.
+        # We limit size to prevent context overflow, but this means large changes
+        # may not be fully reviewed - a known tradeoff for performance.
         was_truncated = False
         if result.file_changes:
             changes_diff, was_truncated = get_git_diff(
@@ -1125,7 +1190,7 @@ class Supervisor:
                 max_chars=self.project.context_settings.max_diff_chars,
                 exclude_patterns=self.project.context_settings.diff_exclude_patterns,
             )
-            # Warn if diff was truncated - GLM may miss changes
+            # Truncated diff = partial review. GLM can only verify what it sees.
             if was_truncated:
                 logger.warning(
                     f"Diff truncated for review. GLM will only see first "
@@ -1138,8 +1203,8 @@ class Supervisor:
         # Get Claude's summary
         claude_summary = result.result or "(no summary provided)"
 
-        # Call GLM for review with timeout protection
-        # Timeout is handled by the caller via asyncio.TimeoutError exception
+        # wait_for wraps the coroutine with a timeout. If GLM takes longer than
+        # GLM_REVIEW_TIMEOUT, raises TimeoutError (handled by _execute_task_with_retries).
         review_result = await asyncio.wait_for(
             self.glm_client.review_changes(
                 task_description=task.description,

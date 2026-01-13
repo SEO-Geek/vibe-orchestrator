@@ -50,7 +50,7 @@ async def execute_debug_workflow(
         problem: The debugging problem description
         memory: Optional memory for persistence
     """
-    MAX_ITERATIONS = 10
+    MAX_ITERATIONS = 10  # noqa: N806 (constant in function)
 
     # Initialize debug context
     context = DebugContext(problem=problem)
@@ -149,10 +149,12 @@ async def execute_debug_workflow(
             break
 
         elif review.get("approved"):
+            feedback = review.get("feedback", "")
+            next_task = review.get("next_task", "Continue")
             console.print(
                 Panel(
-                    f"[bold yellow]ITERATION APPROVED[/bold yellow]\n\n{review.get('feedback', '')}\n\n"
-                    f"[bold]Next:[/bold] {review.get('next_task', 'Continue')}",
+                    f"[bold yellow]ITERATION APPROVED[/bold yellow]\n\n{feedback}\n\n"
+                    f"[bold]Next:[/bold] {next_task}",
                     border_style="yellow",
                 )
             )

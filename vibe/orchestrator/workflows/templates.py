@@ -72,7 +72,10 @@ PHASE_ANALYZE_CONTEXT = WorkflowPhase(
     success_criteria="Identified relevant files, understood code structure",
     timeout_tier="code",
     can_skip=False,
-    prompt_guidance="Before making any changes, read the relevant files and understand the existing patterns. Identify dependencies and potential impact areas.",
+    prompt_guidance=(
+        "Read relevant files and understand existing patterns first. "
+        "Identify dependencies and potential impact areas."
+    ),
 )
 
 PHASE_ANALYZE_DEPENDENCIES = WorkflowPhase(
@@ -83,7 +86,10 @@ PHASE_ANALYZE_DEPENDENCIES = WorkflowPhase(
     success_criteria="Listed all import references and dependent files",
     timeout_tier="quick",
     can_skip=True,
-    prompt_guidance="Search for all imports and usages of the code being modified. List files that may need updates.",
+    prompt_guidance=(
+        "Search for all imports and usages of the code being modified. "
+        "List files that may need updates."
+    ),
 )
 
 PHASE_REPRODUCE_BUG = WorkflowPhase(
@@ -94,7 +100,10 @@ PHASE_REPRODUCE_BUG = WorkflowPhase(
     success_criteria="Bug reproduced and behavior documented",
     timeout_tier="debug",
     can_skip=False,
-    prompt_guidance="First, understand and reproduce the bug. Document the exact steps and observed behavior.",
+    prompt_guidance=(
+        "First, understand and reproduce the bug. "
+        "Document the exact steps and observed behavior."
+    ),
 )
 
 PHASE_INVESTIGATE = WorkflowPhase(
@@ -105,7 +114,10 @@ PHASE_INVESTIGATE = WorkflowPhase(
     success_criteria="Root cause identified with evidence",
     timeout_tier="debug",
     can_skip=False,
-    prompt_guidance="Trace through the code to find the root cause. Look for stack traces, error messages, and code paths.",
+    prompt_guidance=(
+        "Trace through the code to find the root cause. "
+        "Look for stack traces, error messages, and code paths."
+    ),
 )
 
 # Implementation phases - make the changes
@@ -128,7 +140,10 @@ PHASE_FIX_BUG = WorkflowPhase(
     success_criteria="Fix applied to address root cause",
     timeout_tier="code",
     can_skip=False,
-    prompt_guidance="Apply the fix based on the root cause analysis. Ensure the fix is minimal and targeted.",
+    prompt_guidance=(
+        "Apply the fix based on the root cause analysis. "
+        "Ensure the fix is minimal and targeted."
+    ),
 )
 
 PHASE_REFACTOR = WorkflowPhase(
@@ -139,7 +154,10 @@ PHASE_REFACTOR = WorkflowPhase(
     success_criteria="Refactoring complete, all references updated",
     timeout_tier="code",
     can_skip=False,
-    prompt_guidance="Perform the refactoring. Update all references and imports. Preserve existing behavior.",
+    prompt_guidance=(
+        "Perform the refactoring. Update all references and imports. "
+        "Preserve existing behavior."
+    ),
 )
 
 # Documentation phases - make code maintainable
@@ -151,7 +169,10 @@ PHASE_ADD_COMMENTS = WorkflowPhase(
     success_criteria="Complex logic documented with comments",
     timeout_tier="quick",
     can_skip=True,
-    prompt_guidance="Add inline comments for any complex or non-obvious logic. Focus on 'why' not 'what'.",
+    prompt_guidance=(
+        "Add inline comments for any complex or non-obvious logic. "
+        "Focus on 'why' not 'what'."
+    ),
 )
 
 PHASE_UPDATE_DOCS = WorkflowPhase(
@@ -174,7 +195,10 @@ PHASE_VERIFY = WorkflowPhase(
     success_criteria="Tests pass without regressions",
     timeout_tier="code",
     can_skip=False,
-    prompt_guidance="Run the project's test suite to verify no regressions. Check that existing functionality still works.",
+    prompt_guidance=(
+        "Run the project's test suite to verify no regressions. "
+        "Check that existing functionality still works."
+    ),
 )
 
 PHASE_VERIFY_FIX = WorkflowPhase(
@@ -185,7 +209,10 @@ PHASE_VERIFY_FIX = WorkflowPhase(
     success_criteria="Bug no longer reproducible",
     timeout_tier="debug",
     can_skip=False,
-    prompt_guidance="Verify that the fix resolves the original bug. Try to reproduce the issue again.",
+    prompt_guidance=(
+        "Verify that the fix resolves the original bug. "
+        "Try to reproduce the issue again."
+    ),
 )
 
 PHASE_VERIFY_BEHAVIOR = WorkflowPhase(
@@ -196,7 +223,10 @@ PHASE_VERIFY_BEHAVIOR = WorkflowPhase(
     success_criteria="Behavior unchanged, tests pass",
     timeout_tier="code",
     can_skip=False,
-    prompt_guidance="Run tests to verify the refactoring didn't change behavior. Check all use cases still work.",
+    prompt_guidance=(
+        "Run tests to verify the refactoring didn't change behavior. "
+        "Check all use cases still work."
+    ),
 )
 
 PHASE_ADD_TEST = WorkflowPhase(
@@ -207,7 +237,7 @@ PHASE_ADD_TEST = WorkflowPhase(
     success_criteria="New test added and passing",
     timeout_tier="code",
     can_skip=True,
-    prompt_guidance="Add a test case that would have caught this bug, to prevent future regressions.",
+    prompt_guidance="Add a test case that prevents future regressions.",
 )
 
 # Research phases
@@ -219,7 +249,10 @@ PHASE_GATHER_INFO = WorkflowPhase(
     success_criteria="Relevant information gathered from documentation",
     timeout_tier="research",
     can_skip=False,
-    prompt_guidance="Research the topic using available documentation and web resources. Gather relevant examples.",
+    prompt_guidance=(
+        "Research the topic using available docs and web resources. "
+        "Gather relevant examples."
+    ),
 )
 
 PHASE_SUMMARIZE = WorkflowPhase(
@@ -229,7 +262,10 @@ PHASE_SUMMARIZE = WorkflowPhase(
     success_criteria="Clear, concise summary provided",
     timeout_tier="quick",
     can_skip=False,
-    prompt_guidance="Provide a clear summary of findings. Include key takeaways and actionable recommendations.",
+    prompt_guidance=(
+        "Provide a clear summary of findings. "
+        "Include key takeaways and actionable recommendations."
+    ),
 )
 
 
@@ -243,7 +279,7 @@ WORKFLOW_TEMPLATES: dict[TaskType, WorkflowTemplate] = {
     TaskType.CODE_WRITE: WorkflowTemplate(
         task_type=TaskType.CODE_WRITE,
         name="Feature Development",
-        description="Build new features with proper analysis, implementation, documentation, and testing",
+        description="Build new features with analysis, implementation, docs, and testing",
         phases=[
             PHASE_ANALYZE_CONTEXT,
             PHASE_IMPLEMENT,
@@ -255,7 +291,7 @@ WORKFLOW_TEMPLATES: dict[TaskType, WorkflowTemplate] = {
     TaskType.DEBUG: WorkflowTemplate(
         task_type=TaskType.DEBUG,
         name="Bug Fixing",
-        description="Debug issues systematically with reproduction, investigation, fix, and verification",
+        description="Debug issues: reproduce, investigate, fix, and verify",
         phases=[
             PHASE_REPRODUCE_BUG,
             PHASE_INVESTIGATE,

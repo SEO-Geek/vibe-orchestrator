@@ -186,7 +186,7 @@ class GitHubOps:
                     title=data["title"],
                     body=data.get("body", ""),
                     state=data.get("state", "open"),
-                    labels=[l["name"] for l in data.get("labels", [])],
+                    labels=[lbl["name"] for lbl in data.get("labels", [])],
                     assignees=[a["login"] for a in data.get("assignees", [])],
                     created_at=datetime.fromisoformat(data["createdAt"].replace("Z", "+00:00"))
                     if data.get("createdAt")
@@ -215,7 +215,7 @@ class GitHubOps:
             title=data["title"],
             body=data.get("body", ""),
             state=data.get("state", "open"),
-            labels=[l["name"] for l in data.get("labels", [])],
+            labels=[lbl["name"] for lbl in data.get("labels", [])],
             assignees=[a["login"] for a in data.get("assignees", [])],
             created_at=datetime.fromisoformat(data["createdAt"].replace("Z", "+00:00"))
             if data.get("createdAt")

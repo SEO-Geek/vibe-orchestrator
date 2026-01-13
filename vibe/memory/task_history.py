@@ -251,9 +251,9 @@ class TaskHistory:
                 cls._tasks.sort(key=lambda t: t.timestamp)
                 cls._requests.sort(key=lambda r: r.timestamp)
 
-            logger.info(
-                f"TaskHistory: Loaded {len(cls._tasks)} tasks, {len(cls._requests)} requests from database"
-            )
+            task_count = len(cls._tasks)
+            req_count = len(cls._requests)
+            logger.info(f"TaskHistory: Loaded {task_count} tasks, {req_count} requests")
 
         except Exception as e:
             logger.warning(f"TaskHistory: Could not load from database: {e}")

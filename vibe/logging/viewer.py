@@ -295,11 +295,17 @@ def format_stats(stats: dict[str, Any]) -> str:
     Returns:
         Formatted multi-line string
     """
+    # Extract token counts for formatting
+    prompt_tok = stats.get("glm_prompt_tokens", 0)
+    comp_tok = stats.get("glm_completion_tokens", 0)
+    p50_lat = stats.get("glm_p50_latency_ms", 0)
+    p95_lat = stats.get("glm_p95_latency_ms", 0)
+
     lines = [
         "=== GLM Statistics ===",
         f"  Calls:          {stats['glm_calls']}",
-        f"  Total Tokens:   {stats['glm_tokens']:,} (in: {stats.get('glm_prompt_tokens', 0):,}, out: {stats.get('glm_completion_tokens', 0):,})",
-        f"  Latency:        avg {stats['glm_avg_latency_ms']}ms, p50 {stats.get('glm_p50_latency_ms', 0)}ms, p95 {stats.get('glm_p95_latency_ms', 0)}ms",
+        f"  Total Tokens:   {stats['glm_tokens']:,} (in: {prompt_tok:,}, out: {comp_tok:,})",
+        f"  Latency:        avg {stats['glm_avg_latency_ms']}ms, p50 {p50_lat}ms, p95 {p95_lat}ms",
         f"  Est. Cost:      ${stats.get('glm_cost_usd', 0):.4f}",
     ]
 
@@ -311,13 +317,23 @@ def format_stats(stats: dict[str, Any]) -> str:
             else:
                 lines.append(f"    - {method}: {data}")
 
+    # Extract Claude duration metrics
+    avg_dur = stats["claude_avg_duration_ms"] / 1000
+    p50_dur = stats.get("claude_p50_duration_ms", 0) / 1000
+    p95_dur = stats.get("claude_p95_duration_ms", 0) / 1000
+    success_rate = stats["claude_success_rate"]
+
+    # Extract success/fail counts
+    succ = stats["claude_successes"]
+    fail = stats["claude_failures"]
+
     lines.extend(
         [
             "",
             "=== Claude Statistics ===",
             f"  Executions:     {stats['claude_executions']}",
-            f"  Success/Fail:   {stats['claude_successes']}/{stats['claude_failures']} ({stats['claude_success_rate']}%)",
-            f"  Duration:       avg {stats['claude_avg_duration_ms'] / 1000:.1f}s, p50 {stats.get('claude_p50_duration_ms', 0) / 1000:.1f}s, p95 {stats.get('claude_p95_duration_ms', 0) / 1000:.1f}s",
+            f"  Success/Fail:   {succ}/{fail} ({success_rate}%)",
+            f"  Duration:       avg {avg_dur:.1f}s, p50 {p50_dur:.1f}s, p95 {p95_dur:.1f}s",
         ]
     )
 

@@ -80,7 +80,9 @@ class TimeoutCheckpoint:
 logger = logging.getLogger(__name__)
 
 
-# Timeout tiers based on task complexity
+# Timeout tiers based on task complexity.
+# These are calibrated from real-world usage - Claude rarely needs more than 15 min
+# for any task, and shorter timeouts prevent runaway processes from wasting resources.
 TIMEOUT_TIERS = {
     "quick": 120,  # Simple reads, small edits (2 min)
     "code": 900,  # Normal coding tasks (15 min)
@@ -165,10 +167,12 @@ class ClaudeExecutor:
         ]
         self.permission_mode = permission_mode
 
-        # Task enforcer for tool requirements
+        # Task enforcer validates that Claude uses appropriate tools for each task
+        # (e.g., Playwright for browser testing, not curl). Prevents lazy shortcuts.
         self.task_enforcer = TaskEnforcer(global_conventions=global_conventions)
 
-        # Cancellation support for TUI
+        # Cancellation support for TUI - allows user to abort long-running tasks.
+        # _current_process is tracked so we can terminate it on cancel.
         self._cancelled = False
         self._current_process: asyncio.subprocess.Process | None = None
 
@@ -234,11 +238,12 @@ class ClaudeExecutor:
         Should be called when done with the executor to prevent resource leaks.
         Safe to call multiple times.
         """
-        # Terminate any running subprocess
+        # Terminate any running subprocess. We use terminate() not kill() to allow
+        # graceful shutdown. Can't await here since this is sync, but terminate
+        # sends SIGTERM which is sufficient for cleanup.
         if self._current_process and self._current_process.returncode is None:
             try:
                 self._current_process.terminate()
-                # Note: can't await in sync method, but terminate() is sufficient
             except Exception as e:
                 logger.debug(f"Error terminating subprocess: {e}")
             finally:
@@ -301,7 +306,9 @@ class ClaudeExecutor:
         """
         parts = []
 
-        # If debug context provided, add it FIRST so Claude sees it
+        # Debug context (error traces, previous attempts) goes FIRST because Claude
+        # processes prompts sequentially - early context has stronger influence on
+        # the response. This ensures debug info shapes the entire approach.
         if debug_context:
             parts.append(debug_context)
             parts.append("")
@@ -364,15 +371,16 @@ class ClaudeExecutor:
         """Build the Claude CLI command."""
         cmd = [
             "claude",
-            "-p",  # Print mode (non-interactive)
+            "-p",  # Print mode - non-interactive, reads from stdin
             "--output-format",
-            "stream-json",
-            "--verbose",
+            "stream-json",  # Enables real-time parsing of tool calls and results
+            "--verbose",  # Include tool call details in output
             "--permission-mode",
-            self.permission_mode,
+            self.permission_mode,  # acceptEdits allows file writes without prompts
         ]
 
-        # Add allowed tools
+        # Restrict Claude to specific tools. Without this, Claude could use any tool
+        # including potentially dangerous ones. Whitelist approach is safer.
         if self.allowed_tools:
             cmd.extend(["--allowedTools", ",".join(self.allowed_tools)])
 
@@ -387,7 +395,9 @@ class ClaudeExecutor:
         """
         env = os.environ.copy()
 
-        # Patterns that indicate sensitive environment variables
+        # Pattern-based detection catches credentials even if they don't match
+        # explicit names. This is defense-in-depth - new secrets are likely
+        # to follow common naming conventions.
         sensitive_patterns = [
             "_KEY",
             "_TOKEN",
@@ -404,7 +414,8 @@ class ClaudeExecutor:
             "REDIS_URL",
         ]
 
-        # Explicit keys to remove (in addition to patterns)
+        # Explicit keys are a safeguard for known secrets that might not match
+        # patterns (e.g., GITHUB_TOKEN doesn't match all patterns consistently)
         explicit_keys = [
             "OPENROUTER_API_KEY",
             "OPENAI_API_KEY",
@@ -413,11 +424,11 @@ class ClaudeExecutor:
             "GITHUB_TOKEN",
         ]
 
-        # Remove explicit keys
         for key in explicit_keys:
             env.pop(key, None)
 
-        # Remove keys matching patterns (except Claude's own ANTHROPIC key which it needs)
+        # Two-phase removal: collect keys first, then remove. Avoids modifying
+        # dict during iteration which would raise RuntimeError.
         keys_to_remove = []
         for key in env:
             key_upper = key.upper()
@@ -461,7 +472,8 @@ class ClaudeExecutor:
             ClaudeTimeoutError: If task times out
             ClaudeExecutionError: For execution errors
         """
-        # Temporarily override timeout if tier specified
+        # Per-execution timeout override. We save/restore the original so each
+        # execution is independent (important when executor is reused).
         original_timeout = self.timeout
         if timeout_tier and timeout_tier in TIMEOUT_TIERS:
             self.timeout = TIMEOUT_TIERS[timeout_tier]
@@ -472,13 +484,14 @@ class ClaudeExecutor:
         cmd = self._build_command(prompt)
         env = self._clean_environment()
 
-        # Prepare log entry for this execution
+        # Log entry tracks everything about this execution for debugging and auditing.
+        # We truncate the prompt because some prompts with debug context can be huge.
         execution_id = str(uuid.uuid4())
         log_entry = ClaudeLogEntry(
             timestamp=now_iso(),
             execution_id=execution_id,
             session_id=get_session_id(),
-            prompt=prompt[:20000],  # Truncate for log size
+            prompt=prompt[:20000],  # Cap at 20k chars to prevent log bloat
             files=files or [],
             constraints=constraints or [],
             timeout_tier=timeout_tier or "code",
@@ -508,7 +521,9 @@ class ClaudeExecutor:
                 env=env,
             )
 
-            # Send prompt to stdin
+            # Send prompt via stdin rather than command line args. This avoids
+            # shell escaping issues with complex prompts containing quotes, newlines,
+            # and special characters. Also keeps prompts out of process listings.
             if process.stdin:
                 process.stdin.write(prompt.encode())
                 await process.stdin.drain()
@@ -516,26 +531,26 @@ class ClaudeExecutor:
 
             # Read and parse streaming output with timeout
             start_time = datetime.now()
-            output_truncated = False
             try:
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(),
                     timeout=self.timeout,
                 )
 
-                # Truncate output if exceeds MAX_OUTPUT_BYTES to prevent memory issues
+                # Truncate output to prevent memory exhaustion on pathological cases.
+                # Claude occasionally produces extremely verbose output (e.g., dumping
+                # large files in error messages). 500KB is generous for normal use.
                 if len(stdout) > MAX_OUTPUT_BYTES:
                     logger.warning(
                         f"Claude output truncated: {len(stdout)} bytes -> {MAX_OUTPUT_BYTES} bytes"
                     )
                     stdout = stdout[:MAX_OUTPUT_BYTES]
-                    output_truncated = True
             except TimeoutError:
-                # Calculate elapsed time for checkpoint
                 elapsed = (datetime.now() - start_time).total_seconds()
 
-                # Save checkpoint of any partial work done before timeout
-                # This preserves tool calls and file changes so work isn't lost
+                # On timeout, preserve any partial work so it's not completely lost.
+                # The orchestrator can use this checkpoint to resume or report progress.
+                # Only save if there was actual work (tool calls or file changes).
                 if tool_calls or file_changes:
                     self.save_checkpoint(
                         task_description=task_description,
@@ -549,6 +564,8 @@ class ClaudeExecutor:
                         f"{len(file_changes)} files modified"
                     )
 
+                # kill() not terminate() here - we already timed out, so graceful
+                # shutdown isn't needed and we want immediate cleanup
                 if process and process.returncode is None:
                     process.kill()
                     await process.wait()
@@ -556,7 +573,10 @@ class ClaudeExecutor:
                 # Include checkpoint info in error for visibility
                 checkpoint_msg = ""
                 if tool_calls or file_changes:
-                    checkpoint_msg = f" | Partial work: {len(tool_calls)} tool calls, {len(file_changes)} files modified"
+                    checkpoint_msg = (
+                        f" | Partial work: {len(tool_calls)} tool calls, "
+                        f"{len(file_changes)} files modified"
+                    )
 
                 raise ClaudeTimeoutError(
                     f"Task timed out after {self.timeout}s{checkpoint_msg}",
@@ -568,7 +588,8 @@ class ClaudeExecutor:
                     tool_calls_count=len(tool_calls),
                 )
 
-            # Parse each line of JSON output
+            # Claude's stream-json format outputs one JSON object per line.
+            # Each object has a "type" field indicating what it represents.
             for line in stdout.decode().split("\n"):
                 if not line.strip():
                     continue
@@ -576,11 +597,13 @@ class ClaudeExecutor:
                 try:
                     data = json.loads(line)
                 except json.JSONDecodeError:
+                    # Skip malformed lines (e.g., partial output on truncation)
                     continue
 
                 msg_type = data.get("type")
 
-                # Track tool calls from assistant messages
+                # "assistant" messages contain Claude's responses, including tool calls.
+                # Content is an array of blocks (text, tool_use, etc.)
                 if msg_type == "assistant":
                     message = data.get("message", {})
                     content = message.get("content", [])
@@ -589,14 +612,14 @@ class ClaudeExecutor:
                         block_type = block.get("type")
 
                         if block_type == "tool_use":
-                            # Tool call
                             tool_call = ToolCall(
                                 name=block.get("name", ""),
                                 input=block.get("input", {}),
                             )
                             tool_calls.append(tool_call)
 
-                            # Track file modifications
+                            # Track file modifications separately for diff generation.
+                            # Edit and Write are the only tools that modify files.
                             if tool_call.name in ("Edit", "Write"):
                                 file_path = tool_call.input.get("file_path") or tool_call.input.get(
                                     "path"
@@ -616,7 +639,8 @@ class ClaudeExecutor:
                             if on_progress and text:
                                 on_progress(text)
 
-                # Final result
+                # "result" is the final message containing summary, cost, and status.
+                # This is emitted once at the end of the execution.
                 elif msg_type == "result":
                     result_text = data.get("result", "")
                     session_id = data.get("session_id", "")
@@ -626,9 +650,11 @@ class ClaudeExecutor:
                     is_error = data.get("is_error", False)
 
                     if is_error:
+                        # "subtype" contains the specific error type (e.g., "tool_error")
                         error_message = data.get("subtype", "unknown error")
 
-            # Check exit code
+            # Claude might exit non-zero even without setting is_error in result.
+            # Belt-and-suspenders: treat any non-zero exit as an error.
             if process.returncode != 0 and not is_error:
                 is_error = True
                 error_message = f"Process exited with code {process.returncode}"
@@ -667,19 +693,20 @@ class ClaudeExecutor:
             )
 
         except ClaudeTimeoutError:
-            # Log timeout
+            # Re-raise timeout with logging - checkpoint is already saved above
             log_entry.error = f"Timeout after {self.timeout}s"
             log_entry.success = False
             claude_logger.error(log_entry.to_json())
             raise
         except Exception as e:
-            # Ensure subprocess is cleaned up on any exception
+            # Ensure subprocess is cleaned up on any exception. This prevents
+            # zombie processes from accumulating on repeated failures.
             if process and process.returncode is None:
                 try:
                     process.kill()
                     await process.wait()
                 except Exception:
-                    pass  # Best effort cleanup
+                    pass  # Best effort - we're already handling an exception
             logger.exception("Claude execution failed")
 
             # Log the exception
@@ -824,11 +851,12 @@ class ClaudeExecutor:
 
             yield ("progress", "Claude started...")
 
-            # Read stdout line by line with timeout
+            # Streaming read loop with cancellation and timeout support.
+            # We read line-by-line with short timeouts to remain responsive.
             start_time = asyncio.get_event_loop().time()
 
             while True:
-                # Check cancellation
+                # Check cancellation first - user can abort via TUI
                 if self._cancelled:
                     if process.returncode is None:
                         process.terminate()
@@ -836,7 +864,7 @@ class ClaudeExecutor:
                     yield ("cancelled", "Operation cancelled by user")
                     return
 
-                # Check timeout
+                # Check overall timeout
                 elapsed = asyncio.get_event_loop().time() - start_time
                 if elapsed > self.timeout:
                     if process.returncode is None:
@@ -845,14 +873,15 @@ class ClaudeExecutor:
                     yield ("error", f"Timeout after {self.timeout}s")
                     return
 
-                # Try to read a line with short timeout
+                # Short 1s read timeout allows us to check cancellation/timeout
+                # frequently while still waiting for data efficiently.
                 try:
                     line = await asyncio.wait_for(
                         process.stdout.readline(),
                         timeout=1.0,
                     )
                 except TimeoutError:
-                    # No data ready, check if process ended
+                    # No data ready - check if process ended, otherwise loop again
                     if process.returncode is not None:
                         break
                     continue
@@ -970,6 +999,9 @@ def get_git_diff(
 
     Filters out noisy files like lock files, node_modules, etc. by default.
 
+    This function is used by the orchestrator to show users what changed
+    during task execution, enabling review before commit.
+
     Args:
         project_path: Path to git repo
         files: Specific files to diff (or all if None)
@@ -994,12 +1026,13 @@ def get_git_diff(
         for pattern in exclude_patterns:
             if fnmatch.fnmatch(filepath, pattern):
                 return True
-            # Also check basename for patterns like "*.lock"
+            # Check basename separately to handle patterns like "*.lock" which
+            # should match "poetry.lock" regardless of directory structure
             if fnmatch.fnmatch(Path(filepath).name, pattern):
                 return True
         return False
 
-    # If no files specified, return no changes (don't show unrelated diffs)
+    # No files = nothing to diff. This happens on read-only tasks like research.
     if not files:
         return "(no code changes - task was information-only)", False
 
@@ -1017,7 +1050,8 @@ def get_git_diff(
 
     output_parts = []
 
-    # First, check which files are untracked using git status
+    # Separate untracked files from tracked ones. git diff won't show untracked
+    # files, so we need to handle them specially by showing full content.
     untracked_files = set()
     try:
         status_result = subprocess.run(
@@ -1028,12 +1062,11 @@ def get_git_diff(
             timeout=10,
         )
         for line in status_result.stdout.strip().split("\n"):
-            if line.startswith("??"):  # Untracked file marker
-                # Format: "?? path/to/file"
+            if line.startswith("??"):  # Porcelain format: "??" = untracked
                 untracked_path = line[3:].strip()
                 untracked_files.add(untracked_path)
     except Exception:
-        pass  # Continue even if status check fails
+        pass  # Best effort - continue with empty untracked set
 
     # Get regular git diff for tracked files
     tracked_files = [f for f in filtered_files if f not in untracked_files]
@@ -1055,15 +1088,16 @@ def get_git_diff(
         except Exception:
             output_parts.append("(could not get diff for tracked files)")
 
-    # For untracked files, show their content as "new file" diffs
+    # For untracked (new) files, synthesize a diff-like format showing all
+    # content as additions. This gives consistent output format for all changes.
     for untracked in untracked_files:
         file_path = Path(project_path) / untracked
         if file_path.exists():
             try:
                 content = file_path.read_text()
-                # Format like a git diff for new file
                 lines = content.split("\n")
                 diff_lines = [f"+{line}" for line in lines]
+                # Mimic git diff format so output is consistent and parseable
                 new_file_diff = (
                     f"diff --git a/{untracked} b/{untracked}\n"
                     f"new file (untracked)\n"
@@ -1082,16 +1116,19 @@ def get_git_diff(
     combined = "\n\n".join(output_parts)
     original_len = len(combined)
 
-    # Truncate large diffs to prevent context window issues
+    # Truncate large diffs to prevent context window exhaustion when the diff
+    # is passed to Claude for review. 100k chars is ~25k tokens.
     if len(combined) > max_chars:
         truncated_diff = combined[:max_chars]
-        # Try to truncate at a line boundary
+        # Find a clean line boundary near the end to avoid mid-line cuts.
+        # Only look in the last 1000 chars to avoid excessive backtracking.
         last_newline = truncated_diff.rfind("\n")
         if last_newline > max_chars - 1000:
             truncated_diff = truncated_diff[:last_newline]
         diff_content = (
             f"{truncated_diff}\n\n"
-            f"... [TRUNCATED - diff was {original_len:,} chars, showing first {len(truncated_diff):,}]"
+            f"... [TRUNCATED - diff was {original_len:,} chars, "
+            f"showing first {len(truncated_diff):,}]"
         )
         return diff_content, True
 

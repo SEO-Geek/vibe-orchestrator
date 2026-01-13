@@ -193,8 +193,8 @@ async def summarize_context_items(
     Returns:
         Concise summary string
     """
-    prompt = f"""Summarize these {category} context items into a concise paragraph (2-3 sentences max).
-Focus on the key information that would be useful for understanding project state.
+    prompt = f"""Summarize these {category} items into a concise paragraph (2-3 sentences).
+Focus on the key information useful for understanding project state.
 
 Items:
 {items_text}

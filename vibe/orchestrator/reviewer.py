@@ -15,7 +15,9 @@ from typing import TYPE_CHECKING, Any
 from vibe.glm.client import GLMClient
 from vibe.state import Task
 
-# Import for type checking only to avoid circular import
+# TYPE_CHECKING guard prevents runtime circular import:
+# reviewer.py -> executor.py -> reviewer.py
+# At runtime, TaskResult is only used in type annotations (not instantiated here)
 if TYPE_CHECKING:
     from vibe.claude.executor import TaskResult
 
@@ -84,9 +86,11 @@ class Reviewer:
         self.max_attempts = max_attempts
 
         # Track attempts per task: task_id -> attempt count
+        # Separate from _last_reviews because we need count even if review failed mid-way
         self._attempt_counts: dict[str, int] = {}
 
         # Store last review result per task for retry context
+        # Enables Claude to receive specific feedback on what to fix in next attempt
         self._last_reviews: dict[str, ReviewResult] = {}
 
     async def review(
@@ -115,15 +119,19 @@ class Reviewer:
         logger.info(f"Reviewing task '{task.id}' (attempt {attempt}/{self.max_attempts})")
 
         # Get git diff if not provided
+        # Caller can pass pre-computed diff to avoid redundant git operations
         was_truncated = False
         if diff is None:
-            # Import here to avoid circular import
+            # Deferred import avoids circular dependency at module load time
             from vibe.claude.executor import get_git_diff
 
+            # Scope diff to only files Claude reported changing, avoiding noise from
+            # unrelated uncommitted changes in the working directory
             files_to_diff = claude_result.file_changes if claude_result.file_changes else None
             diff, was_truncated = get_git_diff(self.project_path, files=files_to_diff)
 
         # Prepend truncation warning for GLM if diff was truncated
+        # GLM needs to know it's reviewing partial data to make informed approval decisions
         review_diff = diff
         if was_truncated:
             truncation_warning = (
@@ -150,7 +158,8 @@ class Reviewer:
             )
         except Exception as e:
             logger.error(f"GLM review failed: {e}")
-            # On GLM error, create a failed review result
+            # Store failed review state before re-raising so retry logic can still
+            # access attempt count and provide appropriate context to caller
             review_result = ReviewResult(
                 approved=False,
                 issues=[f"Review failed: {str(e)}"],
@@ -159,9 +168,10 @@ class Reviewer:
                 attempt=attempt,
             )
             self._last_reviews[task.id] = review_result
-            raise
+            raise  # Let caller decide how to handle GLM failures
 
         # Build ReviewResult from GLM response
+        # Default to rejected (False) if GLM response is malformed - fail safe
         review_result = ReviewResult(
             approved=glm_result.get("approved", False),
             issues=glm_result.get("issues", []),
@@ -170,7 +180,10 @@ class Reviewer:
             attempt=attempt,
         )
 
-        # Store for potential retry context
+        # Store result regardless of approval status - needed for:
+        # 1. Building retry context if rejected
+        # 2. Stats tracking
+        # 3. LRU eviction ordering (by reviewed_at timestamp)
         self._last_reviews[task.id] = review_result
 
         if review_result.approved:
@@ -195,6 +208,8 @@ class Reviewer:
         Returns:
             True if under max attempts and should retry, False otherwise
         """
+        # Note: This checks current count, which is already incremented by review()
+        # So if max_attempts=3 and current_attempts=3, we've used all attempts
         current_attempts = self._attempt_counts.get(task_id, 0)
         return current_attempts < self.max_attempts
 
@@ -235,6 +250,8 @@ class Reviewer:
             parts.append(last_review.feedback)
             parts.append("")
 
+        # Explicit instruction helps prevent Claude from making unrelated changes
+        # while fixing issues, which could introduce new problems
         parts.extend(
             [
                 "Please address ALL issues above in your next attempt.",
@@ -266,6 +283,8 @@ class Reviewer:
         Args:
             task_id: The task identifier
         """
+        # Use pop() with default to avoid KeyError if task was never tracked
+        # (defensive - allows calling reset on any task without checking existence)
         self._attempt_counts.pop(task_id, None)
         self._last_reviews.pop(task_id, None)
         logger.debug(f"Reset attempt counter for task '{task_id}'")
@@ -288,12 +307,14 @@ class Reviewer:
             return
 
         # Sort tasks by review timestamp (oldest first)
+        # O(n log n) but only runs when limit exceeded, which is rare
         sorted_tasks = sorted(self._last_reviews.items(), key=lambda x: x[1].reviewed_at)
 
         # Calculate how many to evict (keep newest MAX_TRACKED_TASKS)
         evict_count = len(sorted_tasks) - MAX_TRACKED_TASKS
 
-        # Evict oldest tasks
+        # Evict oldest tasks - these are likely completed/abandoned tasks
+        # whose retry context is no longer needed
         for task_id, _ in sorted_tasks[:evict_count]:
             self._attempt_counts.pop(task_id, None)
             self._last_reviews.pop(task_id, None)
@@ -315,7 +336,8 @@ class Reviewer:
         current = self._attempt_counts.get(task_id, 0)
         self._attempt_counts[task_id] = current + 1
 
-        # Enforce memory bounds after adding
+        # Enforce memory bounds after adding new task
+        # Placed here (not in review()) to ensure bounds are checked on every new task
         self._enforce_max_size()
 
         return current + 1
@@ -339,6 +361,8 @@ class Reviewer:
         Returns:
             Dictionary with review statistics
         """
+        # total_reviews counts all attempts across all tasks (sum of attempt counts)
+        # vs len(_last_reviews) which is unique tasks reviewed
         total_reviews = sum(self._attempt_counts.values())
         approved_count = sum(1 for r in self._last_reviews.values() if r.approved)
         rejected_count = len(self._last_reviews) - approved_count
@@ -382,6 +406,7 @@ class Reviewer:
         stale_tasks = []
 
         # Find tasks with reviews older than max_age
+        # This catches tasks where the orchestrator crashed or user abandoned mid-retry
         for task_id, review in self._last_reviews.items():
             age = (now - review.reviewed_at).total_seconds()
             if age > max_age_seconds:

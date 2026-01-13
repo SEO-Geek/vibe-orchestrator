@@ -100,7 +100,7 @@ INJECTION_RULES: list[InjectionRule] = [
     # Test writing → run the tests
     InjectionRule(
         name="test_writing",
-        trigger_pattern=r"(write|create|add)\s+(a\s+)?(new\s+)?(test|spec|unit test|integration test)",
+        trigger_pattern=r"(write|create|add)\s+(a\s+)?(new\s+)?(test|spec|unit|integration)",
         inject_after=[
             "Run the new test to verify it passes",
         ],

@@ -192,9 +192,11 @@ def _start_orchestrator(
         # Check for orphaned sessions
         orphans = _repository.get_orphaned_sessions()
         if orphans:
-            console.print(
-                f"[yellow]⚠ Found {len(orphans)} orphaned session(s) from previous crash(es)[/yellow]"
+            orphan_msg = (
+                f"[yellow]Found {len(orphans)} orphaned session(s) "
+                "from previous crash(es)[/yellow]"
             )
+            console.print(orphan_msg)
             for orphan in orphans[:3]:
                 console.print(
                     f"  [dim]- Session {orphan.id[:8]}... started {orphan.started_at}[/dim]"
@@ -419,6 +421,14 @@ def restore(
     tasks_info = context["tasks"]
 
     # Display session summary
+    messages_line = (
+        f"[bold]Messages:[/bold] {summary['total_messages']} "
+        f"({summary['user_messages']} from user)"
+    )
+    tasks_line = (
+        f"[bold]Tasks:[/bold] {summary['pending_tasks']} pending, "
+        f"{summary['completed_tasks']} completed"
+    )
     console.print(
         Panel(
             f"[bold]Session:[/bold] {session.id[:12]}...\n"
@@ -427,8 +437,8 @@ def restore(
             f"[bold]Started:[/bold] {session.started_at}\n"
             f"[bold]Last Heartbeat:[/bold] {session.last_heartbeat_at or 'never'}\n"
             f"\n"
-            f"[bold]Messages:[/bold] {summary['total_messages']} ({summary['user_messages']} from user)\n"
-            f"[bold]Tasks:[/bold] {summary['pending_tasks']} pending, {summary['completed_tasks']} completed",
+            f"{messages_line}\n"
+            f"{tasks_line}",
             title="[bold cyan]Recovery Context[/bold cyan]",
             border_style="cyan",
         )
@@ -448,9 +458,11 @@ def restore(
         console.print("\n[bold red]Pending/In-Progress Tasks:[/bold red]")
         for i, task in enumerate(tasks_info["pending"], 1):
             status_color = "yellow" if task.status == TaskStatus.PENDING else "blue"
-            console.print(
-                f"  [{status_color}]{i}. [{task.status.value}][/{status_color}] {task.description[:80]}"
+            task_line = (
+                f"  [{status_color}]{i}. [{task.status.value}][/{status_color}] "
+                f"{task.description[:80]}"
             )
+            console.print(task_line)
 
     if show_messages:
         messages = context["messages"]

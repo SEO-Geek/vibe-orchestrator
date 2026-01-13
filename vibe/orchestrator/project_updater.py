@@ -382,9 +382,6 @@ class ProjectUpdater:
         entry: ChangelogEntry,
     ) -> bool:
         """Insert a changelog entry into the file."""
-
-        today = datetime.now().strftime("%Y-%m-%d")
-
         if not current_content:
             # Create new changelog
             content = f"""# Changelog

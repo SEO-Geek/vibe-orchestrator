@@ -250,9 +250,12 @@ def handle_github(github: GitHubOps | None) -> None:
             console.print(f"  URL: {repo_info.get('url', 'Unknown')}")
             console.print(f"  Private: {'Yes' if repo_info.get('isPrivate') else 'No'}")
             default_branch = repo_info.get("defaultBranchRef", {})
-            console.print(
-                f"  Default branch: {default_branch.get('name', 'Unknown') if isinstance(default_branch, dict) else 'main'}"
+            branch_name = (
+                default_branch.get("name", "Unknown")
+                if isinstance(default_branch, dict)
+                else "main"
             )
+            console.print(f"  Default branch: {branch_name}")
             console.print()
         else:
             console.print("[yellow]No repo info available[/yellow]")
