@@ -30,6 +30,7 @@ from vibe.logging import (
     now_iso,
     get_session_id,
 )
+from vibe.config import DEFAULT_DIFF_EXCLUDE_PATTERNS
 from vibe.orchestrator.task_enforcer import TaskEnforcer, TaskType
 
 
@@ -890,26 +891,59 @@ class ClaudeExecutor:
 def get_git_diff(
     project_path: str,
     files: list[str] | None = None,
-    max_chars: int = 50000,
-) -> str:
+    max_chars: int = 100_000,
+    exclude_patterns: list[str] | None = None,
+) -> tuple[str, bool]:
     """
     Get git diff for changed files with truncation for large diffs.
     Also handles untracked files by showing their content.
 
+    Filters out noisy files like lock files, node_modules, etc. by default.
+
     Args:
         project_path: Path to git repo
         files: Specific files to diff (or all if None)
-        max_chars: Maximum characters to return (default 50k, ~12k tokens)
+        max_chars: Maximum characters to return (default 100k, ~25k tokens)
+        exclude_patterns: File patterns to exclude (default: lock files, etc.)
 
     Returns:
-        Git diff string (including untracked file content), truncated if too large
+        Tuple of (diff_content, was_truncated):
+        - diff_content: Git diff string (may be truncated)
+        - was_truncated: True if diff was truncated due to size
     """
+    import fnmatch
     import subprocess
     from pathlib import Path
 
+    # Use default exclusion patterns if not specified
+    if exclude_patterns is None:
+        exclude_patterns = DEFAULT_DIFF_EXCLUDE_PATTERNS
+
+    def should_exclude(filepath: str) -> bool:
+        """Check if file matches any exclusion pattern."""
+        for pattern in exclude_patterns:
+            if fnmatch.fnmatch(filepath, pattern):
+                return True
+            # Also check basename for patterns like "*.lock"
+            if fnmatch.fnmatch(Path(filepath).name, pattern):
+                return True
+        return False
+
     # If no files specified, return no changes (don't show unrelated diffs)
     if not files:
-        return "(no code changes - task was information-only)"
+        return "(no code changes - task was information-only)", False
+
+    # Filter out excluded files
+    filtered_files = [f for f in files if not should_exclude(f)]
+
+    # Log if files were filtered
+    excluded_count = len(files) - len(filtered_files)
+    if excluded_count > 0:
+        logger = logging.getLogger(__name__)
+        logger.debug(f"Excluded {excluded_count} files from diff (noisy patterns)")
+
+    if not filtered_files:
+        return f"(all {len(files)} changed files were filtered out as noise)", False
 
     output_parts = []
 
@@ -917,7 +951,7 @@ def get_git_diff(
     untracked_files = set()
     try:
         status_result = subprocess.run(
-            ["git", "status", "--porcelain", "--"] + files,
+            ["git", "status", "--porcelain", "--"] + filtered_files,
             cwd=project_path,
             capture_output=True,
             text=True,
@@ -932,7 +966,7 @@ def get_git_diff(
         pass  # Continue even if status check fails
 
     # Get regular git diff for tracked files
-    tracked_files = [f for f in files if f not in untracked_files]
+    tracked_files = [f for f in filtered_files if f not in untracked_files]
     if tracked_files:
         cmd = ["git", "diff", "--no-color", "--"]
         cmd.extend(tracked_files)
@@ -974,9 +1008,10 @@ def get_git_diff(
 
     # Combine all output
     if not output_parts:
-        return f"(no changes detected in: {', '.join(files)})"
+        return f"(no changes detected in: {', '.join(filtered_files)})", False
 
     combined = "\n\n".join(output_parts)
+    original_len = len(combined)
 
     # Truncate large diffs to prevent context window issues
     if len(combined) > max_chars:
@@ -985,9 +1020,10 @@ def get_git_diff(
         last_newline = truncated_diff.rfind("\n")
         if last_newline > max_chars - 1000:
             truncated_diff = truncated_diff[:last_newline]
-        return (
+        diff_content = (
             f"{truncated_diff}\n\n"
-            f"... [TRUNCATED - diff was {len(combined):,} chars, showing first {len(truncated_diff):,}]"
+            f"... [TRUNCATED - diff was {original_len:,} chars, showing first {len(truncated_diff):,}]"
         )
+        return diff_content, True
 
-    return combined
+    return combined, False

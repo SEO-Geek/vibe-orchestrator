@@ -1137,3 +1137,142 @@ class Request:
         self.status = "failed"
         self.result_summary = reason
         self.completed_at = datetime.now()
+
+
+# ============================================================================
+# EXECUTION TRACKING - Full execution details for debugging and retry context
+# ============================================================================
+
+
+@dataclass
+class ExecutionDetails:
+    """
+    Comprehensive record of a task execution.
+
+    Maps to: execution_details table
+    Stores full Claude response, tool calls, git diff, review results,
+    and metrics for debugging failed tasks and providing retry context.
+    Diffs >50KB are compressed with gzip to save storage.
+    """
+
+    id: str = field(default_factory=generate_id)
+    task_id: str = ""
+    session_id: str = ""
+    task_description: str = ""
+
+    # Claude's full output (NOT truncated)
+    claude_response: str = ""
+    tool_calls: list[dict] = field(default_factory=list)  # name, input, timestamp
+    files_changed: list[str] = field(default_factory=list)
+
+    # Git diff (full content, compressed if large)
+    diff_content: str = ""  # Full diff text
+    diff_chars: int = 0  # Original size before any truncation
+    diff_was_truncated: bool = False  # Whether review saw truncated diff
+
+    # Review results
+    review_approved: bool | None = None
+    review_issues: list[str] = field(default_factory=list)
+    review_feedback: str = ""
+
+    # Execution metrics
+    cost_usd: float = 0.0
+    duration_ms: int = 0
+    attempt_number: int = 1
+
+    # Timestamps
+    created_at: datetime = field(default_factory=datetime.now)
+
+    def compress_diff(self) -> bytes:
+        """Compress diff content for storage if >50KB.
+
+        Returns gzip-compressed bytes if large, plain UTF-8 bytes otherwise.
+        """
+        import gzip
+
+        content_bytes = self.diff_content.encode("utf-8")
+        if len(content_bytes) > 50_000:
+            return gzip.compress(content_bytes)
+        return content_bytes
+
+    @classmethod
+    def decompress_diff(cls, data: bytes) -> str:
+        """Decompress diff content from storage.
+
+        Handles both gzip-compressed and plain UTF-8 data.
+        """
+        import gzip
+
+        try:
+            return gzip.decompress(data).decode("utf-8")
+        except gzip.BadGzipFile:
+            # Not compressed, return as-is
+            return data.decode("utf-8")
+
+    @classmethod
+    def from_row(cls, row: tuple) -> ExecutionDetails:
+        """Create from database row."""
+        # Handle compressed diff (stored as BLOB in column 7)
+        diff_data = row[7]
+        if isinstance(diff_data, bytes):
+            diff_content = cls.decompress_diff(diff_data)
+        else:
+            diff_content = diff_data or ""
+
+        return cls(
+            id=row[0],
+            task_id=row[1] or "",
+            session_id=row[2] or "",
+            task_description=row[3] or "",
+            claude_response=row[4] or "",
+            tool_calls=parse_json_or_list(row[5]),
+            files_changed=parse_json_or_list(row[6]),
+            diff_content=diff_content,
+            diff_chars=row[8] or 0,
+            diff_was_truncated=bool(row[9]),
+            review_approved=bool(row[10]) if row[10] is not None else None,
+            review_issues=parse_json_or_list(row[11]),
+            review_feedback=row[12] or "",
+            cost_usd=row[13] or 0.0,
+            duration_ms=row[14] or 0,
+            attempt_number=row[15] or 1,
+            created_at=parse_datetime(row[16]) or datetime.now(),
+        )
+
+    def to_row(self) -> tuple:
+        """Convert to database row for INSERT."""
+        return (
+            self.id,
+            self.task_id,
+            self.session_id,
+            self.task_description,
+            self.claude_response,
+            to_json(self.tool_calls),
+            to_json(self.files_changed),
+            self.compress_diff(),  # Compressed BLOB
+            self.diff_chars,
+            1 if self.diff_was_truncated else 0,
+            1 if self.review_approved else 0 if self.review_approved is not None else None,
+            to_json(self.review_issues),
+            self.review_feedback,
+            self.cost_usd,
+            self.duration_ms,
+            self.attempt_number,
+            self.created_at.isoformat() if isinstance(self.created_at, datetime) else self.created_at,
+        )
+
+    def summary(self) -> str:
+        """Generate a brief summary of this execution."""
+        status = "approved" if self.review_approved else "rejected" if self.review_approved is False else "pending"
+        files_str = ", ".join(self.files_changed[:3])
+        if len(self.files_changed) > 3:
+            files_str += f" (+{len(self.files_changed) - 3} more)"
+
+        return (
+            f"Task: {self.task_description[:50]}...\n"
+            f"Status: {status}, Attempt: {self.attempt_number}\n"
+            f"Files: {files_str}\n"
+            f"Diff: {self.diff_chars:,} chars"
+            f"{' (truncated)' if self.diff_was_truncated else ''}\n"
+            f"Cost: ${self.cost_usd:.4f}, Duration: {self.duration_ms}ms"
+        )

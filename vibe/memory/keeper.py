@@ -25,6 +25,7 @@ from typing import Any, Generator
 
 from vibe.config import MEMORY_DB_PATH
 from vibe.exceptions import MemoryConnectionError, MemoryNotFoundError
+from vibe.persistence.models import ExecutionDetails
 
 logger = logging.getLogger(__name__)
 
@@ -1119,3 +1120,143 @@ class VibeMemory:
         if deleted:
             logger.info(f"Deleted debug session: {key}")
         return deleted
+
+    # Execution Details Methods (for comprehensive task tracking)
+
+    def save_execution_details(self, details: ExecutionDetails) -> None:
+        """
+        Save comprehensive execution record for a task.
+
+        Stores full Claude response, tool calls, diff content,
+        review results, and metrics for debugging and retry context.
+        This enables full reconstruction of what happened during
+        task execution, even for failed or truncated tasks.
+
+        Args:
+            details: ExecutionDetails with full task execution data
+        """
+        if not self.session_id:
+            raise MemoryConnectionError("No active session - call start_session first")
+
+        # Ensure session_id is set on details
+        if not details.session_id:
+            details.session_id = self.session_id
+
+        with self._db_connection() as conn:
+            cursor = conn.cursor()
+
+            # Compress diff if large (>50KB) for efficient storage
+            compressed_diff = details.compress_diff()
+
+            cursor.execute(
+                """
+                INSERT INTO execution_details (
+                    id, task_id, session_id, task_description,
+                    claude_response, tool_calls, files_changed,
+                    diff_content, diff_chars, diff_was_truncated,
+                    review_approved, review_issues, review_feedback,
+                    cost_usd, duration_ms, attempt_number, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    details.id,
+                    details.task_id,
+                    details.session_id,
+                    details.task_description,
+                    details.claude_response,
+                    json.dumps(details.tool_calls),
+                    json.dumps(details.files_changed),
+                    compressed_diff,  # BLOB - may be gzip compressed
+                    details.diff_chars,
+                    1 if details.diff_was_truncated else 0,
+                    1 if details.review_approved else (0 if details.review_approved is False else None),
+                    json.dumps(details.review_issues),
+                    details.review_feedback,
+                    details.cost_usd,
+                    details.duration_ms,
+                    details.attempt_number,
+                    details.created_at.isoformat(),
+                ),
+            )
+
+        logger.info(
+            f"Saved execution details for task {details.task_id[:8]}, "
+            f"diff={details.diff_chars} chars, truncated={details.diff_was_truncated}"
+        )
+
+    def get_execution_details(self, task_id: str) -> list[ExecutionDetails]:
+        """
+        Retrieve all execution details for a task (all attempts).
+
+        Useful for retry context, debugging, and understanding
+        what happened during failed task executions.
+
+        Args:
+            task_id: Task ID to retrieve details for
+
+        Returns:
+            List of ExecutionDetails for all attempts, ordered by attempt number
+        """
+        with self._db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, task_id, session_id, task_description,
+                       claude_response, tool_calls, files_changed,
+                       diff_content, diff_chars, diff_was_truncated,
+                       review_approved, review_issues, review_feedback,
+                       cost_usd, duration_ms, attempt_number, created_at
+                FROM execution_details
+                WHERE task_id = ?
+                ORDER BY attempt_number ASC
+                """,
+                (task_id,),
+            )
+
+            results = []
+            for row in cursor.fetchall():
+                # Decompress diff if it was compressed
+                diff_content = ExecutionDetails.decompress_diff(row[7]) if row[7] else ""
+
+                # Parse review_approved (NULL -> None, 0 -> False, 1 -> True)
+                review_approved = None
+                if row[10] is not None:
+                    review_approved = bool(row[10])
+
+                results.append(
+                    ExecutionDetails(
+                        id=row[0],
+                        task_id=row[1],
+                        session_id=row[2],
+                        task_description=row[3],
+                        claude_response=row[4] or "",
+                        tool_calls=json.loads(row[5]) if row[5] else [],
+                        files_changed=json.loads(row[6]) if row[6] else [],
+                        diff_content=diff_content,
+                        diff_chars=row[8] or 0,
+                        diff_was_truncated=bool(row[9]),
+                        review_approved=review_approved,
+                        review_issues=json.loads(row[11]) if row[11] else [],
+                        review_feedback=row[12] or "",
+                        cost_usd=row[13] or 0.0,
+                        duration_ms=row[14] or 0,
+                        attempt_number=row[15] or 1,
+                        created_at=datetime.fromisoformat(row[16]) if row[16] else datetime.now(),
+                    )
+                )
+
+        return results
+
+    def get_latest_execution_details(self, task_id: str) -> ExecutionDetails | None:
+        """
+        Get the most recent execution details for a task.
+
+        Args:
+            task_id: Task ID to retrieve
+
+        Returns:
+            Latest ExecutionDetails or None if not found
+        """
+        details_list = self.get_execution_details(task_id)
+        return details_list[-1] if details_list else None

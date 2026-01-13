@@ -19,6 +19,65 @@ CONFIG_DIR = Path.home() / ".config" / "vibe"
 PROJECTS_FILE = CONFIG_DIR / "projects.json"
 MEMORY_DB_PATH = Path.home() / "mcp-data" / "memory-keeper" / "context.db"
 
+# Default patterns to exclude from git diffs (noisy files)
+DEFAULT_DIFF_EXCLUDE_PATTERNS = [
+    "*.lock",
+    "package-lock.json",
+    "yarn.lock",
+    "poetry.lock",
+    "*.min.js",
+    "*.min.css",
+    "__pycache__/*",
+    "*.pyc",
+    ".pytest_cache/*",
+    "node_modules/*",
+]
+
+
+@dataclass
+class ContextSettings:
+    """
+    Settings for context and memory management.
+
+    Controls how much context is loaded, how diffs are processed,
+    and what gets saved during task execution.
+    """
+
+    # Git diff settings
+    max_diff_chars: int = 100_000  # Max chars for git diff (was 50K)
+    diff_exclude_patterns: list[str] = field(
+        default_factory=lambda: DEFAULT_DIFF_EXCLUDE_PATTERNS.copy()
+    )
+
+    # Memory loading settings
+    max_memory_items: int = 25  # Items to load for context (was 10)
+
+    # Execution details settings
+    save_execution_details: bool = True  # Save full execution records
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "max_diff_chars": self.max_diff_chars,
+            "diff_exclude_patterns": self.diff_exclude_patterns,
+            "max_memory_items": self.max_memory_items,
+            "save_execution_details": self.save_execution_details,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "ContextSettings":
+        """Create ContextSettings from dictionary."""
+        if not data:
+            return cls()
+        return cls(
+            max_diff_chars=data.get("max_diff_chars", 100_000),
+            diff_exclude_patterns=data.get(
+                "diff_exclude_patterns", DEFAULT_DIFF_EXCLUDE_PATTERNS.copy()
+            ),
+            max_memory_items=data.get("max_memory_items", 25),
+            save_execution_details=data.get("save_execution_details", True),
+        )
+
 
 @dataclass
 class Project:
@@ -36,6 +95,8 @@ class Project:
     # Workflow settings for intelligent task orchestration
     use_workflows: bool = True       # Enable workflow phase expansion
     inject_subtasks: bool = True     # Enable automatic sub-task injection
+    # Context and memory settings
+    context_settings: ContextSettings = field(default_factory=ContextSettings)
 
     def __post_init__(self) -> None:
         # Expand ~ in path
@@ -73,6 +134,7 @@ class Project:
             "post_task_hooks": self.post_task_hooks,
             "use_workflows": self.use_workflows,
             "inject_subtasks": self.inject_subtasks,
+            "context_settings": self.context_settings.to_dict(),
         }
 
     @classmethod
@@ -89,6 +151,7 @@ class Project:
             post_task_hooks=data.get("post_task_hooks", []),
             use_workflows=data.get("use_workflows", True),
             inject_subtasks=data.get("inject_subtasks", True),
+            context_settings=ContextSettings.from_dict(data.get("context_settings")),
         )
 
 

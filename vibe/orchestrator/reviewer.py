@@ -114,11 +114,27 @@ class Reviewer:
         )
 
         # Get git diff if not provided
+        was_truncated = False
         if diff is None:
             # Import here to avoid circular import
             from vibe.claude.executor import get_git_diff
             files_to_diff = claude_result.file_changes if claude_result.file_changes else None
-            diff = get_git_diff(self.project_path, files=files_to_diff)
+            diff, was_truncated = get_git_diff(self.project_path, files=files_to_diff)
+
+        # Prepend truncation warning for GLM if diff was truncated
+        review_diff = diff
+        if was_truncated:
+            truncation_warning = (
+                "⚠️ IMPORTANT: This diff was TRUNCATED due to size limits. You are only "
+                "reviewing a portion of the changes. Additional modifications may exist "
+                "that are not shown here. Consider:\n"
+                "1. Approving with caution if the visible changes look correct\n"
+                "2. The Claude summary may reference changes not visible in this diff\n"
+                "3. Files changed but not shown: check the Claude summary for completeness\n"
+                "---\n\n"
+            )
+            review_diff = truncation_warning + diff
+            logger.warning("Diff was truncated - GLM review will include warning notice")
 
         # Get Claude's summary from result
         claude_summary = claude_result.result or "No summary provided"
@@ -127,7 +143,7 @@ class Reviewer:
         try:
             glm_result = await self.glm_client.review_changes(
                 task_description=task.description,
-                changes_diff=diff,
+                changes_diff=review_diff,
                 claude_summary=claude_summary,
             )
         except Exception as e:

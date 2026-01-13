@@ -261,6 +261,34 @@ class Supervisor:
         if self.callbacks.on_error:
             self.callbacks.on_error(message)
 
+    def _might_produce_large_diff(self, description: str) -> bool:
+        """
+        Heuristic check for tasks that might produce large changes.
+
+        Warns about tasks that commonly produce large diffs so users can
+        consider breaking them into smaller units.
+
+        Args:
+            description: Task description to check
+
+        Returns:
+            True if the task might produce a large diff
+        """
+        import re
+
+        large_task_patterns = [
+            r"refactor\s+(entire|all|whole)",
+            r"rename\s+.+\s+across",
+            r"update\s+all\s+",
+            r"format\s+(entire|all)",
+            r"migrate\s+",
+            r"rewrite\s+(entire|all|whole)",
+            r"add\s+.+\s+to\s+(all|every)",
+            r"remove\s+.+\s+from\s+(all|every)",
+        ]
+        description_lower = description.lower()
+        return any(re.search(p, description_lower) for p in large_task_patterns)
+
     def _get_mcp_hints(self, task_description: str) -> str:
         """
         Get MCP tool hints based on detected task type.
@@ -699,6 +727,16 @@ class Supervisor:
         result = TaskExecutionResult(task=task, success=False)
         previous_feedback: str | None = None
 
+        # Pre-check: Warn about tasks that might produce large diffs
+        if self._might_produce_large_diff(task.description):
+            logger.warning(
+                f"Task '{task.description[:60]}...' may produce large changes. "
+                f"Consider splitting into smaller tasks to ensure thorough review."
+            )
+            self._emit_progress(
+                "Note: Large-scope task detected. Review may be partial if diff exceeds limit."
+            )
+
         # Run pre-task hooks before any attempts
         if not await self._run_hooks(self.project.pre_task_hooks, "pre-task"):
             result.error = "Pre-task hook failed"
@@ -929,11 +967,21 @@ class Supervisor:
         from vibe.claude.executor import get_git_diff
 
         # Get git diff for the changed files
+        was_truncated = False
         if result.file_changes:
-            changes_diff = get_git_diff(
+            changes_diff, was_truncated = get_git_diff(
                 project_path=self.project.path,
                 files=result.file_changes,
+                max_chars=self.project.context_settings.max_diff_chars,
+                exclude_patterns=self.project.context_settings.diff_exclude_patterns,
             )
+            # Warn if diff was truncated - GLM may miss changes
+            if was_truncated:
+                logger.warning(
+                    f"Diff truncated for review. GLM will only see first "
+                    f"{self.project.context_settings.max_diff_chars:,} chars. "
+                    f"Changed files: {result.file_changes}"
+                )
         else:
             changes_diff = "(no file changes detected)"
 

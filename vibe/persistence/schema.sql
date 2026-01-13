@@ -555,3 +555,49 @@ BEGIN
     SET updated_at = datetime('now')
     WHERE id = NEW.id;
 END;
+
+-- ============================================================================
+-- EXECUTION DETAILS - Full task execution records for debugging and retry
+-- ============================================================================
+
+-- Stores comprehensive execution data including full Claude output, tool calls,
+-- git diffs, and review results. Diffs are stored as compressed BLOBs when >50KB.
+-- Used for: debugging failed tasks, providing retry context, analyzing patterns.
+
+CREATE TABLE IF NOT EXISTS execution_details (
+    id TEXT PRIMARY KEY,                          -- UUID
+    task_id TEXT NOT NULL,                        -- Reference to task
+    session_id TEXT NOT NULL,                     -- Reference to session
+    task_description TEXT NOT NULL,
+
+    -- Claude's full output (NOT truncated)
+    claude_response TEXT,                         -- Full response text
+    tool_calls TEXT,                              -- JSON array of tool calls
+    files_changed TEXT,                           -- JSON array of file paths
+
+    -- Git diff (compressed BLOB for large diffs)
+    diff_content BLOB,                            -- Full diff, gzip if >50KB
+    diff_chars INTEGER DEFAULT 0,                 -- Original diff size
+    diff_was_truncated INTEGER DEFAULT 0,         -- Whether review saw truncated
+
+    -- Review results
+    review_approved INTEGER,                      -- NULL=pending, 0=rejected, 1=approved
+    review_issues TEXT,                           -- JSON array of issues
+    review_feedback TEXT,                         -- Full feedback text
+
+    -- Execution metrics
+    cost_usd REAL DEFAULT 0.0,
+    duration_ms INTEGER DEFAULT 0,
+    attempt_number INTEGER DEFAULT 1,
+
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+
+-- Indexes for common queries
+CREATE INDEX IF NOT EXISTS idx_execution_details_task ON execution_details(task_id);
+CREATE INDEX IF NOT EXISTS idx_execution_details_session ON execution_details(session_id);
+CREATE INDEX IF NOT EXISTS idx_execution_details_created ON execution_details(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_execution_details_approved ON execution_details(review_approved);

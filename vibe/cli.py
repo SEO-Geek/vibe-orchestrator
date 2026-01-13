@@ -632,8 +632,8 @@ async def review_with_glm(
     Returns:
         Review result dict with approved, issues, feedback
     """
-    # Get git diff for changed files
-    diff = get_git_diff(project_path, result.file_changes)
+    # Get git diff for changed files (ignore truncation flag in CLI mode)
+    diff, _ = get_git_diff(project_path, result.file_changes)
 
     # Get Claude's summary
     claude_summary = result.result or "(no summary provided)"

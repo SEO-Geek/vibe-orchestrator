@@ -252,6 +252,13 @@ Projects are registered in `~/.config/vibe/projects.json`:
 
 ## Recent Changes
 
+- **2026-01-13**: GLM Context & Memory Improvements
+  - ExecutionDetails model for full task execution records
+  - execution_details table with compressed diff storage
+  - ContextSettings: configurable limits (100K diff, 25 memory items)
+  - Smarter get_git_diff: filters noise, returns truncation flag
+  - Preventive warnings for large-scope tasks
+  - Truncation warnings prepended to GLM review when diff exceeds limit
 - **2026-01-13**: Performance & Reliability Optimizations
   - MCP routing table with 6 task types (auto-injects tool hints)
   - Circuit breaker integration in Supervisor (fail-fast)

@@ -6,6 +6,62 @@ All notable changes to Vibe Orchestrator will be documented in this file.
 
 ### Added
 
+#### GLM Context & Memory Improvements (2026-01-13)
+
+**Problem**: Analysis revealed context loss issues in GLM ↔ Claude data flow:
+- Only summaries saved, full Claude output lost for debugging/retry context
+- Hardcoded limits (10 memory items, 50K diff chars) too restrictive
+- No filtering for noisy files (lock files, node_modules) inflating diff size
+- No warning when diffs are truncated - GLM might approve partial reviews
+
+**Solution**: Incremental observability and smarter defaults:
+
+1. **ExecutionDetails Model** (`vibe/persistence/models.py`):
+   - New `ExecutionDetails` dataclass captures complete task execution record
+   - Stores full Claude response, all tool calls, complete git diff
+   - Includes review decision, issues, feedback, cost, and duration metrics
+   - Automatic gzip compression for diffs >50KB
+   - `compress_diff()` / `decompress_diff()` methods for efficient storage
+
+2. **Execution Details Table** (`vibe/persistence/schema.sql`):
+   - New `execution_details` table with 17 columns
+   - BLOB column for compressed diff storage
+   - Foreign keys to tasks and sessions tables
+   - Enables full reconstruction of task execution for debugging
+
+3. **Memory Keeper Integration** (`vibe/memory/keeper.py`):
+   - `save_execution_details(details)` - persists complete execution record
+   - `get_execution_details(task_id)` - retrieves all attempts for a task
+   - `get_latest_execution_details(task_id)` - gets most recent attempt
+   - Useful for retry context and post-mortem debugging
+
+4. **ContextSettings Configuration** (`vibe/config.py`):
+   - New `ContextSettings` dataclass for context/memory settings
+   - `max_diff_chars`: 100K (was 50K) - doubled limit
+   - `max_memory_items`: 25 (was 10) - increased context loading
+   - `diff_exclude_patterns`: Default patterns for noisy files
+   - `save_execution_details`: Toggle for execution recording
+   - Added to `Project` class, serialized in projects.json
+
+5. **Smarter Git Diff** (`vibe/claude/executor.py`):
+   - `get_git_diff()` now returns `tuple[str, bool]` (content, was_truncated)
+   - `exclude_patterns` parameter filters noisy files by default
+   - Default exclusions: `*.lock`, `package-lock.json`, `node_modules/*`, etc.
+   - Increased default `max_chars` to 100K (from 50K)
+
+6. **Preventive Warnings** (`vibe/orchestrator/supervisor.py`):
+   - `_might_produce_large_diff()` - heuristic for large-scope tasks
+   - Pre-check warns about tasks like "refactor entire", "update all"
+   - Post-check warns when diff was truncated during review
+   - Uses project's `context_settings` for limits
+
+7. **Truncation Awareness in Review** (`vibe/orchestrator/reviewer.py`):
+   - Prepends explicit warning to diff when truncated
+   - GLM instructed to approve with caution on partial reviews
+   - Warning suggests checking Claude summary for completeness
+
+**Impact**: Better observability, fewer silent context losses, configurable limits.
+
 #### Performance & Reliability Optimizations (2026-01-13)
 
 **Problem**: Senior code review agents identified 8 optimization opportunities across the codebase: memory leaks, redundant object creation, missing integrations, and missing fault tolerance.
