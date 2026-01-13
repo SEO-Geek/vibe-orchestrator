@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TaskRecord:
     """A completed task record."""
+
     description: str
     status: str  # "completed" or "failed"
     summary: str
@@ -34,6 +35,7 @@ class TaskRecord:
 @dataclass
 class RequestRecord:
     """A user request record."""
+
     request: str
     result: str
     timestamp: datetime = field(default_factory=datetime.now)
@@ -87,7 +89,7 @@ class TaskHistory:
             cls._tasks.append(record)
             # Trim to max history
             if len(cls._tasks) > cls._max_history:
-                cls._tasks = cls._tasks[-cls._max_history:]
+                cls._tasks = cls._tasks[-cls._max_history :]
 
         logger.debug(f"TaskHistory: Added task '{description[:50]}' ({record.status})")
 
@@ -106,7 +108,7 @@ class TaskHistory:
             cls._requests.append(record)
             # Trim to max history
             if len(cls._requests) > cls._max_history:
-                cls._requests = cls._requests[-cls._max_history:]
+                cls._requests = cls._requests[-cls._max_history :]
 
         logger.debug(f"TaskHistory: Added request '{request[:50]}'")
 
@@ -201,7 +203,7 @@ class TaskHistory:
                 for item in items:
                     # Task items
                     if item.key.startswith("task-") or item.category == "task":
-                        lines = item.value.split('\n')
+                        lines = item.value.split("\n")
                         desc = ""
                         status = "completed"
                         summary = ""
@@ -215,16 +217,18 @@ class TaskHistory:
                                 summary = line[8:].strip()
 
                         if desc and desc not in [t.description for t in cls._tasks]:
-                            cls._tasks.append(TaskRecord(
-                                description=desc,
-                                status=status,
-                                summary=summary,
-                                timestamp=item.created_at,
-                            ))
+                            cls._tasks.append(
+                                TaskRecord(
+                                    description=desc,
+                                    status=status,
+                                    summary=summary,
+                                    timestamp=item.created_at,
+                                )
+                            )
 
                     # Request items
                     elif item.key.startswith("request-"):
-                        lines = item.value.split('\n')
+                        lines = item.value.split("\n")
                         req = ""
                         result = ""
 
@@ -235,17 +239,21 @@ class TaskHistory:
                                 result = line[7:].strip()
 
                         if req and req not in [r.request for r in cls._requests]:
-                            cls._requests.append(RequestRecord(
-                                request=req,
-                                result=result,
-                                timestamp=item.created_at,
-                            ))
+                            cls._requests.append(
+                                RequestRecord(
+                                    request=req,
+                                    result=result,
+                                    timestamp=item.created_at,
+                                )
+                            )
 
                 # Sort by timestamp
                 cls._tasks.sort(key=lambda t: t.timestamp)
                 cls._requests.sort(key=lambda r: r.timestamp)
 
-            logger.info(f"TaskHistory: Loaded {len(cls._tasks)} tasks, {len(cls._requests)} requests from database")
+            logger.info(
+                f"TaskHistory: Loaded {len(cls._tasks)} tasks, {len(cls._requests)} requests from database"
+            )
 
         except Exception as e:
             logger.warning(f"TaskHistory: Could not load from database: {e}")
@@ -253,7 +261,9 @@ class TaskHistory:
 
 
 # Convenience functions for easy access
-def add_task(description: str, success: bool, summary: str = "", files_changed: list[str] | None = None) -> None:
+def add_task(
+    description: str, success: bool, summary: str = "", files_changed: list[str] | None = None
+) -> None:
     """Record a completed task."""
     TaskHistory.add_task(description, success, summary, files_changed)
 

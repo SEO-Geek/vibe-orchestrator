@@ -9,12 +9,12 @@ __version__ = "0.1.0"
 __author__ = "Brian"
 
 from vibe.exceptions import (
-    VibeError,
+    ClaudeError,
     ConfigError,
     GLMError,
-    ClaudeError,
-    VibeMemoryError,
     StartupError,
+    VibeError,
+    VibeMemoryError,
 )
 
 __all__ = [

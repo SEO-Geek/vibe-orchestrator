@@ -10,16 +10,14 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from vibe.orchestrator.task_enforcer import TaskType, TaskEnforcer
-from vibe.orchestrator.workflows.templates import (
-    WorkflowTemplate,
-    WorkflowPhase,
-    PhaseType,
-    WORKFLOW_TEMPLATES,
-    get_workflow_template,
-    get_phase_prompt_section,
-)
+from vibe.orchestrator.task_enforcer import TaskEnforcer, TaskType
 from vibe.orchestrator.workflows.injector import SubTaskInjector
+from vibe.orchestrator.workflows.templates import (
+    PhaseType,
+    WorkflowPhase,
+    get_phase_prompt_section,
+    get_workflow_template,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,17 +41,17 @@ class ExpandedTask:
 
     id: str
     description: str
-    phase: WorkflowPhase | None = None          # The workflow phase this represents
-    phase_type: PhaseType | None = None         # Phase type for categorization
-    phase_badge: str = ""                       # Display badge like "[ANALYZE]"
-    original_task_id: str = ""                  # Parent task if this was expanded
+    phase: WorkflowPhase | None = None  # The workflow phase this represents
+    phase_type: PhaseType | None = None  # Phase type for categorization
+    phase_badge: str = ""  # Display badge like "[ANALYZE]"
+    original_task_id: str = ""  # Parent task if this was expanded
     files: list[str] = field(default_factory=list)
     constraints: list[str] = field(default_factory=list)
     success_criteria: str = ""
     required_tools: list[str] = field(default_factory=list)
     recommended_agents: list[str] = field(default_factory=list)
     timeout_tier: str = "code"
-    injected: bool = False                      # True if auto-injected sub-task
+    injected: bool = False  # True if auto-injected sub-task
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict for JSON serialization."""
@@ -121,7 +119,9 @@ class WorkflowEngine:
         # Check for simple task patterns
         for pattern in self._simple_patterns:
             if pattern.match(task_description):
-                logger.debug(f"Task matches simple pattern, skipping workflow: {task_description[:50]}")
+                logger.debug(
+                    f"Task matches simple pattern, skipping workflow: {task_description[:50]}"
+                )
                 return False
 
         return True
@@ -151,18 +151,22 @@ class WorkflowEngine:
         # Check if this task should be expanded
         if not self.should_expand_to_workflow(description):
             # Return as-is, just converted to ExpandedTask
-            return [ExpandedTask(
-                id=task_id,
-                description=description,
-                files=task.get("files", []),
-                constraints=task.get("constraints", []),
-                success_criteria=task.get("success_criteria", ""),
-                timeout_tier="code",
-            )]
+            return [
+                ExpandedTask(
+                    id=task_id,
+                    description=description,
+                    files=task.get("files", []),
+                    constraints=task.get("constraints", []),
+                    success_criteria=task.get("success_criteria", ""),
+                    timeout_tier="code",
+                )
+            ]
 
         # Get workflow template
         template = get_workflow_template(task_type)
-        logger.info(f"Expanding task to '{template.name}' workflow with {len(template.phases)} phases")
+        logger.info(
+            f"Expanding task to '{template.name}' workflow with {len(template.phases)} phases"
+        )
 
         # Create expanded tasks for each phase
         expanded = []
@@ -211,14 +215,16 @@ class WorkflowEngine:
             for task in tasks:
                 # Skip expansion for already-injected tasks
                 if task.get("injected"):
-                    expanded.append(ExpandedTask(
-                        id=task.get("id", "injected-task"),
-                        description=task.get("description", ""),
-                        files=task.get("files", []),
-                        constraints=task.get("constraints", []),
-                        injected=True,
-                        timeout_tier="quick",
-                    ))
+                    expanded.append(
+                        ExpandedTask(
+                            id=task.get("id", "injected-task"),
+                            description=task.get("description", ""),
+                            files=task.get("files", []),
+                            constraints=task.get("constraints", []),
+                            injected=True,
+                            timeout_tier="quick",
+                        )
+                    )
                 else:
                     expanded.extend(self.expand_task_to_workflow(task))
             return expanded
@@ -264,10 +270,14 @@ class WorkflowEngine:
         parts = []
 
         if expanded_task.required_tools:
-            parts.append(f"\n**REQUIRED Tools**: You MUST use these tools: {', '.join(expanded_task.required_tools)}")
+            parts.append(
+                f"\n**REQUIRED Tools**: You MUST use these tools: {', '.join(expanded_task.required_tools)}"
+            )
 
         if expanded_task.recommended_agents:
-            parts.append(f"\n**Recommended MCPs/Agents**: Consider using: {', '.join(expanded_task.recommended_agents)}")
+            parts.append(
+                f"\n**Recommended MCPs/Agents**: Consider using: {', '.join(expanded_task.recommended_agents)}"
+            )
 
         return "\n".join(parts)
 
@@ -275,6 +285,7 @@ class WorkflowEngine:
 # =============================================================================
 # UTILITY FUNCTIONS
 # =============================================================================
+
 
 def expand_tasks(
     tasks: list[dict[str, Any]],

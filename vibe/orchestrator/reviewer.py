@@ -12,7 +12,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from vibe.exceptions import ReviewRejectedError
 from vibe.glm.client import GLMClient
 from vibe.state import Task
 
@@ -113,15 +112,14 @@ class Reviewer:
         # Increment attempt count for this task
         attempt = self._increment_attempt(task.id)
 
-        logger.info(
-            f"Reviewing task '{task.id}' (attempt {attempt}/{self.max_attempts})"
-        )
+        logger.info(f"Reviewing task '{task.id}' (attempt {attempt}/{self.max_attempts})")
 
         # Get git diff if not provided
         was_truncated = False
         if diff is None:
             # Import here to avoid circular import
             from vibe.claude.executor import get_git_diff
+
             files_to_diff = claude_result.file_changes if claude_result.file_changes else None
             diff, was_truncated = get_git_diff(self.project_path, files=files_to_diff)
 
@@ -237,11 +235,13 @@ class Reviewer:
             parts.append(last_review.feedback)
             parts.append("")
 
-        parts.extend([
-            "Please address ALL issues above in your next attempt.",
-            "Focus on fixing the identified problems without introducing new ones.",
-            "",
-        ])
+        parts.extend(
+            [
+                "Please address ALL issues above in your next attempt.",
+                "Focus on fixing the identified problems without introducing new ones.",
+                "",
+            ]
+        )
 
         return "\n".join(parts)
 
@@ -288,10 +288,7 @@ class Reviewer:
             return
 
         # Sort tasks by review timestamp (oldest first)
-        sorted_tasks = sorted(
-            self._last_reviews.items(),
-            key=lambda x: x[1].reviewed_at
-        )
+        sorted_tasks = sorted(self._last_reviews.items(), key=lambda x: x[1].reviewed_at)
 
         # Calculate how many to evict (keep newest MAX_TRACKED_TASKS)
         evict_count = len(sorted_tasks) - MAX_TRACKED_TASKS
@@ -343,9 +340,7 @@ class Reviewer:
             Dictionary with review statistics
         """
         total_reviews = sum(self._attempt_counts.values())
-        approved_count = sum(
-            1 for r in self._last_reviews.values() if r.approved
-        )
+        approved_count = sum(1 for r in self._last_reviews.values() if r.approved)
         rejected_count = len(self._last_reviews) - approved_count
 
         return {

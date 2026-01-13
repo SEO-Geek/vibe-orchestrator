@@ -40,7 +40,12 @@ class SessionState(Enum):
 VALID_TRANSITIONS: dict[SessionState, set[SessionState]] = {
     SessionState.INITIALIZING: {SessionState.IDLE, SessionState.ERROR, SessionState.SHUTDOWN},
     SessionState.IDLE: {SessionState.AWAITING_INPUT, SessionState.ERROR, SessionState.SHUTDOWN},
-    SessionState.AWAITING_INPUT: {SessionState.PLANNING, SessionState.IDLE, SessionState.ERROR, SessionState.SHUTDOWN},
+    SessionState.AWAITING_INPUT: {
+        SessionState.PLANNING,
+        SessionState.IDLE,
+        SessionState.ERROR,
+        SessionState.SHUTDOWN,
+    },
     SessionState.PLANNING: {
         SessionState.EXECUTING,
         SessionState.IDLE,

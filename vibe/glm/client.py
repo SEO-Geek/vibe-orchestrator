@@ -11,38 +11,38 @@ import logging
 import re
 import time
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, AsyncIterator
+from typing import Any
 
 from openai import AsyncOpenAI, OpenAIError
 
 from vibe.exceptions import GLMConnectionError, GLMRateLimitError, GLMResponseError
-from vibe.glm.parser import parse_task_list, parse_review_result
+from vibe.glm.parser import parse_review_result, parse_task_list
 from vibe.glm.prompts import (
-    SUPERVISOR_SYSTEM_PROMPT,
-    REVIEWER_SYSTEM_PROMPT,
-    TASK_DECOMPOSITION_PROMPT,
-    DEBUG_TASK_PROMPT,
     DEBUG_REVIEW_PROMPT,
-    WORKFLOW_GUIDANCE,
+    DEBUG_TASK_PROMPT,
+    REVIEWER_SYSTEM_PROMPT,
+    SUPERVISOR_SYSTEM_PROMPT,
+    TASK_DECOMPOSITION_PROMPT,
 )
 from vibe.logging import (
-    glm_logger,
     GLMLogEntry,
-    now_iso,
-    get_session_id,
     get_project_name,
+    get_session_id,
+    glm_logger,
+    now_iso,
 )
 
 logger = logging.getLogger(__name__)
 
 # Keywords that indicate investigation/exploration - ALWAYS delegate, never clarify
 INVESTIGATION_KEYWORDS = re.compile(
-    r'\b(check|debug|investigate|find|search|look|review|analyze|test|verify|'
-    r'examine|inspect|diagnose|troubleshoot|explore|what\'s wrong|why is|'
-    r'how does|trace|profile|benchmark|audit|scan|monitor)\b',
-    re.IGNORECASE
+    r"\b(check|debug|investigate|find|search|look|review|analyze|test|verify|"
+    r"examine|inspect|diagnose|troubleshoot|explore|what\'s wrong|why is|"
+    r"how does|trace|profile|benchmark|audit|scan|monitor)\b",
+    re.IGNORECASE,
 )
 
 # API configuration
@@ -168,7 +168,10 @@ class GLMClient:
         self._consecutive_failures += 1
         if self._consecutive_failures >= CIRCUIT_BREAKER_THRESHOLD:
             from datetime import timedelta
-            self._circuit_open_until = datetime.now() + timedelta(seconds=CIRCUIT_BREAKER_RESET_TIME)
+
+            self._circuit_open_until = datetime.now() + timedelta(
+                seconds=CIRCUIT_BREAKER_RESET_TIME
+            )
             logger.warning(
                 f"Circuit breaker OPEN after {self._consecutive_failures} failures. "
                 f"Skipping GLM for {CIRCUIT_BREAKER_RESET_TIME}s"
@@ -199,7 +202,7 @@ class GLMClient:
             model_used = response.model or self.model
             return True, f"{model_used.split('/')[-1]}"
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return False, f"timeout ({timeout}s)"
         except OpenAIError as e:
             error_msg = str(e)
@@ -274,7 +277,9 @@ class GLMClient:
 
             choice = response.choices[0]
             if not choice.message:
-                raise GLMResponseError("No message in GLM response", {"finish_reason": choice.finish_reason})
+                raise GLMResponseError(
+                    "No message in GLM response", {"finish_reason": choice.finish_reason}
+                )
 
             content = choice.message.content or ""
             finish_reason = choice.finish_reason or ""
@@ -410,13 +415,15 @@ class GLMClient:
         # Circuit breaker check - if open, create fallback task immediately
         if self._is_circuit_open():
             logger.warning("Circuit breaker open, creating fallback task for decomposition")
-            return [{
-                "id": "task-1",
-                "description": f"Handle request (GLM unavailable): {user_request[:200]}",
-                "files": [],
-                "constraints": ["GLM circuit breaker open - proceed with caution"],
-                "success_criteria": "Task addressed to best ability",
-            }]
+            return [
+                {
+                    "id": "task-1",
+                    "description": f"Handle request (GLM unavailable): {user_request[:200]}",
+                    "files": [],
+                    "constraints": ["GLM circuit breaker open - proceed with caution"],
+                    "success_criteria": "Task addressed to best ability",
+                }
+            ]
 
         # Build the decomposition prompt
         prompt = TASK_DECOMPOSITION_PROMPT.format(
@@ -442,18 +449,21 @@ class GLMClient:
             if not tasks:
                 # Empty task list - create fallback investigation task
                 logger.warning("GLM returned empty task list, creating fallback task")
-                tasks = [{
-                    "id": "task-1",
-                    "description": f"Investigate and address: {user_request[:200]}",
-                    "files": ["investigate relevant files"],
-                    "constraints": ["Report findings before making changes"],
-                    "success_criteria": "Issue understood and addressed",
-                }]
+                tasks = [
+                    {
+                        "id": "task-1",
+                        "description": f"Investigate and address: {user_request[:200]}",
+                        "files": ["investigate relevant files"],
+                        "constraints": ["Report findings before making changes"],
+                        "success_criteria": "Issue understood and addressed",
+                    }
+                ]
 
             # Post-process with WorkflowEngine if enabled
             if use_workflow_engine:
                 try:
                     from vibe.orchestrator.workflows import WorkflowEngine
+
                     engine = WorkflowEngine(
                         enable_workflows=True,
                         enable_injection=enable_injection,
@@ -470,10 +480,12 @@ class GLMClient:
             logger.info(f"Decomposed request into {len(tasks)} tasks")
             return tasks
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._record_failure()
             logger.error(f"GLM timeout after {DEFAULT_TIMEOUT}s in decompose_task")
-            raise GLMConnectionError(f"GLM timed out after {DEFAULT_TIMEOUT}s - try a shorter request or check API status")
+            raise GLMConnectionError(
+                f"GLM timed out after {DEFAULT_TIMEOUT}s - try a shorter request or check API status"
+            )
         except Exception as e:
             self._record_failure()
             logger.error(f"GLM decomposition failed: {e}")
@@ -588,7 +600,7 @@ Output JSON: {{"approved": true/false, "issues": [...], "feedback": "..."}}"""
 
         # HARD RULE 2: Investigation keywords = instant delegation (no API call needed)
         if INVESTIGATION_KEYWORDS.search(user_request):
-            logger.info(f"Investigation keyword detected, skipping clarification")
+            logger.info("Investigation keyword detected, skipping clarification")
             return None
 
         # HARD RULE 3: Circuit breaker open = skip GLM, delegate
@@ -667,8 +679,10 @@ If you MUST ask (see rules above), ask ONE brief question about a DECISION the u
                 logger.info("Ambiguous GLM response, defaulting to proceed")
                 return None
 
-            except asyncio.TimeoutError:
-                logger.warning(f"GLM timeout (attempt {attempt + 1}/{MAX_RETRIES + 1}), will delegate")
+            except TimeoutError:
+                logger.warning(
+                    f"GLM timeout (attempt {attempt + 1}/{MAX_RETRIES + 1}), will delegate"
+                )
                 last_error = "timeout"
             except (GLMConnectionError, GLMRateLimitError, OpenAIError) as e:
                 logger.warning(f"GLM error (attempt {attempt + 1}): {e}")
@@ -726,7 +740,7 @@ If you MUST ask (see rules above), ask ONE brief question about a DECISION the u
             content = response.content
 
             # Parse JSON from response
-            json_match = re.search(r'```(?:json)?\s*([\s\S]*?)```', content)
+            json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", content)
             if json_match:
                 content = json_match.group(1).strip()
 
@@ -772,7 +786,9 @@ If you MUST ask (see rules above), ask ONE brief question about a DECISION the u
             task=task,
             output=output[:5000],  # Truncate very long outputs
             files_changed=", ".join(files_changed) if files_changed else "None",
-            must_preserve="\n".join(f"- {f}" for f in must_preserve) if must_preserve else "None specified",
+            must_preserve="\n".join(f"- {f}" for f in must_preserve)
+            if must_preserve
+            else "None specified",
             previous_iterations=previous_iterations or "This is the first iteration.",
         )
 
@@ -787,7 +803,7 @@ If you MUST ask (see rules above), ask ONE brief question about a DECISION the u
             content = response.content
 
             # Parse JSON from response
-            json_match = re.search(r'```(?:json)?\s*([\s\S]*?)```', content)
+            json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", content)
             if json_match:
                 content = json_match.group(1).strip()
 
@@ -799,7 +815,9 @@ If you MUST ask (see rules above), ask ONE brief question about a DECISION the u
             result.setdefault("feedback", "No feedback provided")
             result.setdefault("next_task", None)
 
-            logger.debug(f"Debug review: approved={result['approved']}, solved={result['is_problem_solved']}")
+            logger.debug(
+                f"Debug review: approved={result['approved']}, solved={result['is_problem_solved']}"
+            )
             return result
 
         except Exception as e:
@@ -847,6 +865,7 @@ def ping_glm_sync(api_key: str, timeout: float = 10.0) -> tuple[bool, str]:
     # If we're here, there's a running loop - use run_until_complete
     # This shouldn't happen in normal CLI usage, but handle it gracefully
     import concurrent.futures
+
     with concurrent.futures.ThreadPoolExecutor() as executor:
         future = executor.submit(asyncio.run, client.ping(timeout))
         return future.result(timeout=timeout + 5)

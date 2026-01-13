@@ -1,6 +1,5 @@
 """Tests for circuit breaker module."""
 
-import asyncio
 import time
 
 import pytest

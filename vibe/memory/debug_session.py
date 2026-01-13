@@ -25,6 +25,7 @@ from typing import Any
 
 class AttemptResult(Enum):
     """Result of a debugging attempt."""
+
     PENDING = "pending"
     SUCCESS = "success"
     PARTIAL = "partial"  # Helped but didn't fully solve
@@ -35,6 +36,7 @@ class AttemptResult(Enum):
 @dataclass
 class DebugAttempt:
     """A single debugging attempt."""
+
     id: int
     description: str
     hypothesis: str
@@ -266,9 +268,9 @@ class DebugSession:
 
     def get_failed_attempts(self) -> list[DebugAttempt]:
         """Get all failed attempts."""
-        return [a for a in self.attempts if a.result in (
-            AttemptResult.FAILED, AttemptResult.MADE_WORSE
-        )]
+        return [
+            a for a in self.attempts if a.result in (AttemptResult.FAILED, AttemptResult.MADE_WORSE)
+        ]
 
     def get_successful_attempts(self) -> list[DebugAttempt]:
         """Get all successful attempts."""
@@ -284,8 +286,8 @@ class DebugSession:
         for attempt in self.attempts:
             # Simple similarity check - could be enhanced with embeddings
             if (
-                desc_lower in attempt.description.lower() or
-                attempt.description.lower() in desc_lower
+                desc_lower in attempt.description.lower()
+                or attempt.description.lower() in desc_lower
             ):
                 return attempt
         return None
@@ -309,16 +311,20 @@ class DebugSession:
         ]
 
         if self.current_hypothesis:
-            lines.extend([
-                f"CURRENT HYPOTHESIS: {self.current_hypothesis}",
-                "",
-            ])
+            lines.extend(
+                [
+                    f"CURRENT HYPOTHESIS: {self.current_hypothesis}",
+                    "",
+                ]
+            )
 
         # Must preserve features
         if self.must_preserve:
-            lines.extend([
-                "MUST PRESERVE (do NOT break these):",
-            ])
+            lines.extend(
+                [
+                    "MUST PRESERVE (do NOT break these):",
+                ]
+            )
             for i, feature in enumerate(self.must_preserve, 1):
                 lines.append(f"  {i}. {feature}")
             lines.append("")
@@ -326,9 +332,11 @@ class DebugSession:
         # Failed attempts - CRITICAL
         failed = self.get_failed_attempts()
         if failed:
-            lines.extend([
-                "ALREADY TRIED - FAILED (do NOT repeat):",
-            ])
+            lines.extend(
+                [
+                    "ALREADY TRIED - FAILED (do NOT repeat):",
+                ]
+            )
             for attempt in failed:
                 lines.append(f"  ✗ Attempt #{attempt.id}: {attempt.description}")
                 lines.append(f"    Why it failed: {attempt.reason}")
@@ -337,9 +345,11 @@ class DebugSession:
         # Partial successes
         partial = self.get_partial_attempts()
         if partial:
-            lines.extend([
-                "PARTIALLY WORKED (may be useful):",
-            ])
+            lines.extend(
+                [
+                    "PARTIALLY WORKED (may be useful):",
+                ]
+            )
             for attempt in partial:
                 lines.append(f"  ~ Attempt #{attempt.id}: {attempt.description}")
                 lines.append(f"    Result: {attempt.reason}")
@@ -348,32 +358,38 @@ class DebugSession:
         # Successful attempts
         successful = self.get_successful_attempts()
         if successful:
-            lines.extend([
-                "SUCCESSFUL FIXES (already applied):",
-            ])
+            lines.extend(
+                [
+                    "SUCCESSFUL FIXES (already applied):",
+                ]
+            )
             for attempt in successful:
                 lines.append(f"  ✓ Attempt #{attempt.id}: {attempt.description}")
             lines.append("")
 
         # Next steps to try
         if self.next_steps:
-            lines.extend([
-                "SUGGESTED NEXT STEPS:",
-            ])
+            lines.extend(
+                [
+                    "SUGGESTED NEXT STEPS:",
+                ]
+            )
             for i, step in enumerate(self.next_steps, 1):
                 lines.append(f"  {i}. {step}")
             lines.append("")
 
         # Warnings
-        lines.extend([
-            "WARNINGS:",
-            "  - Do NOT simplify the solution in ways that break preserved features",
-            "  - Do NOT try failed approaches again without NEW evidence",
-            "  - EXPLAIN your reasoning before making changes",
-            "  - If stuck, propose a DIFFERENT approach instead of variations",
-            "=" * 60,
-            "",
-        ])
+        lines.extend(
+            [
+                "WARNINGS:",
+                "  - Do NOT simplify the solution in ways that break preserved features",
+                "  - Do NOT try failed approaches again without NEW evidence",
+                "  - EXPLAIN your reasoning before making changes",
+                "  - If stuck, propose a DIFFERENT approach instead of variations",
+                "=" * 60,
+                "",
+            ]
+        )
 
         return "\n".join(lines)
 
@@ -419,9 +435,7 @@ class DebugSession:
             is_active=data.get("is_active", True),
             next_steps=data.get("next_steps", []),
         )
-        session.attempts = [
-            DebugAttempt.from_dict(a) for a in data.get("attempts", [])
-        ]
+        session.attempts = [DebugAttempt.from_dict(a) for a in data.get("attempts", [])]
         return session
 
     def save(self, filepath: str | Path) -> None:

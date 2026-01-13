@@ -13,35 +13,9 @@ Split into focused modules:
 """
 
 # Prompt utilities (for backward compatibility)
-from vibe.cli.prompt import (
-    SLASH_COMMANDS,
-    VibeCompleter,
-    create_prompt_session,
-    get_history_path,
-    prompt_input,
-)
-
-# Typer app and main entry point
-from vibe.cli.typer_commands import app
-
-# Startup validation
-from vibe.cli.startup import (
-    validate_startup,
-    show_startup_panel,
-)
-
-# Project management
-from vibe.cli.project import (
-    show_project_list,
-    show_project_loaded,
-    load_project_context,
-)
-
-# Conversation loop
-from vibe.cli.interactive import (
-    conversation_loop,
-    process_user_request,
-    execute_tasks,
+# Debug workflow
+from vibe.cli.debug import (
+    execute_debug_workflow,
 )
 
 # Execution helpers
@@ -51,20 +25,44 @@ from vibe.cli.execution import (
     show_task_result,
 )
 
-# Debug workflow
-from vibe.cli.debug import (
-    execute_debug_workflow,
+# Conversation loop
+from vibe.cli.interactive import (
+    conversation_loop,
+    execute_tasks,
+    process_user_request,
 )
 
+# Project management
+from vibe.cli.project import (
+    load_project_context,
+    show_project_list,
+    show_project_loaded,
+)
+from vibe.cli.prompt import (
+    SLASH_COMMANDS,
+    VibeCompleter,
+    create_prompt_session,
+    get_history_path,
+    prompt_input,
+)
+
+# Startup validation
+from vibe.cli.startup import (
+    show_startup_panel,
+    validate_startup,
+)
+
+# Typer app and main entry point
 # CLI command functions (for backward compatibility)
 from vibe.cli.typer_commands import (
-    main,
     add,
-    remove,
+    app,
     list_projects,
-    restore,
-    ping,
     logs,
+    main,
+    ping,
+    remove,
+    restore,
     run,
 )
 

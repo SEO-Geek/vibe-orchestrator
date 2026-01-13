@@ -11,7 +11,6 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from vibe.glm.client import GLMClient
 
@@ -209,9 +208,7 @@ class ProjectUpdater:
         if self.glm_client:
             # Use GLM to generate intelligent update
             try:
-                changes_text = "\n".join(
-                    f"- {c.path} ({c.action})" for c in file_changes
-                )
+                changes_text = "\n".join(f"- {c.path} ({c.action})" for c in file_changes)
 
                 prompt = STARMAP_UPDATE_PROMPT.format(
                     starmap_content=current_content[:2000],  # Limit context
@@ -320,9 +317,7 @@ class ProjectUpdater:
 
         if self.glm_client and not category:
             try:
-                changes_text = "\n".join(
-                    f"- {c.path} ({c.action})" for c in file_changes
-                )
+                changes_text = "\n".join(f"- {c.path} ({c.action})" for c in file_changes)
 
                 prompt = CHANGELOG_ENTRY_PROMPT.format(
                     task_description=task_description,
@@ -417,18 +412,21 @@ All notable changes to this project will be documented in this file.
                 first_header = re.search(r"\n## ", current_content)
                 if first_header:
                     insert_pos = first_header.start()
-                    new_section = f"\n## [Unreleased]\n\n### {entry.category}\n\n- {entry.description}\n"
+                    new_section = (
+                        f"\n## [Unreleased]\n\n### {entry.category}\n\n- {entry.description}\n"
+                    )
                     if entry.details:
                         for detail in entry.details:
                             new_section += f"  - {detail}\n"
                     content = (
-                        current_content[:insert_pos]
-                        + new_section
-                        + current_content[insert_pos:]
+                        current_content[:insert_pos] + new_section + current_content[insert_pos:]
                     )
                 else:
                     # Just append
-                    content = current_content + f"\n\n## [Unreleased]\n\n### {entry.category}\n\n- {entry.description}\n"
+                    content = (
+                        current_content
+                        + f"\n\n## [Unreleased]\n\n### {entry.category}\n\n- {entry.description}\n"
+                    )
             else:
                 # Find or create category section under Unreleased
                 category_pattern = rf"### {entry.category}\n"
@@ -436,11 +434,12 @@ All notable changes to this project will be documented in this file.
 
                 # Find next ## header to limit search
                 next_version = re.search(r"\n## \[[\d\.]", current_content[unreleased_end:])
-                section_end = unreleased_end + next_version.start() if next_version else len(current_content)
+                section_end = (
+                    unreleased_end + next_version.start() if next_version else len(current_content)
+                )
 
                 category_match = re.search(
-                    category_pattern,
-                    current_content[unreleased_end:section_end]
+                    category_pattern, current_content[unreleased_end:section_end]
                 )
 
                 if category_match:
@@ -451,9 +450,7 @@ All notable changes to this project will be documented in this file.
                         for detail in entry.details:
                             new_entry += f"\n  - {detail}"
                     content = (
-                        current_content[:insert_pos]
-                        + new_entry
-                        + current_content[insert_pos:]
+                        current_content[:insert_pos] + new_entry + current_content[insert_pos:]
                     )
                 else:
                     # Create new category section
@@ -464,9 +461,7 @@ All notable changes to this project will be documented in this file.
                         for detail in entry.details:
                             new_section += f"\n  - {detail}"
                     content = (
-                        current_content[:insert_pos]
-                        + new_section
-                        + current_content[insert_pos:]
+                        current_content[:insert_pos] + new_section + current_content[insert_pos:]
                     )
 
         try:

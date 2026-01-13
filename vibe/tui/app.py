@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from textual import work
@@ -11,17 +10,22 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Footer, Header, Input, RichLog, Static, Button, ListView, ListItem, Label
+from textual.widgets import (
+    Button,
+    Footer,
+    Header,
+    Input,
+    RichLog,
+    Static,
+)
 from textual.worker import Worker, WorkerState, get_current_worker
-
-from vibe.pricing import CostTracker
 
 if TYPE_CHECKING:
     from vibe.claude.executor import ClaudeExecutor
     from vibe.config import Project, VibeConfig
     from vibe.glm.client import GLMClient
     from vibe.memory.keeper import VibeMemory
-    from vibe.orchestrator.supervisor import Supervisor, SupervisorCallbacks
+    from vibe.orchestrator.supervisor import Supervisor
     from vibe.state import SessionContext
 
 
@@ -67,10 +71,14 @@ class TaskPanel(Static):
         lines = []
         for i, task in enumerate(self.tasks):
             status = task.get("status", "pending")
-            icon = {"done": "[green]✓[/green]", "failed": "[red]✗[/red]", "running": "[yellow]⏳[/yellow]"}.get(status, "○")
+            icon = {
+                "done": "[green]✓[/green]",
+                "failed": "[red]✗[/red]",
+                "running": "[yellow]⏳[/yellow]",
+            }.get(status, "○")
             desc = task.get("description", "")[:45]
             marker = " [bold cyan][running][/bold cyan]" if status == "running" else ""
-            lines.append(f"{icon} {i+1}. {desc}{marker}")
+            lines.append(f"{icon} {i + 1}. {desc}{marker}")
         self.update("\n".join(lines))
 
 
@@ -103,7 +111,9 @@ class CostBar(Static):
     def _refresh(self) -> None:
         """Refresh display."""
         total = self.glm_cost + self.claude_cost
-        self.update(f"[dim]Costs:[/dim] GLM [cyan]${self.glm_cost:.3f}[/cyan] + Claude [green]${self.claude_cost:.3f}[/green] = [bold]${total:.3f}[/bold]")
+        self.update(
+            f"[dim]Costs:[/dim] GLM [cyan]${self.glm_cost:.3f}[/cyan] + Claude [green]${self.claude_cost:.3f}[/green] = [bold]${total:.3f}[/bold]"
+        )
 
 
 class StatusBar(Static):
@@ -138,7 +148,9 @@ class PlanReviewScreen(ModalScreen[list[dict[str, Any]] | None]):
         """Create the modal layout."""
         yield Container(
             Static("[bold]Review Task Plan[/bold]", id="plan-review-title"),
-            Static("[dim]Press Enter to approve, Escape to cancel, D to delete selected task[/dim]"),
+            Static(
+                "[dim]Press Enter to approve, Escape to cancel, D to delete selected task[/dim]"
+            ),
             RichLog(id="plan-review-tasks"),
             Horizontal(
                 Button("Approve", variant="success", id="btn-approve"),
@@ -160,7 +172,7 @@ class PlanReviewScreen(ModalScreen[list[dict[str, Any]] | None]):
             desc = task.get("description", "No description")
             files = ", ".join(task.get("files", []))[:40] or "any"
             marker = "[bold cyan]>[/bold cyan] " if i == self.selected_index else "  "
-            log.write(f"{marker}{i+1}. {desc}")
+            log.write(f"{marker}{i + 1}. {desc}")
             if files:
                 log.write(f"     [dim]Files: {files}[/dim]")
 
@@ -467,7 +479,7 @@ class VibeApp(App):
         elif cmd_lower == "/cost":
             cost_bar = self.query_one(CostBar)
             total = cost_bar.glm_cost + cost_bar.claude_cost
-            self._write_system(f"Session Costs:")
+            self._write_system("Session Costs:")
             self._write_system(f"  GLM:    ${cost_bar.glm_cost:.4f}")
             self._write_system(f"  Claude: ${cost_bar.claude_cost:.4f}")
             self._write_system(f"  Total:  ${total:.4f}")
@@ -489,6 +501,7 @@ class VibeApp(App):
         self._write_system("Starting context compaction...")
         try:
             from vibe.memory.compaction import compact_context
+
             result = await compact_context(self.glm_client, self.memory)
             self._write_system(f"Compaction result: {result.get('reason', 'Unknown')}")
             if result.get("compacted", 0) > 0:
@@ -545,16 +558,20 @@ class VibeApp(App):
                 # Create callbacks that update TUI
                 callbacks = SupervisorCallbacks(
                     on_status=lambda msg: self.call_from_thread(self._set_status, msg),
-                    on_progress=lambda msg: self.call_from_thread(self._write_output, f"  {msg}", "dim"),
-                    on_task_start=lambda task: self.call_from_thread(self._write_claude, f"Starting: {task.description[:60]}"),
+                    on_progress=lambda msg: self.call_from_thread(
+                        self._write_output, f"  {msg}", "dim"
+                    ),
+                    on_task_start=lambda task: self.call_from_thread(
+                        self._write_claude, f"Starting: {task.description[:60]}"
+                    ),
                     on_task_complete=lambda task, success: self.call_from_thread(
                         self._write_output,
                         f"  {'✓' if success else '✗'} {task.description[:50]}",
-                        "green" if success else "red"
+                        "green" if success else "red",
                     ),
                     on_review_result=lambda approved, feedback: self.call_from_thread(
                         self._write_glm,
-                        f"Review: {'APPROVED' if approved else 'REJECTED'} - {feedback[:80]}"
+                        f"Review: {'APPROVED' if approved else 'REJECTED'} - {feedback[:80]}",
                     ),
                     on_error=lambda msg: self.call_from_thread(self._write_error, msg),
                 )
@@ -579,6 +596,7 @@ class VibeApp(App):
             if self._enable_plan_review:
                 # First get task decomposition for preview
                 from vibe.cli import load_project_context
+
                 project_context = load_project_context(self.project)
 
                 self._set_status("GLM decomposing into tasks...")
@@ -624,17 +642,23 @@ class VibeApp(App):
                 for i, task_result in enumerate(result.task_results):
                     task_panel.mark_complete(i, task_result.success)
                     if task_result.review_approved:
-                        self._write_output(f"  ✓ Task {i+1} reviewed and approved", "green")
+                        self._write_output(f"  ✓ Task {i + 1} reviewed and approved", "green")
                     elif task_result.success:
-                        self._write_output(f"  ✓ Task {i+1} completed (no changes)", "cyan")
+                        self._write_output(f"  ✓ Task {i + 1} completed (no changes)", "cyan")
                     else:
-                        self._write_output(f"  ✗ Task {i+1} failed: {task_result.error or 'Unknown'}", "red")
+                        self._write_output(
+                            f"  ✗ Task {i + 1} failed: {task_result.error or 'Unknown'}", "red"
+                        )
 
             # Final summary
             if result.success:
-                self._write_system(f"Request completed: {result.tasks_completed}/{result.total_tasks} tasks succeeded")
+                self._write_system(
+                    f"Request completed: {result.tasks_completed}/{result.total_tasks} tasks succeeded"
+                )
             else:
-                self._write_error(f"Request failed: {result.tasks_failed}/{result.total_tasks} tasks failed")
+                self._write_error(
+                    f"Request failed: {result.tasks_failed}/{result.total_tasks} tasks failed"
+                )
 
             if result.clarification_asked:
                 self._write_glm(f"Clarification needed: {result.clarification_asked}")
@@ -647,6 +671,7 @@ class VibeApp(App):
             self._set_ready()
         except Exception as e:
             import traceback
+
             self._write_error(f"Error: {e}")
             self._write_output(traceback.format_exc(), "dim")
             self._set_ready()

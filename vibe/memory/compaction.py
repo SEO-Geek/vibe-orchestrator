@@ -7,7 +7,7 @@ Summarizes old context entries into compact summaries using GLM.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -37,6 +37,7 @@ def _parse_timestamp(value: Any) -> datetime | None:
         except ValueError:
             return None
     return None
+
 
 # Default thresholds for compaction decisions
 # These are conservative defaults to avoid losing important recent context
@@ -94,14 +95,16 @@ async def compact_context(
                 continue
             # Make cutoff timezone-aware if timestamp is
             if created_at.tzinfo is not None:
-                cutoff_aware = cutoff.replace(tzinfo=timezone.utc)
+                cutoff_aware = cutoff.replace(tzinfo=UTC)
                 if created_at < cutoff_aware:
                     old_items.append(item)
             elif created_at < cutoff:
                 old_items.append(item)
 
         if len(old_items) < DEFAULT_ITEMS_PER_SUMMARY:
-            result["reason"] = f"Not enough old items ({len(old_items)} < {DEFAULT_ITEMS_PER_SUMMARY})"
+            result["reason"] = (
+                f"Not enough old items ({len(old_items)} < {DEFAULT_ITEMS_PER_SUMMARY})"
+            )
             logger.info(f"Compaction skipped: {result['reason']}")
             return result
 
@@ -120,10 +123,12 @@ async def compact_context(
                 continue
 
             # Build text for summarization
-            items_text = "\n".join([
-                f"- {getattr(item, 'key', 'unknown')}: {str(getattr(item, 'value', ''))[:200]}"
-                for item in items[:50]  # Limit items per summary
-            ])
+            items_text = "\n".join(
+                [
+                    f"- {getattr(item, 'key', 'unknown')}: {str(getattr(item, 'value', ''))[:200]}"
+                    for item in items[:50]  # Limit items per summary
+                ]
+            )
 
             # Generate summary
             try:
@@ -243,8 +248,8 @@ def get_compaction_stats(memory: VibeMemory) -> dict[str, Any]:
             if created_at:
                 # Handle timezone-aware timestamps
                 if created_at.tzinfo is not None:
-                    hour_ago_aware = hour_ago.replace(tzinfo=timezone.utc)
-                    day_ago_aware = day_ago.replace(tzinfo=timezone.utc)
+                    hour_ago_aware = hour_ago.replace(tzinfo=UTC)
+                    day_ago_aware = day_ago.replace(tzinfo=UTC)
                     if created_at > hour_ago_aware:
                         stats["by_age"]["last_hour"] += 1
                     elif created_at > day_ago_aware:

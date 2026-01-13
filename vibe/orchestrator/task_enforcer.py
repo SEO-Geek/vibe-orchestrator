@@ -556,7 +556,9 @@ class TaskEnforcer:
                     if re.search(pattern, command):
                         pattern_violations.append(f"Used forbidden pattern in Bash: {pattern}")
 
-        passed = len(missing_required) == 0 and len(forbidden_used) == 0 and len(pattern_violations) == 0
+        passed = (
+            len(missing_required) == 0 and len(forbidden_used) == 0 and len(pattern_violations) == 0
+        )
 
         return {
             "passed": passed,
@@ -565,7 +567,9 @@ class TaskEnforcer:
             "forbidden_used": forbidden_used,
             "pattern_violations": pattern_violations,
             "tools_used": list(tools_used),
-            "feedback": self._generate_feedback(missing_required, forbidden_used, pattern_violations),
+            "feedback": self._generate_feedback(
+                missing_required, forbidden_used, pattern_violations
+            ),
         }
 
     def _generate_feedback(
@@ -754,8 +758,7 @@ class SmartTaskDetector:
         self._compiled_patterns: dict[str, list[tuple[re.Pattern, float]]] = {}
         for intent_key, patterns in INTENT_PATTERNS.items():
             self._compiled_patterns[intent_key] = [
-                (re.compile(pattern, re.IGNORECASE), confidence)
-                for pattern, confidence in patterns
+                (re.compile(pattern, re.IGNORECASE), confidence) for pattern, confidence in patterns
             ]
 
     def detect(self, description: str) -> TaskTypeDetection:
@@ -790,8 +793,7 @@ class SmartTaskDetector:
                     if best_match is None or current.confidence > best_match.confidence:
                         best_match = current
                         logger.debug(
-                            f"Intent pattern match: {task_type.value} "
-                            f"(confidence={confidence:.2f})"
+                            f"Intent pattern match: {task_type.value} (confidence={confidence:.2f})"
                         )
 
         if best_match is not None:
@@ -862,24 +864,28 @@ class SmartTaskDetector:
 
             for pattern, confidence in compiled_patterns:
                 if pattern.search(description):
-                    matches.append(TaskTypeDetection(
-                        task_type=task_type,
-                        confidence=confidence,
-                        matched_pattern=pattern.pattern,
-                        detection_method="intent_pattern",
-                    ))
+                    matches.append(
+                        TaskTypeDetection(
+                            task_type=task_type,
+                            confidence=confidence,
+                            matched_pattern=pattern.pattern,
+                            detection_method="intent_pattern",
+                        )
+                    )
 
         # Check keyword matches
         description_lower = description.lower()
         for task_type, keywords in TASK_TYPE_KEYWORDS.items():
             for keyword in keywords:
                 if keyword in description_lower:
-                    matches.append(TaskTypeDetection(
-                        task_type=task_type,
-                        confidence=0.55,
-                        matched_pattern=keyword,
-                        detection_method="keyword",
-                    ))
+                    matches.append(
+                        TaskTypeDetection(
+                            task_type=task_type,
+                            confidence=0.55,
+                            matched_pattern=keyword,
+                            detection_method="keyword",
+                        )
+                    )
                     break  # Only one match per task type from keywords
 
         # Sort by confidence (highest first)

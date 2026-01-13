@@ -13,7 +13,6 @@ from typing import Any
 
 from vibe.exceptions import ConfigError, ProjectNotFoundError
 
-
 # Configuration paths
 CONFIG_DIR = Path.home() / ".config" / "vibe"
 PROJECTS_FILE = CONFIG_DIR / "projects.json"
@@ -93,8 +92,8 @@ class Project:
     pre_task_hooks: list[str] = field(default_factory=list)
     post_task_hooks: list[str] = field(default_factory=list)
     # Workflow settings for intelligent task orchestration
-    use_workflows: bool = True       # Enable workflow phase expansion
-    inject_subtasks: bool = True     # Enable automatic sub-task injection
+    use_workflows: bool = True  # Enable workflow phase expansion
+    inject_subtasks: bool = True  # Enable automatic sub-task injection
     # Context and memory settings
     context_settings: ContextSettings = field(default_factory=ContextSettings)
 
@@ -254,7 +253,7 @@ def load_config() -> VibeConfig:
             )
         except KeyError as e:
             raise ConfigError(
-                f"Missing required field in project config",
+                "Missing required field in project config",
                 {"field": str(e)},
             )
 

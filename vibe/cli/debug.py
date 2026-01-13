@@ -11,7 +11,7 @@ from datetime import datetime
 from rich.console import Console
 from rich.panel import Panel
 
-from vibe.claude.executor import ClaudeExecutor, TaskResult
+from vibe.claude.executor import ClaudeExecutor
 from vibe.config import Project
 from vibe.glm.client import GLMClient
 from vibe.glm.debug_state import DebugContext
@@ -55,12 +55,14 @@ async def execute_debug_workflow(
     # Initialize debug context
     context = DebugContext(problem=problem)
 
-    console.print(Panel(
-        f"[bold]Debug Workflow Started[/bold]\n\n"
-        f"Problem: {problem}\n"
-        f"Max iterations: {MAX_ITERATIONS}",
-        border_style="cyan",
-    ))
+    console.print(
+        Panel(
+            f"[bold]Debug Workflow Started[/bold]\n\n"
+            f"Problem: {problem}\n"
+            f"Max iterations: {MAX_ITERATIONS}",
+            border_style="cyan",
+        )
+    )
 
     # GLM generates initial task
     console.print("\n[dim]GLM generating initial task...[/dim]")
@@ -72,7 +74,9 @@ async def execute_debug_workflow(
     current_task = task_info.get("task", f"Investigate: {problem}")
 
     for iteration_num in range(1, MAX_ITERATIONS + 1):
-        console.print(f"\n[bold cyan]═══ Debug Iteration {iteration_num}/{MAX_ITERATIONS} ═══[/bold cyan]")
+        console.print(
+            f"\n[bold cyan]═══ Debug Iteration {iteration_num}/{MAX_ITERATIONS} ═══[/bold cyan]"
+        )
         console.print(f"[bold]Task:[/bold] {current_task}")
 
         # Build prompt with FULL context for Claude
@@ -91,11 +95,13 @@ async def execute_debug_workflow(
 
         # Display Claude's output
         if result.success and result.result:
-            console.print(Panel(
-                result.result,
-                title="Claude's Findings",
-                border_style="green" if result.success else "red",
-            ))
+            console.print(
+                Panel(
+                    result.result,
+                    title="Claude's Findings",
+                    border_style="green" if result.success else "red",
+                )
+            )
             # Flush after Panel to prevent buffer bleeding
             sys.stdout.flush()
         elif result.error:
@@ -134,24 +140,30 @@ async def execute_debug_workflow(
 
         # Display review result
         if review.get("is_problem_solved"):
-            console.print(Panel(
-                f"[bold green]PROBLEM SOLVED![/bold green]\n\n{review.get('feedback', '')}",
-                border_style="green",
-            ))
+            console.print(
+                Panel(
+                    f"[bold green]PROBLEM SOLVED![/bold green]\n\n{review.get('feedback', '')}",
+                    border_style="green",
+                )
+            )
             break
 
         elif review.get("approved"):
-            console.print(Panel(
-                f"[bold yellow]ITERATION APPROVED[/bold yellow]\n\n{review.get('feedback', '')}\n\n"
-                f"[bold]Next:[/bold] {review.get('next_task', 'Continue')}",
-                border_style="yellow",
-            ))
+            console.print(
+                Panel(
+                    f"[bold yellow]ITERATION APPROVED[/bold yellow]\n\n{review.get('feedback', '')}\n\n"
+                    f"[bold]Next:[/bold] {review.get('next_task', 'Continue')}",
+                    border_style="yellow",
+                )
+            )
         else:
-            console.print(Panel(
-                f"[bold red]NEEDS MORE WORK[/bold red]\n\n{review.get('feedback', '')}\n\n"
-                f"[bold]Next:[/bold] {review.get('next_task', 'Continue investigation')}",
-                border_style="red",
-            ))
+            console.print(
+                Panel(
+                    f"[bold red]NEEDS MORE WORK[/bold red]\n\n{review.get('feedback', '')}\n\n"
+                    f"[bold]Next:[/bold] {review.get('next_task', 'Continue investigation')}",
+                    border_style="red",
+                )
+            )
 
         # Get next task
         next_task = review.get("next_task")
@@ -169,18 +181,22 @@ async def execute_debug_workflow(
 
     # End of loop
     if not context.is_complete:
-        console.print(f"\n[yellow]Max iterations ({MAX_ITERATIONS}) reached without solving problem.[/yellow]")
+        console.print(
+            f"\n[yellow]Max iterations ({MAX_ITERATIONS}) reached without solving problem.[/yellow]"
+        )
 
     # Show summary
     glm_stats = glm_client.get_usage_stats()
-    console.print(Panel(
-        f"[bold]Debug Session Summary[/bold]\n\n"
-        f"Problem: {problem}\n"
-        f"Iterations: {len(context.iterations)}\n"
-        f"Solved: {'Yes' if context.is_complete else 'No'}\n"
-        f"GLM tokens: {glm_stats.get('total_tokens', 0):,}",
-        border_style="blue",
-    ))
+    console.print(
+        Panel(
+            f"[bold]Debug Session Summary[/bold]\n\n"
+            f"Problem: {problem}\n"
+            f"Iterations: {len(context.iterations)}\n"
+            f"Solved: {'Yes' if context.is_complete else 'No'}\n"
+            f"GLM tokens: {glm_stats.get('total_tokens', 0):,}",
+            border_style="blue",
+        )
+    )
 
     # Save to memory
     if memory:
@@ -202,6 +218,6 @@ async def execute_debug_workflow(
     )
 
     # Ensure all output is flushed before returning
-    console.file.flush() if hasattr(console, 'file') else None
+    console.file.flush() if hasattr(console, "file") else None
     sys.stdout.flush()
     sys.stderr.flush()

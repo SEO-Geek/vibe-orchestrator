@@ -14,30 +14,30 @@ import logging
 import os
 import shutil
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any
 
+from vibe.config import DEFAULT_DIFF_EXCLUDE_PATTERNS
 from vibe.exceptions import (
-    ClaudeError,
     ClaudeExecutionError,
     ClaudeNotFoundError,
     ClaudeTimeoutError,
 )
 from vibe.logging import (
-    claude_logger,
     ClaudeLogEntry,
-    now_iso,
+    claude_logger,
     get_session_id,
+    now_iso,
 )
-from vibe.config import DEFAULT_DIFF_EXCLUDE_PATTERNS
-from vibe.orchestrator.task_enforcer import TaskEnforcer, TaskType
-
+from vibe.orchestrator.task_enforcer import TaskEnforcer
 
 # =============================================================================
 # TIMEOUT CHECKPOINT
 # Saves partial work when timeout is approaching
 # =============================================================================
+
 
 @dataclass
 class TimeoutCheckpoint:
@@ -46,6 +46,7 @@ class TimeoutCheckpoint:
 
     Allows recovery of work done before Claude timed out.
     """
+
     task_description: str
     tool_calls: list["ToolCall"]
     file_changes: list[str]
@@ -75,14 +76,15 @@ class TimeoutCheckpoint:
             f"{self.elapsed_seconds:.1f}s elapsed"
         )
 
+
 logger = logging.getLogger(__name__)
 
 
 # Timeout tiers based on task complexity
 TIMEOUT_TIERS = {
-    "quick": 120,   # Simple reads, small edits (2 min)
-    "code": 900,    # Normal coding tasks (15 min)
-    "debug": 900,   # Debugging sessions (15 min)
+    "quick": 120,  # Simple reads, small edits (2 min)
+    "code": 900,  # Normal coding tasks (15 min)
+    "debug": 900,  # Debugging sessions (15 min)
     "research": 900,  # Research and exploration (15 min)
 }
 
@@ -304,11 +306,13 @@ class ClaudeExecutor:
             parts.append(debug_context)
             parts.append("")
 
-        parts.extend([
-            "You are working on a specific task. Do ONLY this task.",
-            "",
-            f"TASK: {task_description}",
-        ])
+        parts.extend(
+            [
+                "You are working on a specific task. Do ONLY this task.",
+                "",
+                f"TASK: {task_description}",
+            ]
+        )
 
         if files:
             parts.append(f"FILES: {', '.join(files)}")
@@ -361,9 +365,11 @@ class ClaudeExecutor:
         cmd = [
             "claude",
             "-p",  # Print mode (non-interactive)
-            "--output-format", "stream-json",
+            "--output-format",
+            "stream-json",
             "--verbose",
-            "--permission-mode", self.permission_mode,
+            "--permission-mode",
+            self.permission_mode,
         ]
 
         # Add allowed tools
@@ -461,8 +467,7 @@ class ClaudeExecutor:
             self.timeout = TIMEOUT_TIERS[timeout_tier]
             logger.info(f"Using timeout tier '{timeout_tier}': {self.timeout}s")
         prompt = self.build_prompt(
-            task_description, files, constraints,
-            enforce_tools=True, debug_context=debug_context
+            task_description, files, constraints, enforce_tools=True, debug_context=debug_context
         )
         cmd = self._build_command(prompt)
         env = self._clean_environment()
@@ -525,7 +530,7 @@ class ClaudeExecutor:
                     )
                     stdout = stdout[:MAX_OUTPUT_BYTES]
                     output_truncated = True
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # Calculate elapsed time for checkpoint
                 elapsed = (datetime.now() - start_time).total_seconds()
 
@@ -556,7 +561,9 @@ class ClaudeExecutor:
                 raise ClaudeTimeoutError(
                     f"Task timed out after {self.timeout}s{checkpoint_msg}",
                     timeout_seconds=self.timeout,
-                    checkpoint_summary=self._last_checkpoint.summary() if self._last_checkpoint else None,
+                    checkpoint_summary=self._last_checkpoint.summary()
+                    if self._last_checkpoint
+                    else None,
                     files_modified=file_changes,
                     tool_calls_count=len(tool_calls),
                 )
@@ -591,9 +598,8 @@ class ClaudeExecutor:
 
                             # Track file modifications
                             if tool_call.name in ("Edit", "Write"):
-                                file_path = (
-                                    tool_call.input.get("file_path")
-                                    or tool_call.input.get("path")
+                                file_path = tool_call.input.get("file_path") or tool_call.input.get(
+                                    "path"
                                 )
                                 if file_path and file_path not in file_changes:
                                     file_changes.append(file_path)
@@ -754,7 +760,6 @@ class ClaudeExecutor:
             - 'error': Error message
             - 'cancelled': Cancellation notice
         """
-        from typing import AsyncGenerator
 
         self.reset_cancellation()
 
@@ -846,7 +851,7 @@ class ClaudeExecutor:
                         process.stdout.readline(),
                         timeout=1.0,
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # No data ready, check if process ended
                     if process.returncode is not None:
                         break
@@ -885,9 +890,8 @@ class ClaudeExecutor:
 
                             # Track file modifications
                             if tool_call.name in ("Edit", "Write"):
-                                file_path = (
-                                    tool_call.input.get("file_path")
-                                    or tool_call.input.get("path")
+                                file_path = tool_call.input.get("file_path") or tool_call.input.get(
+                                    "path"
                                 )
                                 if file_path and file_path not in file_changes:
                                     file_changes.append(file_path)
@@ -921,17 +925,20 @@ class ClaudeExecutor:
                     error_message += f": {stderr_data.decode()[:200]}"
 
             # Yield final result
-            yield ("result", TaskResult(
-                success=not is_error,
-                result=result_text if not is_error else None,
-                error=error_message if is_error else None,
-                tool_calls=tool_calls,
-                file_changes=file_changes,
-                cost_usd=cost_usd,
-                duration_ms=duration_ms,
-                session_id=session_id,
-                num_turns=num_turns,
-            ))
+            yield (
+                "result",
+                TaskResult(
+                    success=not is_error,
+                    result=result_text if not is_error else None,
+                    error=error_message if is_error else None,
+                    tool_calls=tool_calls,
+                    file_changes=file_changes,
+                    cost_usd=cost_usd,
+                    duration_ms=duration_ms,
+                    session_id=session_id,
+                    num_turns=num_turns,
+                ),
+            )
 
         except asyncio.CancelledError:
             if self._current_process and self._current_process.returncode is None:
@@ -1062,8 +1069,7 @@ def get_git_diff(
                     f"new file (untracked)\n"
                     f"--- /dev/null\n"
                     f"+++ b/{untracked}\n"
-                    f"@@ -0,0 +1,{len(lines)} @@\n"
-                    + "\n".join(diff_lines)
+                    f"@@ -0,0 +1,{len(lines)} @@\n" + "\n".join(diff_lines)
                 )
                 output_parts.append(new_file_diff)
             except Exception:

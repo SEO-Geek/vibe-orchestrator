@@ -15,24 +15,23 @@ from datetime import datetime
 from rich.console import Console
 from rich.panel import Panel
 
-from vibe.claude.executor import ClaudeExecutor, TaskResult
+from vibe.claude.executor import ClaudeExecutor
+from vibe.cli import commands
+from vibe.cli.debug import execute_debug_workflow
+from vibe.cli.execution import execute_task_with_claude, review_with_glm, show_task_result
+from vibe.cli.project import load_project_context
 from vibe.config import Project, VibeConfig
 from vibe.exceptions import ClaudeError
-from vibe.glm.client import GLMClient, is_investigation_request
-from vibe.integrations import PerplexityClient, GitHubOps
-from vibe.logging import session_logger, SessionLogEntry, now_iso, get_session_id
-from vibe.memory.keeper import VibeMemory
+from vibe.glm.client import GLMClient
+from vibe.integrations import GitHubOps, PerplexityClient
+from vibe.logging import SessionLogEntry, get_session_id, now_iso, session_logger
 from vibe.memory.debug_session import DebugSession
-from vibe.memory.task_history import TaskHistory, add_task, add_request
+from vibe.memory.keeper import VibeMemory
+from vibe.memory.task_history import add_request, add_task
 from vibe.orchestrator.project_updater import ProjectUpdater
 from vibe.persistence.models import MessageRole, MessageType, TaskStatus
 from vibe.persistence.repository import VibeRepository
 from vibe.state import SessionContext, SessionState
-
-from vibe.cli.project import load_project_context
-from vibe.cli.debug import execute_debug_workflow
-from vibe.cli.execution import execute_task_with_claude, review_with_glm, show_task_result
-from vibe.cli import commands
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -122,7 +121,9 @@ async def execute_tasks(
                         "Address the feedback above before proceeding.",
                     ]
                     task_with_feedback["constraints"] = existing_constraints + retry_constraints
-                    console.print(f"\n  [yellow]Retrying task (attempt {attempt}/{MAX_RETRIES})...[/yellow]")
+                    console.print(
+                        f"\n  [yellow]Retrying task (attempt {attempt}/{MAX_RETRIES})...[/yellow]"
+                    )
 
                 # Execute with Claude
                 result, tool_verification = await execute_task_with_claude(
@@ -137,7 +138,11 @@ async def execute_tasks(
                     console.print(f"[red]Task failed: {result.error}[/red]")
                     failed += 1
                     context.add_error(result.error or "Unknown error")
-                    add_task(task.get("description", ""), success=False, summary=result.error or "Unknown error")
+                    add_task(
+                        task.get("description", ""),
+                        success=False,
+                        summary=result.error or "Unknown error",
+                    )
                     if memory:
                         memory.save_task_result(
                             task_description=task.get("description", ""),
@@ -149,7 +154,7 @@ async def execute_tasks(
                 # Check tool verification
                 if not tool_verification["passed"] and tool_verification.get("missing_required"):
                     console.print(
-                        f"[yellow]Warning: Task may be incomplete - missing required tools[/yellow]"
+                        "[yellow]Warning: Task may be incomplete - missing required tools[/yellow]"
                     )
 
                 # Review with GLM
@@ -162,22 +167,32 @@ async def execute_tasks(
                         project_path=project.path,
                     )
                 except Exception as review_error:
-                    # Review crashed - auto-approve to avoid losing Claude's work
-                    console.print(f"[yellow]Review failed ({review_error}), auto-approving to preserve work[/yellow]")
+                    # Review crashed - FAIL the task (never auto-approve unreviewed code)
+                    console.print(
+                        f"[red]Review failed ({review_error}) - rejecting to ensure code quality[/red]"
+                    )
                     review = {
-                        "approved": True,
-                        "issues": [],
-                        "feedback": f"Auto-approved due to review error: {str(review_error)[:100]}",
+                        "approved": False,
+                        "issues": [f"Review system error: {str(review_error)[:100]}"],
+                        "feedback": "Task rejected due to review error. Code changes preserved but not approved.",
                     }
 
                 # Persist GLM review response
-                review_content = json_module.dumps({
-                    "task": task.get("description", "")[:100],
-                    "approved": review.get("approved", False),
-                    "issues": review.get("issues", []),
-                    "feedback": review.get("feedback", "")[:500],
-                })
-                persist_message(repository, context.repo_session_id, MessageRole.GLM, review_content, MessageType.REVIEW)
+                review_content = json_module.dumps(
+                    {
+                        "task": task.get("description", "")[:100],
+                        "approved": review.get("approved", False),
+                        "issues": review.get("issues", []),
+                        "feedback": review.get("feedback", "")[:500],
+                    }
+                )
+                persist_message(
+                    repository,
+                    context.repo_session_id,
+                    MessageRole.GLM,
+                    review_content,
+                    MessageType.REVIEW,
+                )
 
                 # If tool verification failed, add that to review issues
                 if not tool_verification["passed"]:
@@ -236,14 +251,18 @@ async def execute_tasks(
                                 capture_output=True,
                                 timeout=30,
                             )
-                            console.print(f"  [dim]Git: committed {len(result.file_changes)} file(s)[/dim]")
+                            console.print(
+                                f"  [dim]Git: committed {len(result.file_changes)} file(s)[/dim]"
+                            )
                         except Exception as git_err:
                             console.print(f"  [yellow]Git commit skipped: {git_err}[/yellow]")
                 else:
                     # Task rejected - prepare for retry
                     feedback_text = review.get("feedback", "")
                     issues_text = "; ".join(review.get("issues", []))
-                    previous_feedback = feedback_text or issues_text or "Task did not meet quality standards."
+                    previous_feedback = (
+                        feedback_text or issues_text or "Task did not meet quality standards."
+                    )
 
                     if memory:
                         memory.save(
@@ -270,8 +289,9 @@ async def execute_tasks(
                         if repository and i in task_ids:
                             try:
                                 repository.update_task_status(
-                                    task_ids[i], TaskStatus.FAILED,
-                                    reason=f"Rejected after {MAX_RETRIES} attempts"
+                                    task_ids[i],
+                                    TaskStatus.FAILED,
+                                    reason=f"Rejected after {MAX_RETRIES} attempts",
                                 )
                             except Exception:
                                 pass
@@ -290,8 +310,7 @@ async def execute_tasks(
                 if repository and i in task_ids:
                     try:
                         repository.update_task_status(
-                            task_ids[i], TaskStatus.FAILED,
-                            reason=f"Claude error: {str(e)[:100]}"
+                            task_ids[i], TaskStatus.FAILED, reason=f"Claude error: {str(e)[:100]}"
                         )
                     except Exception:
                         pass
@@ -372,17 +391,19 @@ async def process_user_request(
         debug_session: Optional active debug session
     """
     # Log user request
-    session_logger.info(SessionLogEntry(
-        timestamp=now_iso(),
-        session_id=get_session_id(),
-        event_type="request",
-        project_name=context.project_name,
-        user_request=user_request[:500],
-    ).to_json())
+    session_logger.info(
+        SessionLogEntry(
+            timestamp=now_iso(),
+            session_id=get_session_id(),
+            event_type="request",
+            project_name=context.project_name,
+            user_request=user_request[:500],
+        ).to_json()
+    )
 
     # Check if this is a debug request
     DEBUG_KEYWORDS = ["debug", "broken", "not working", "bug", "crash", "why is", "what's wrong"]
-    first_line = user_request.split('\n')[0].lower()
+    first_line = user_request.split("\n")[0].lower()
     is_debug = any(keyword in first_line for keyword in DEBUG_KEYWORDS)
 
     if is_debug:
@@ -441,11 +462,23 @@ async def process_user_request(
 
     # Persist GLM decomposition
     if tasks:
-        decomposition_content = json_module.dumps([
-            {"description": t.get("description", ""), "files": t.get("files", []), "constraints": t.get("constraints", [])}
-            for t in tasks
-        ])
-        persist_message(repository, context.repo_session_id, MessageRole.GLM, decomposition_content, MessageType.DECOMPOSITION)
+        decomposition_content = json_module.dumps(
+            [
+                {
+                    "description": t.get("description", ""),
+                    "files": t.get("files", []),
+                    "constraints": t.get("constraints", []),
+                }
+                for t in tasks
+            ]
+        )
+        persist_message(
+            repository,
+            context.repo_session_id,
+            MessageRole.GLM,
+            decomposition_content,
+            MessageType.DECOMPOSITION,
+        )
 
     # Show task plan
     console.print(
@@ -456,7 +489,9 @@ async def process_user_request(
     )
 
     for i, task in enumerate(tasks, 1):
-        console.print(f"\n  [bold cyan]Task {i}:[/bold cyan] {task.get('description', 'No description')}")
+        console.print(
+            f"\n  [bold cyan]Task {i}:[/bold cyan] {task.get('description', 'No description')}"
+        )
         if task.get("files"):
             console.print(f"    [dim]Files: {', '.join(task['files'])}[/dim]")
         if task.get("constraints"):
@@ -548,6 +583,7 @@ def conversation_loop(
     # Create prompt session with history and completion
     try:
         from vibe.cli.prompt import create_prompt_session, prompt_input
+
         prompt_session = create_prompt_session(project_path=project.path)
         use_enhanced_prompt = True
     except ImportError:
@@ -587,7 +623,8 @@ def conversation_loop(
                     if empty_count >= 1 and lines:
                         lines.append("")
                         import select
-                        if hasattr(select, 'select'):
+
+                        if hasattr(select, "select"):
                             readable, _, _ = select.select([sys.stdin], [], [], 0.15)
                             if not readable:
                                 if lines and lines[-1] == "":
@@ -656,8 +693,11 @@ def conversation_loop(
                     commands.handle_history()
                 elif cmd == "/redo" or cmd.startswith("/redo "):
                     commands.handle_redo(
-                        project, glm_client, context, memory,
-                        lambda **kw: asyncio.run(execute_tasks(**kw, repository=repository))
+                        project,
+                        glm_client,
+                        context,
+                        memory,
+                        lambda **kw: asyncio.run(execute_tasks(**kw, repository=repository)),
                     )
                 elif cmd.startswith("/convention"):
                     commands.handle_convention(user_input, memory)
@@ -670,7 +710,9 @@ def conversation_loop(
                 elif cmd == "/prs":
                     commands.handle_prs(github)
                 elif cmd.startswith("/debug"):
-                    debug_session = commands.handle_debug(user_input, project, memory, debug_session)
+                    debug_session = commands.handle_debug(
+                        user_input, project, memory, debug_session
+                    )
                 elif cmd.startswith("/rollback"):
                     commands.handle_rollback(user_input, debug_session)
                 else:
@@ -680,11 +722,15 @@ def conversation_loop(
             # Input size validation
             MAX_INPUT_SIZE = 50000
             if len(user_input) > MAX_INPUT_SIZE:
-                console.print(f"[yellow]Warning: Input is very large ({len(user_input):,} chars). Truncating.[/yellow]")
+                console.print(
+                    f"[yellow]Warning: Input is very large ({len(user_input):,} chars). Truncating.[/yellow]"
+                )
                 user_input = user_input[:MAX_INPUT_SIZE] + "\n\n[... truncated ...]"
 
             # Persist user message
-            persist_message(repository, context.repo_session_id, MessageRole.USER, user_input, MessageType.CHAT)
+            persist_message(
+                repository, context.repo_session_id, MessageRole.USER, user_input, MessageType.CHAT
+            )
 
             # Update heartbeat
             if repository and context.repo_session_id:
@@ -694,9 +740,11 @@ def conversation_loop(
                     pass
 
             # Process request through GLM
-            asyncio.run(process_user_request(
-                glm_client, context, project, user_input, memory, repository, debug_session
-            ))
+            asyncio.run(
+                process_user_request(
+                    glm_client, context, project, user_input, memory, repository, debug_session
+                )
+            )
 
         except KeyboardInterrupt:
             console.print("\n[yellow]Use /quit to exit[/yellow]")

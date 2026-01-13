@@ -12,17 +12,15 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 
 from vibe.claude.executor import ClaudeExecutor
-from vibe.config import Project
-from vibe.exceptions import ResearchError, GitHubError
-from vibe.glm.client import GLMClient
-from vibe.integrations import PerplexityClient, GitHubOps
-from vibe.memory.keeper import VibeMemory
-from vibe.memory.debug_session import DebugSession, AttemptResult
-from vibe.memory.task_history import TaskHistory
-from vibe.persistence.repository import VibeRepository
-from vibe.state import SessionContext
-
 from vibe.cli.project import load_project_context
+from vibe.config import Project
+from vibe.exceptions import GitHubError, ResearchError
+from vibe.glm.client import GLMClient
+from vibe.integrations import GitHubOps, PerplexityClient
+from vibe.memory.debug_session import AttemptResult, DebugSession
+from vibe.memory.keeper import VibeMemory
+from vibe.memory.task_history import TaskHistory
+from vibe.state import SessionContext
 
 console = Console()
 
@@ -51,7 +49,7 @@ def handle_help() -> None:
 def handle_status(context: SessionContext) -> None:
     """Handle /status command."""
     stats = context.get_stats()
-    console.print(f"\n[bold]Session Status:[/bold]")
+    console.print("\n[bold]Session Status:[/bold]")
     console.print(f"  State: {stats['state']}")
     console.print(f"  Project: {stats['project']}")
     console.print(f"  Completed tasks: {stats['completed_tasks']}")
@@ -63,7 +61,7 @@ def handle_status(context: SessionContext) -> None:
 def handle_usage(glm_client: GLMClient) -> None:
     """Handle /usage command."""
     usage = glm_client.get_usage_stats()
-    console.print(f"\n[bold]GLM Usage:[/bold]")
+    console.print("\n[bold]GLM Usage:[/bold]")
     console.print(f"  Model: {usage['model']}")
     console.print(f"  Requests: {usage['request_count']}")
     console.print(f"  Total tokens: {usage['total_tokens']}")
@@ -74,13 +72,13 @@ def handle_memory(memory: VibeMemory | None) -> None:
     """Handle /memory command."""
     if memory:
         stats = memory.get_stats()
-        console.print(f"\n[bold]Memory Stats:[/bold]")
+        console.print("\n[bold]Memory Stats:[/bold]")
         console.print(f"  Total items: {stats['total_items']}")
         console.print(f"  Sessions: {stats['session_count']}")
         console.print(f"  Checkpoints: {stats['checkpoint_count']}")
-        if stats['by_category']:
-            console.print(f"  By category:")
-            for cat, count in stats['by_category'].items():
+        if stats["by_category"]:
+            console.print("  By category:")
+            for cat, count in stats["by_category"].items():
                 console.print(f"    {cat}: {count}")
         console.print()
     else:
@@ -90,7 +88,7 @@ def handle_memory(memory: VibeMemory | None) -> None:
 def handle_history() -> None:
     """Handle /history command."""
     stats = TaskHistory.get_stats()
-    console.print(f"\n[bold]Task History:[/bold]")
+    console.print("\n[bold]Task History:[/bold]")
     console.print(f"  Total tasks: {stats['total_tasks']}")
     console.print(f"  Completed: [green]{stats['completed']}[/green]")
     console.print(f"  Failed: [red]{stats['failed']}[/red]")
@@ -134,15 +132,17 @@ def handle_redo(
     }
 
     # Execute directly
-    asyncio.run(execute_tasks_func(
-        glm_client=glm_client,
-        executor=ClaudeExecutor(project.path),
-        project=project,
-        tasks=[retry_task],
-        memory=memory,
-        context=context,
-        user_request=f"Retry: {failed_tasks[0].description}",
-    ))
+    asyncio.run(
+        execute_tasks_func(
+            glm_client=glm_client,
+            executor=ClaudeExecutor(project.path),
+            project=project,
+            tasks=[retry_task],
+            memory=memory,
+            context=context,
+            user_request=f"Retry: {failed_tasks[0].description}",
+        )
+    )
 
 
 def handle_convention(
@@ -213,12 +213,18 @@ def handle_research(
     if query:
         with console.status("[bold blue]Researching...[/bold blue]"):
             try:
-                result = asyncio.run(perplexity.research(query, context=load_project_context(project)))
-                console.print(Panel(
-                    Markdown(result.answer),
-                    title=f"[bold]Research: {query[:50]}...[/bold]" if len(query) > 50 else f"[bold]Research: {query}[/bold]",
-                    border_style="green",
-                ))
+                result = asyncio.run(
+                    perplexity.research(query, context=load_project_context(project))
+                )
+                console.print(
+                    Panel(
+                        Markdown(result.answer),
+                        title=f"[bold]Research: {query[:50]}...[/bold]"
+                        if len(query) > 50
+                        else f"[bold]Research: {query}[/bold]",
+                        border_style="green",
+                    )
+                )
                 if result.citations:
                     console.print("[dim]Citations:[/dim]")
                     for citation in result.citations[:5]:
@@ -235,14 +241,18 @@ def handle_github(github: GitHubOps | None) -> None:
     try:
         repo_info = github.get_repo_info()
         if repo_info:
-            console.print(f"\n[bold]GitHub Repository:[/bold]")
+            console.print("\n[bold]GitHub Repository:[/bold]")
             console.print(f"  Name: {repo_info.get('name', 'Unknown')}")
-            owner = repo_info.get('owner', {})
-            console.print(f"  Owner: {owner.get('login', 'Unknown') if isinstance(owner, dict) else owner}")
+            owner = repo_info.get("owner", {})
+            console.print(
+                f"  Owner: {owner.get('login', 'Unknown') if isinstance(owner, dict) else owner}"
+            )
             console.print(f"  URL: {repo_info.get('url', 'Unknown')}")
             console.print(f"  Private: {'Yes' if repo_info.get('isPrivate') else 'No'}")
-            default_branch = repo_info.get('defaultBranchRef', {})
-            console.print(f"  Default branch: {default_branch.get('name', 'Unknown') if isinstance(default_branch, dict) else 'main'}")
+            default_branch = repo_info.get("defaultBranchRef", {})
+            console.print(
+                f"  Default branch: {default_branch.get('name', 'Unknown') if isinstance(default_branch, dict) else 'main'}"
+            )
             console.print()
         else:
             console.print("[yellow]No repo info available[/yellow]")
@@ -316,7 +326,7 @@ def handle_debug(
                 project_path=project.path,
                 problem=problem,
             )
-            console.print(f"\n[green bold]Debug Session Started[/green bold]")
+            console.print("\n[green bold]Debug Session Started[/green bold]")
             console.print(f"  Problem: {problem}")
             console.print(f"  Initial commit: {debug_session.initial_commit or 'N/A'}")
             console.print()
@@ -391,11 +401,7 @@ def handle_debug(
             reason = Prompt.ask("Why did it fail?")
         if reason:
             attempt = pending[-1]
-            debug_session.complete_attempt(
-                attempt.id,
-                AttemptResult.FAILED,
-                reason
-            )
+            debug_session.complete_attempt(attempt.id, AttemptResult.FAILED, reason)
             console.print(f"[red]Attempt #{attempt.id} marked as FAILED[/red]")
             console.print(f"  Reason: {reason}")
             if memory:
@@ -416,11 +422,7 @@ def handle_debug(
             reason = Prompt.ask("How did it help?")
         if reason:
             attempt = pending[-1]
-            debug_session.complete_attempt(
-                attempt.id,
-                AttemptResult.PARTIAL,
-                reason
-            )
+            debug_session.complete_attempt(attempt.id, AttemptResult.PARTIAL, reason)
             console.print(f"[yellow]Attempt #{attempt.id} marked as PARTIAL[/yellow]")
             console.print(f"  Result: {reason}")
             if memory:
@@ -437,11 +439,7 @@ def handle_debug(
             console.print("[yellow]No pending attempt to mark as success.[/yellow]")
             return debug_session
         attempt = pending[-1]
-        debug_session.complete_attempt(
-            attempt.id,
-            AttemptResult.SUCCESS,
-            "Fix worked"
-        )
+        debug_session.complete_attempt(attempt.id, AttemptResult.SUCCESS, "Fix worked")
         console.print(f"[green bold]Attempt #{attempt.id} marked as SUCCESS![/green bold]")
         if memory:
             memory.save_debug_session(debug_session.to_dict())
@@ -454,7 +452,7 @@ def handle_debug(
             console.print("[dim]Use /debug start <problem> to begin.[/dim]")
             return debug_session
 
-        console.print(f"\n[bold]Debug Session Status[/bold]")
+        console.print("\n[bold]Debug Session Status[/bold]")
         console.print(f"  Problem: {debug_session.problem}")
         console.print(f"  Hypothesis: {debug_session.current_hypothesis or '(not set)'}")
         console.print(f"  Features to preserve: {len(debug_session.must_preserve)}")
@@ -529,7 +527,9 @@ def handle_rollback(
             if debug_session.rollback_to_attempt(attempt_id):
                 console.print(f"[green]Rolled back to before attempt #{attempt_id}[/green]")
             else:
-                console.print(f"[red]Rollback failed - attempt #{attempt_id} not found or no checkpoint[/red]")
+                console.print(
+                    f"[red]Rollback failed - attempt #{attempt_id} not found or no checkpoint[/red]"
+                )
         except ValueError:
             if parts[1] == "start":
                 if debug_session.rollback_to_start():

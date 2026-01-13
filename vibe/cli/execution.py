@@ -78,8 +78,7 @@ async def execute_task_with_claude(
         console.print()
         console.print(
             Panel(
-                f"[bold yellow]Tool Usage Warning[/bold yellow]\n\n"
-                f"{tool_verification['feedback']}",
+                f"[bold yellow]Tool Usage Warning[/bold yellow]\n\n{tool_verification['feedback']}",
                 border_style="yellow",
             )
         )
@@ -131,9 +130,9 @@ def show_task_result(result: TaskResult, review: dict) -> None:
             console.print(f"    [green]✓[/green] {f}")
 
     if result.result:
-        console.print(f"\n  [bold]Claude's summary:[/bold]")
+        console.print("\n  [bold]Claude's summary:[/bold]")
         # Show full summary, wrapped for readability
-        for line in result.result.split('\n'):
+        for line in result.result.split("\n"):
             console.print(f"    {line}")
 
     # Show review result

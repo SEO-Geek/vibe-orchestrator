@@ -8,8 +8,8 @@ import pytest
 from vibe.orchestrator.reviewer import (
     MAX_REVIEW_ATTEMPTS,
     MAX_TRACKED_TASKS,
-    ReviewResult,
     Reviewer,
+    ReviewResult,
 )
 from vibe.state import Task
 
@@ -65,11 +65,13 @@ class TestReviewer:
     def mock_glm_client(self):
         """Create a mock GLM client."""
         client = MagicMock()
-        client.review_changes = AsyncMock(return_value={
-            "approved": True,
-            "issues": [],
-            "feedback": "Looks good!",
-        })
+        client.review_changes = AsyncMock(
+            return_value={
+                "approved": True,
+                "issues": [],
+                "feedback": "Looks good!",
+            }
+        )
         return client
 
     @pytest.fixture
@@ -278,11 +280,13 @@ class TestReviewerReview:
     def mock_glm_client(self):
         """Create a mock GLM client."""
         client = MagicMock()
-        client.review_changes = AsyncMock(return_value={
-            "approved": True,
-            "issues": [],
-            "feedback": "LGTM",
-        })
+        client.review_changes = AsyncMock(
+            return_value={
+                "approved": True,
+                "issues": [],
+                "feedback": "LGTM",
+            }
+        )
         return client
 
     @pytest.fixture
@@ -360,7 +364,9 @@ class TestReviewerReview:
 
         # Check that GLM was called with truncation warning
         call_args = mock_glm_client.review_changes.call_args
-        diff_arg = call_args.kwargs.get("changes_diff", call_args.args[1] if len(call_args.args) > 1 else "")
+        diff_arg = call_args.kwargs.get(
+            "changes_diff", call_args.args[1] if len(call_args.args) > 1 else ""
+        )
         assert "TRUNCATED" in diff_arg or "⚠️" in diff_arg
 
     @pytest.mark.asyncio

@@ -6,35 +6,34 @@ Single source of truth - no in-memory caches needed.
 """
 
 from vibe.persistence.models import (
-    # Enums
-    SessionStatus,
-    TaskStatus,
     AttemptResult,
-    MessageRole,
-    MessageType,
     ChangeType,
+    Checkpoint,
     ContextCategory,
-    Priority,
-    # Core entities
-    Project,
-    Session,
-    Message,
-    Task,
-    TaskStatusTransition,
-    TaskAttempt,
-    FileChange,
-    Review,
-    # Debug entities
-    DebugSession,
-    DebugIteration,
     # Support entities
     ContextItem,
     Convention,
-    Checkpoint,
-    ToolUsage,
+    DebugIteration,
+    # Debug entities
+    DebugSession,
+    FileChange,
+    Message,
+    MessageRole,
+    MessageType,
+    Priority,
+    # Core entities
+    Project,
     Request,
+    Review,
+    Session,
+    # Enums
+    SessionStatus,
+    Task,
+    TaskAttempt,
+    TaskStatus,
+    TaskStatusTransition,
+    ToolUsage,
 )
-
 from vibe.persistence.repository import VibeRepository
 
 __all__ = [

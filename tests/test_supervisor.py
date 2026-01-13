@@ -22,45 +22,54 @@ class TestInvestigationTaskDetection:
         )
 
     # Question-based user_requests
-    @pytest.mark.parametrize("user_request", [
-        "What does this function do?",
-        "How does the authentication system work?",
-        "Why is this test failing?",
-        "Where is the config defined?",
-        "Which files contain the API endpoints?",
-        "Who wrote this code?",
-        "When was this last modified?",
-    ])
+    @pytest.mark.parametrize(
+        "user_request",
+        [
+            "What does this function do?",
+            "How does the authentication system work?",
+            "Why is this test failing?",
+            "Where is the config defined?",
+            "Which files contain the API endpoints?",
+            "Who wrote this code?",
+            "When was this last modified?",
+        ],
+    )
     def test_question_user_requests_are_investigation(self, supervisor, user_request):
         """Questions should be detected as investigation tasks."""
         assert supervisor._is_investigation_task(user_request)
 
     # Investigation keywords
-    @pytest.mark.parametrize("user_request", [
-        "Find all usages of this function",
-        "Search for TODO comments",
-        "Investigate why the build is slow",
-        "Analyze the performance bottleneck",
-        "Explain this code to me",
-        "Show me how the login works",
-        "List all API endpoints",
-        "Check if there are any memory leaks",
-    ])
+    @pytest.mark.parametrize(
+        "user_request",
+        [
+            "Find all usages of this function",
+            "Search for TODO comments",
+            "Investigate why the build is slow",
+            "Analyze the performance bottleneck",
+            "Explain this code to me",
+            "Show me how the login works",
+            "List all API endpoints",
+            "Check if there are any memory leaks",
+        ],
+    )
     def test_investigation_keywords_detected(self, supervisor, user_request):
         """Investigation keywords should trigger detection."""
         assert supervisor._is_investigation_task(user_request)
 
     # Implementation/change user_requests (NOT investigation)
-    @pytest.mark.parametrize("user_request", [
-        "Add a new login button",
-        "Fix the bug in authentication",
-        "Implement dark mode",
-        "Refactor the user service",
-        "Update the config to use new values",
-        "Create a new endpoint for users",
-        "Delete unused imports",
-        "Rename the function to something better",
-    ])
+    @pytest.mark.parametrize(
+        "user_request",
+        [
+            "Add a new login button",
+            "Fix the bug in authentication",
+            "Implement dark mode",
+            "Refactor the user service",
+            "Update the config to use new values",
+            "Create a new endpoint for users",
+            "Delete unused imports",
+            "Rename the function to something better",
+        ],
+    )
     def test_implementation_user_requests_not_investigation(self, supervisor, user_request):
         """Implementation user_requests should NOT be investigation tasks."""
         assert not supervisor._is_investigation_task(user_request)

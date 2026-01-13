@@ -1,7 +1,5 @@
 """Tests for state module - session state machine."""
 
-from datetime import datetime
-
 import pytest
 
 from vibe.exceptions import StateTransitionError
@@ -94,6 +92,7 @@ class TestSessionContext:
 
         # Small delay to ensure timestamp difference
         import time
+
         time.sleep(0.01)
 
         ctx.transition_to(SessionState.IDLE)

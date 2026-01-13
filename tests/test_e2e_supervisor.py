@@ -5,20 +5,22 @@ Tests the full flow: user request → GLM decomposition → Claude execution →
 Uses mocked GLM and Claude clients to avoid real API calls.
 """
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 from dataclasses import dataclass
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from vibe.config import Project
-from vibe.orchestrator.supervisor import Supervisor, SupervisorCallbacks
+import pytest
+
 from vibe.claude.executor import TaskResult
-from vibe.state import SessionState
+from vibe.config import Project
 from vibe.exceptions import GLMError
+from vibe.orchestrator.supervisor import Supervisor, SupervisorCallbacks
+from vibe.state import SessionState
 
 
 @dataclass
 class MockExecutorContext:
     """Mock context manager for ClaudeExecutor."""
+
     result: TaskResult
 
     async def __aenter__(self):
@@ -81,11 +83,13 @@ class TestSupervisorE2E:
         client.ask_clarification = AsyncMock(side_effect=mock_ask_clarification)
         client.decompose_task = AsyncMock(side_effect=mock_decompose)
         client.review_changes = AsyncMock(side_effect=mock_review)
-        client.get_usage_stats = MagicMock(return_value={
-            "model": "mock-glm",
-            "request_count": 2,
-            "total_tokens": 100,
-        })
+        client.get_usage_stats = MagicMock(
+            return_value={
+                "model": "mock-glm",
+                "request_count": 2,
+                "total_tokens": 100,
+            }
+        )
 
         return client
 
@@ -193,9 +197,7 @@ class TestSupervisorE2E:
         mock_glm_client.ask_clarification.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_no_change_task_skips_review(
-        self, project, mock_glm_client, mock_callbacks
-    ):
+    async def test_no_change_task_skips_review(self, project, mock_glm_client, mock_callbacks):
         """Test that tasks with no file changes skip the review step."""
         supervisor = Supervisor(
             glm_client=mock_glm_client,
@@ -225,9 +227,7 @@ class TestSupervisorE2E:
         mock_glm_client.review_changes.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_task_failure_handling(
-        self, project, mock_glm_client, mock_callbacks
-    ):
+    async def test_task_failure_handling(self, project, mock_glm_client, mock_callbacks):
         """Test that task failures are handled gracefully."""
         supervisor = Supervisor(
             glm_client=mock_glm_client,
@@ -257,9 +257,7 @@ class TestSupervisorE2E:
         mock_callbacks.on_error.assert_called()
 
     @pytest.mark.asyncio
-    async def test_glm_rejection_triggers_retry(
-        self, project, mock_glm_client, mock_callbacks
-    ):
+    async def test_glm_rejection_triggers_retry(self, project, mock_glm_client, mock_callbacks):
         """Test that GLM rejections trigger retries with feedback."""
         supervisor = Supervisor(
             glm_client=mock_glm_client,
@@ -402,9 +400,9 @@ class TestSupervisorIntegration:
         """Test Supervisor integration with memory system."""
         mock_glm = MagicMock()
         mock_glm.ask_clarification = AsyncMock(return_value=None)
-        mock_glm.decompose_task = AsyncMock(return_value=[
-            {"id": "t1", "description": "Test task", "files": [], "constraints": []}
-        ])
+        mock_glm.decompose_task = AsyncMock(
+            return_value=[{"id": "t1", "description": "Test task", "files": [], "constraints": []}]
+        )
         mock_glm.review_changes = AsyncMock(return_value={"approved": True, "issues": []})
         mock_glm.get_usage_stats = MagicMock(return_value={"total_tokens": 0})
 

@@ -21,36 +21,36 @@ import logging
 import os
 import socket
 import sqlite3
+from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 
 from vibe.persistence.models import (
-    # Enums
-    SessionStatus,
-    TaskStatus,
     AttemptResult,
+    Checkpoint,
+    ContextCategory,
+    ContextItem,
+    Convention,
+    DebugIteration,
+    DebugSession,
+    FileChange,
+    Message,
     MessageRole,
     MessageType,
-    ContextCategory,
     Priority,
     # Models
     Project,
-    Session,
-    Message,
-    Task,
-    TaskStatusTransition,
-    TaskAttempt,
-    FileChange,
-    Review,
-    DebugSession,
-    DebugIteration,
-    ContextItem,
-    Convention,
-    Checkpoint,
-    ToolUsage,
     Request,
+    Review,
+    Session,
+    # Enums
+    SessionStatus,
+    Task,
+    TaskAttempt,
+    TaskStatus,
+    ToolUsage,
     # Helpers
     generate_id,
     now_iso,
@@ -226,8 +226,19 @@ class VibeRepository:
                    (id, name, path, starmap, claude_md, test_command, description,
                     created_at, updated_at, last_accessed_at, is_active)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (project_id, name, path, starmap, claude_md, test_command,
-                 description, now, now, now, 1)
+                (
+                    project_id,
+                    name,
+                    path,
+                    starmap,
+                    claude_md,
+                    test_command,
+                    description,
+                    now,
+                    now,
+                    now,
+                    1,
+                ),
             )
             logger.info(f"Created new project: {name}")
         except sqlite3.IntegrityError:
@@ -236,15 +247,12 @@ class VibeRepository:
                 """UPDATE projects
                    SET path = ?, updated_at = ?, last_accessed_at = ?
                    WHERE name = ? AND is_active = 1 AND path != ?""",
-                (path, now, now, name, path)
+                (path, now, now, name, path),
             )
             logger.debug(f"Project exists: {name}")
 
         # Fetch and return the project
-        cursor.execute(
-            "SELECT * FROM projects WHERE name = ? AND is_active = 1",
-            (name,)
-        )
+        cursor.execute("SELECT * FROM projects WHERE name = ? AND is_active = 1", (name,))
         row = cursor.fetchone()
         return Project.from_row(row)
 
@@ -258,10 +266,7 @@ class VibeRepository:
     def get_project_by_name(self, name: str) -> Project | None:
         """Get project by name."""
         cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT * FROM projects WHERE name = ? AND is_active = 1",
-            (name,)
-        )
+        cursor.execute("SELECT * FROM projects WHERE name = ? AND is_active = 1", (name,))
         row = cursor.fetchone()
         return Project.from_row(row) if row else None
 
@@ -315,7 +320,7 @@ class VibeRepository:
                     last_heartbeat_at, summary, error_message, total_tasks_completed,
                     total_tasks_failed, total_cost_usd)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                session.to_row()
+                session.to_row(),
             )
 
         logger.info(f"Started session {session.id[:8]} for project {project_id[:8]}")
@@ -347,7 +352,7 @@ class VibeRepository:
                WHERE project_id = ?
                  AND status = 'active'
                  AND last_heartbeat_at < ?""",
-            (now_iso(), project_id, threshold.isoformat())
+            (now_iso(), project_id, threshold.isoformat()),
         )
 
         count = cursor.rowcount
@@ -360,8 +365,7 @@ class VibeRepository:
         """Update session heartbeat timestamp."""
         cursor = self.conn.cursor()
         cursor.execute(
-            "UPDATE sessions SET last_heartbeat_at = ? WHERE id = ?",
-            (now_iso(), session_id)
+            "UPDATE sessions SET last_heartbeat_at = ? WHERE id = ?", (now_iso(), session_id)
         )
 
     def end_session(
@@ -377,7 +381,7 @@ class VibeRepository:
             """UPDATE sessions
                SET status = ?, ended_at = ?, summary = ?, error_message = ?
                WHERE id = ?""",
-            (status.value, now_iso(), summary, error_message, session_id)
+            (status.value, now_iso(), summary, error_message, session_id),
         )
         logger.info(f"Ended session {session_id[:8]} with status {status.value}")
         return self.get_session(session_id)
@@ -394,7 +398,7 @@ class VibeRepository:
         cursor = self.conn.cursor()
         cursor.execute(
             "SELECT * FROM sessions WHERE project_id = ? AND status = 'active' LIMIT 1",
-            (project_id,)
+            (project_id,),
         )
         row = cursor.fetchone()
         return Session.from_row(row) if row else None
@@ -411,13 +415,10 @@ class VibeRepository:
                 """SELECT * FROM sessions
                    WHERE project_id = ?
                    ORDER BY started_at DESC LIMIT ?""",
-                (project_id, limit)
+                (project_id, limit),
             )
         else:
-            cursor.execute(
-                "SELECT * FROM sessions ORDER BY started_at DESC LIMIT ?",
-                (limit,)
-            )
+            cursor.execute("SELECT * FROM sessions ORDER BY started_at DESC LIMIT ?", (limit,))
         return [Session.from_row(row) for row in cursor.fetchall()]
 
     def get_orphaned_sessions(self) -> list[dict[str, Any]]:
@@ -445,12 +446,16 @@ class VibeRepository:
         cursor.execute(
             """SELECT * FROM tasks WHERE session_id = ?
                ORDER BY sequence_num ASC""",
-            (session_id,)
+            (session_id,),
         )
         tasks = [Task.from_row(row) for row in cursor.fetchall()]
 
         # Get pending tasks specifically
-        pending_tasks = [t for t in tasks if t.status in (TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.EXECUTING)]
+        pending_tasks = [
+            t
+            for t in tasks
+            if t.status in (TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.EXECUTING)
+        ]
         completed_tasks = [t for t in tasks if t.status == TaskStatus.COMPLETED]
         failed_tasks = [t for t in tasks if t.status == TaskStatus.FAILED]
 
@@ -507,7 +512,7 @@ class VibeRepository:
                    summary = COALESCE(summary, '') || ' [Recovered]',
                    ended_at = ?
                WHERE id = ?""",
-            (now_iso(), session_id)
+            (now_iso(), session_id),
         )
 
         if cursor.rowcount == 0:
@@ -567,7 +572,7 @@ class VibeRepository:
                (id, session_id, role, content, message_type, parent_message_id,
                 created_at, tokens_used, cost_usd, metadata)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            message.to_row()
+            message.to_row(),
         )
 
         return message
@@ -585,14 +590,14 @@ class VibeRepository:
                 """SELECT * FROM messages
                    WHERE session_id = ? AND role = ?
                    ORDER BY created_at ASC LIMIT ?""",
-                (session_id, role.value, limit)
+                (session_id, role.value, limit),
             )
         else:
             cursor.execute(
                 """SELECT * FROM messages
                    WHERE session_id = ?
                    ORDER BY created_at ASC LIMIT ?""",
-                (session_id, limit)
+                (session_id, limit),
             )
         return [Message.from_row(row) for row in cursor.fetchall()]
 
@@ -611,7 +616,7 @@ class VibeRepository:
             """SELECT role, content FROM messages
                WHERE session_id = ? AND role IN ('user', 'glm', 'assistant')
                ORDER BY created_at ASC LIMIT ?""",
-            (session_id, limit)
+            (session_id, limit),
         )
 
         messages = []
@@ -644,12 +649,12 @@ class VibeRepository:
         if parent_task_id:
             cursor.execute(
                 "SELECT COALESCE(MAX(sequence_num), 0) + 1 FROM tasks WHERE parent_task_id = ?",
-                (parent_task_id,)
+                (parent_task_id,),
             )
         else:
             cursor.execute(
                 "SELECT COALESCE(MAX(sequence_num), 0) + 1 FROM tasks WHERE session_id = ? AND parent_task_id IS NULL",
-                (session_id,)
+                (session_id,),
             )
         sequence_num = cursor.fetchone()[0]
 
@@ -672,7 +677,7 @@ class VibeRepository:
                 constraints, success_criteria, status, priority, created_at,
                 started_at, completed_at, created_by, original_request)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            task.to_row()
+            task.to_row(),
         )
 
         # Record initial status transition
@@ -702,18 +707,20 @@ class VibeRepository:
         if status == TaskStatus.EXECUTING:
             cursor.execute(
                 "UPDATE tasks SET status = ?, started_at = ? WHERE id = ?",
-                (status.value, now, task_id)
+                (status.value, now, task_id),
             )
-        elif status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.SKIPPED):
+        elif status in (
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
+            TaskStatus.SKIPPED,
+        ):
             cursor.execute(
                 "UPDATE tasks SET status = ?, completed_at = ? WHERE id = ?",
-                (status.value, now, task_id)
+                (status.value, now, task_id),
             )
         else:
-            cursor.execute(
-                "UPDATE tasks SET status = ? WHERE id = ?",
-                (status.value, task_id)
-            )
+            cursor.execute("UPDATE tasks SET status = ? WHERE id = ?", (status.value, task_id))
 
         # Record transition
         self._record_task_transition(task_id, from_status, status, reason, triggered_by)
@@ -742,7 +749,7 @@ class VibeRepository:
                 reason,
                 now_iso(),
                 triggered_by,
-            )
+            ),
         )
 
     def get_task(self, task_id: str) -> Task | None:
@@ -759,7 +766,7 @@ class VibeRepository:
             """SELECT * FROM tasks
                WHERE session_id = ? AND status IN ('pending', 'queued')
                ORDER BY priority DESC, sequence_num ASC""",
-            (session_id,)
+            (session_id,),
         )
         return [Task.from_row(row) for row in cursor.fetchall()]
 
@@ -774,7 +781,7 @@ class VibeRepository:
             """SELECT * FROM tasks
                WHERE session_id = ? AND status IN ('completed', 'failed')
                ORDER BY completed_at DESC LIMIT ?""",
-            (session_id, limit)
+            (session_id, limit),
         )
         return [Task.from_row(row) for row in cursor.fetchall()]
 
@@ -810,7 +817,7 @@ class VibeRepository:
         # Get next attempt number
         cursor.execute(
             "SELECT COALESCE(MAX(attempt_num), 0) + 1 FROM task_attempts WHERE task_id = ?",
-            (task_id,)
+            (task_id,),
         )
         attempt_num = cursor.fetchone()[0]
 
@@ -829,7 +836,7 @@ class VibeRepository:
                 completed_at, duration_ms, cost_usd, tokens_used, num_turns,
                 claude_session_id, tool_calls)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            attempt.to_row()
+            attempt.to_row(),
         )
 
         return attempt
@@ -869,7 +876,7 @@ class VibeRepository:
                 claude_session_id,
                 to_json(tool_calls) if tool_calls else None,
                 attempt_id,
-            )
+            ),
         )
         return self.get_attempt(attempt_id)
 
@@ -884,8 +891,7 @@ class VibeRepository:
         """Get all attempts for a task."""
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT * FROM task_attempts WHERE task_id = ? ORDER BY attempt_num ASC",
-            (task_id,)
+            "SELECT * FROM task_attempts WHERE task_id = ? ORDER BY attempt_num ASC", (task_id,)
         )
         return [TaskAttempt.from_row(row) for row in cursor.fetchall()]
 
@@ -922,7 +928,7 @@ class VibeRepository:
                (attempt_id, file_path, change_type, old_path, diff_content,
                 lines_added, lines_removed, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            change.to_row()
+            change.to_row(),
         )
 
         return change
@@ -931,8 +937,7 @@ class VibeRepository:
         """Get file changes for an attempt."""
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT * FROM file_changes WHERE attempt_id = ? ORDER BY created_at ASC",
-            (attempt_id,)
+            "SELECT * FROM file_changes WHERE attempt_id = ? ORDER BY created_at ASC", (attempt_id,)
         )
         return [FileChange.from_row(row) for row in cursor.fetchall()]
 
@@ -967,7 +972,7 @@ class VibeRepository:
                (id, attempt_id, approved, issues, feedback, suggested_next_steps,
                 reviewed_at, review_duration_ms, tokens_used)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            review.to_row()
+            review.to_row(),
         )
 
         return review
@@ -1006,7 +1011,7 @@ class VibeRepository:
                (id, session_id, problem, hypothesis, must_preserve, is_active,
                 is_solved, initial_git_commit, created_at, updated_at, resolved_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            debug_session.to_row()
+            debug_session.to_row(),
         )
 
         return debug_session
@@ -1016,7 +1021,7 @@ class VibeRepository:
         cursor = self.conn.cursor()
         cursor.execute(
             "SELECT * FROM debug_sessions WHERE session_id = ? AND is_active = 1 LIMIT 1",
-            (session_id,)
+            (session_id,),
         )
         row = cursor.fetchone()
         return DebugSession.from_row(row) if row else None
@@ -1047,10 +1052,7 @@ class VibeRepository:
                 values.append(now_iso())
 
         values.append(debug_session_id)
-        cursor.execute(
-            f"UPDATE debug_sessions SET {', '.join(updates)} WHERE id = ?",
-            values
-        )
+        cursor.execute(f"UPDATE debug_sessions SET {', '.join(updates)} WHERE id = ?", values)
 
     def create_debug_iteration(
         self,
@@ -1067,7 +1069,7 @@ class VibeRepository:
         # Get next iteration number
         cursor.execute(
             "SELECT COALESCE(MAX(iteration_num), 0) + 1 FROM debug_iterations WHERE debug_session_id = ?",
-            (debug_session_id,)
+            (debug_session_id,),
         )
         iteration_num = cursor.fetchone()[0]
 
@@ -1088,7 +1090,7 @@ class VibeRepository:
                 structured_findings, review_approved, review_is_solved, review_feedback,
                 review_next_task, started_at, completed_at, duration_ms, git_checkpoint)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            iteration.to_row()
+            iteration.to_row(),
         )
 
         return iteration
@@ -1117,7 +1119,7 @@ class VibeRepository:
                 now_iso(),
                 duration_ms,
                 iteration_id,
-            )
+            ),
         )
 
     def review_debug_iteration(
@@ -1141,7 +1143,7 @@ class VibeRepository:
                 feedback,
                 next_task,
                 iteration_id,
-            )
+            ),
         )
 
     def get_debug_iterations(self, debug_session_id: str) -> list[DebugIteration]:
@@ -1149,7 +1151,7 @@ class VibeRepository:
         cursor = self.conn.cursor()
         cursor.execute(
             "SELECT * FROM debug_iterations WHERE debug_session_id = ? ORDER BY iteration_num ASC",
-            (debug_session_id,)
+            (debug_session_id,),
         )
         return [DebugIteration.from_row(row) for row in cursor.fetchall()]
 
@@ -1171,8 +1173,7 @@ class VibeRepository:
 
         # Check if exists
         cursor.execute(
-            "SELECT id FROM context_items WHERE project_id = ? AND key = ?",
-            (project_id, key)
+            "SELECT id FROM context_items WHERE project_id = ? AND key = ?", (project_id, key)
         )
         existing = cursor.fetchone()
 
@@ -1191,7 +1192,7 @@ class VibeRepository:
                 """UPDATE context_items
                    SET value = ?, category = ?, priority = ?, updated_at = ?
                    WHERE id = ?""",
-                (value, category.value, priority.value, now_iso(), item.id)
+                (value, category.value, priority.value, now_iso(), item.id),
             )
         else:
             cursor.execute(
@@ -1199,7 +1200,7 @@ class VibeRepository:
                    (id, project_id, session_id, key, value, category, priority,
                     created_at, updated_at, expires_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                item.to_row()
+                item.to_row(),
             )
 
         return item
@@ -1208,8 +1209,7 @@ class VibeRepository:
         """Get a context item by key."""
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT * FROM context_items WHERE project_id = ? AND key = ?",
-            (project_id, key)
+            "SELECT * FROM context_items WHERE project_id = ? AND key = ?", (project_id, key)
         )
         row = cursor.fetchone()
         return ContextItem.from_row(row) if row else None
@@ -1227,14 +1227,14 @@ class VibeRepository:
                 """SELECT * FROM context_items
                    WHERE project_id = ? AND category = ?
                    ORDER BY priority DESC, updated_at DESC LIMIT ?""",
-                (project_id, category.value, limit)
+                (project_id, category.value, limit),
             )
         else:
             cursor.execute(
                 """SELECT * FROM context_items
                    WHERE project_id = ?
                    ORDER BY priority DESC, updated_at DESC LIMIT ?""",
-                (project_id, limit)
+                (project_id, limit),
             )
         return [ContextItem.from_row(row) for row in cursor.fetchall()]
 
@@ -1269,7 +1269,7 @@ class VibeRepository:
                 """UPDATE conventions
                    SET convention = ?, applies_to = ?, updated_at = ?
                    WHERE key = ?""",
-                (convention, applies_to, now_iso(), key)
+                (convention, applies_to, now_iso(), key),
             )
         else:
             cursor.execute(
@@ -1277,7 +1277,7 @@ class VibeRepository:
                    (id, key, convention, applies_to, created_by_project,
                     created_at, updated_at, is_active)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                conv.to_row()
+                conv.to_row(),
             )
 
         return conv
@@ -1286,15 +1286,13 @@ class VibeRepository:
         """List active conventions."""
         cursor = self.conn.cursor()
         if applies_to == "all":
-            cursor.execute(
-                "SELECT * FROM conventions WHERE is_active = 1 ORDER BY created_at DESC"
-            )
+            cursor.execute("SELECT * FROM conventions WHERE is_active = 1 ORDER BY created_at DESC")
         else:
             cursor.execute(
                 """SELECT * FROM conventions
                    WHERE is_active = 1 AND (applies_to = 'all' OR applies_to = ?)
                    ORDER BY created_at DESC""",
-                (applies_to,)
+                (applies_to,),
             )
         return [Convention.from_row(row) for row in cursor.fetchall()]
 
@@ -1327,7 +1325,7 @@ class VibeRepository:
                (id, session_id, name, description, git_branch, git_commit,
                 git_status, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            checkpoint.to_row()
+            checkpoint.to_row(),
         )
 
         return checkpoint
@@ -1336,8 +1334,7 @@ class VibeRepository:
         """List checkpoints for a session."""
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT * FROM checkpoints WHERE session_id = ? ORDER BY created_at DESC",
-            (session_id,)
+            "SELECT * FROM checkpoints WHERE session_id = ? ORDER BY created_at DESC", (session_id,)
         )
         return [Checkpoint.from_row(row) for row in cursor.fetchall()]
 
@@ -1377,7 +1374,7 @@ class VibeRepository:
                 0 if success else 1,
                 duration_ms,
                 now_iso(),
-            )
+            ),
         )
 
     def get_tool_usage(self, session_id: str) -> list[ToolUsage]:
@@ -1385,7 +1382,7 @@ class VibeRepository:
         cursor = self.conn.cursor()
         cursor.execute(
             "SELECT * FROM tool_usage WHERE session_id = ? ORDER BY invocation_count DESC",
-            (session_id,)
+            (session_id,),
         )
         return [ToolUsage.from_row(row) for row in cursor.fetchall()]
 
@@ -1406,7 +1403,7 @@ class VibeRepository:
                (id, session_id, request_text, result_summary, tasks_created,
                 status, created_at, completed_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            request.to_row()
+            request.to_row(),
         )
 
         return request
@@ -1424,7 +1421,7 @@ class VibeRepository:
             """UPDATE requests
                SET status = ?, result_summary = ?, tasks_created = ?, completed_at = ?
                WHERE id = ?""",
-            (status, result_summary, tasks_created, now_iso(), request_id)
+            (status, result_summary, tasks_created, now_iso(), request_id),
         )
 
     def get_recent_requests(
@@ -1436,7 +1433,7 @@ class VibeRepository:
         cursor = self.conn.cursor()
         cursor.execute(
             "SELECT * FROM requests WHERE session_id = ? ORDER BY created_at DESC LIMIT ?",
-            (session_id, limit)
+            (session_id, limit),
         )
         return [Request.from_row(row) for row in cursor.fetchall()]
 
@@ -1451,29 +1448,23 @@ class VibeRepository:
         # Task counts
         cursor.execute(
             """SELECT status, COUNT(*) FROM tasks WHERE session_id = ? GROUP BY status""",
-            (session_id,)
+            (session_id,),
         )
         task_counts = dict(cursor.fetchall())
 
         # Message count
-        cursor.execute(
-            "SELECT COUNT(*) FROM messages WHERE session_id = ?",
-            (session_id,)
-        )
+        cursor.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,))
         message_count = cursor.fetchone()[0]
 
         # Total cost
         cursor.execute(
             "SELECT SUM(cost_usd) FROM task_attempts WHERE task_id IN (SELECT id FROM tasks WHERE session_id = ?)",
-            (session_id,)
+            (session_id,),
         )
         total_cost = cursor.fetchone()[0] or 0.0
 
         # Request count
-        cursor.execute(
-            "SELECT COUNT(*) FROM requests WHERE session_id = ?",
-            (session_id,)
-        )
+        cursor.execute("SELECT COUNT(*) FROM requests WHERE session_id = ?", (session_id,))
         request_count = cursor.fetchone()[0]
 
         return {

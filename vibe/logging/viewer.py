@@ -7,9 +7,10 @@ Used by the `vibe logs` CLI command.
 
 import json
 import re
+from collections.abc import Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from .config import get_config
 
@@ -51,7 +52,9 @@ def parse_since(since: str) -> datetime:
     raise ValueError(f"Invalid time format: {since}. Use ISO format or relative (1h, 30m, 2d)")
 
 
-def read_jsonl(filepath: Path, limit: int | None = None, since: datetime | None = None) -> Iterator[dict[str, Any]]:
+def read_jsonl(
+    filepath: Path, limit: int | None = None, since: datetime | None = None
+) -> Iterator[dict[str, Any]]:
     """
     Read entries from a JSONL file.
 
@@ -68,7 +71,7 @@ def read_jsonl(filepath: Path, limit: int | None = None, since: datetime | None 
 
     entries: list[dict[str, Any]] = []
 
-    with open(filepath, "r", encoding="utf-8") as f:
+    with open(filepath, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -308,13 +311,15 @@ def format_stats(stats: dict[str, Any]) -> str:
             else:
                 lines.append(f"    - {method}: {data}")
 
-    lines.extend([
-        "",
-        "=== Claude Statistics ===",
-        f"  Executions:     {stats['claude_executions']}",
-        f"  Success/Fail:   {stats['claude_successes']}/{stats['claude_failures']} ({stats['claude_success_rate']}%)",
-        f"  Duration:       avg {stats['claude_avg_duration_ms']/1000:.1f}s, p50 {stats.get('claude_p50_duration_ms', 0)/1000:.1f}s, p95 {stats.get('claude_p95_duration_ms', 0)/1000:.1f}s",
-    ])
+    lines.extend(
+        [
+            "",
+            "=== Claude Statistics ===",
+            f"  Executions:     {stats['claude_executions']}",
+            f"  Success/Fail:   {stats['claude_successes']}/{stats['claude_failures']} ({stats['claude_success_rate']}%)",
+            f"  Duration:       avg {stats['claude_avg_duration_ms'] / 1000:.1f}s, p50 {stats.get('claude_p50_duration_ms', 0) / 1000:.1f}s, p95 {stats.get('claude_p95_duration_ms', 0) / 1000:.1f}s",
+        ]
+    )
 
     if stats.get("claude_tools"):
         lines.append("  Tools Used:")
@@ -322,10 +327,12 @@ def format_stats(stats: dict[str, Any]) -> str:
             lines.append(f"    - {tool}: {count}")
 
     if stats.get("errors"):
-        lines.extend([
-            "",
-            "=== Recent Errors ===",
-        ])
+        lines.extend(
+            [
+                "",
+                "=== Recent Errors ===",
+            ]
+        )
         for err in stats["errors"][:5]:
             lines.append(f"  - {err[:80]}...")
 
@@ -393,7 +400,7 @@ def follow_logs(
 
             if current_size > last_pos:
                 # New content available
-                with open(filepath, "r", encoding="utf-8") as f:
+                with open(filepath, encoding="utf-8") as f:
                     f.seek(last_pos)
                     for line in f:
                         line = line.strip()

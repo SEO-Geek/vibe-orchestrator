@@ -24,12 +24,12 @@ class InjectionRule:
     sub-tasks are injected before or after the main task.
     """
 
-    name: str                                    # Rule identifier
-    trigger_pattern: str                         # Regex pattern to match task descriptions
-    inject_before: list[str] = field(default_factory=list)   # Tasks to add before
-    inject_after: list[str] = field(default_factory=list)    # Tasks to add after
-    constraints: list[str] = field(default_factory=list)     # Constraints to add to main task
-    priority: int = 0                            # Higher priority rules take precedence
+    name: str  # Rule identifier
+    trigger_pattern: str  # Regex pattern to match task descriptions
+    inject_before: list[str] = field(default_factory=list)  # Tasks to add before
+    inject_after: list[str] = field(default_factory=list)  # Tasks to add after
+    constraints: list[str] = field(default_factory=list)  # Constraints to add to main task
+    priority: int = 0  # Higher priority rules take precedence
 
 
 # =============================================================================
@@ -49,7 +49,6 @@ INJECTION_RULES: list[InjectionRule] = [
         constraints=["Follow existing code patterns in the project"],
         priority=10,
     ),
-
     # Bug fixing → verify fix and check for regressions
     InjectionRule(
         name="bug_fixing",
@@ -61,7 +60,6 @@ INJECTION_RULES: list[InjectionRule] = [
         constraints=["Document root cause in code comments"],
         priority=10,
     ),
-
     # Refactoring → analyze usages first
     InjectionRule(
         name="refactoring",
@@ -76,7 +74,6 @@ INJECTION_RULES: list[InjectionRule] = [
         constraints=["Preserve existing behavior"],
         priority=10,
     ),
-
     # API changes → update documentation
     InjectionRule(
         name="api_changes",
@@ -87,7 +84,6 @@ INJECTION_RULES: list[InjectionRule] = [
         constraints=["Maintain backward compatibility where possible"],
         priority=5,
     ),
-
     # Database changes → backup first
     InjectionRule(
         name="database_changes",
@@ -101,7 +97,6 @@ INJECTION_RULES: list[InjectionRule] = [
         constraints=["Use transactions for multi-step operations"],
         priority=10,
     ),
-
     # Test writing → run the tests
     InjectionRule(
         name="test_writing",
@@ -112,7 +107,6 @@ INJECTION_RULES: list[InjectionRule] = [
         constraints=["Test should cover edge cases"],
         priority=5,
     ),
-
     # Configuration changes → validate config
     InjectionRule(
         name="config_changes",
@@ -122,7 +116,6 @@ INJECTION_RULES: list[InjectionRule] = [
         ],
         priority=5,
     ),
-
     # Security-related changes → audit
     InjectionRule(
         name="security_changes",
@@ -136,7 +129,6 @@ INJECTION_RULES: list[InjectionRule] = [
         ],
         priority=15,
     ),
-
     # UI changes → visual verification
     InjectionRule(
         name="ui_changes",
@@ -147,7 +139,6 @@ INJECTION_RULES: list[InjectionRule] = [
         constraints=["Test in real browser, not command line"],
         priority=5,
     ),
-
     # Any code modification → generic verification
     InjectionRule(
         name="generic_code_changes",
@@ -248,15 +239,17 @@ class SubTaskInjector:
 
         # Before tasks
         for i, before_desc in enumerate(before_tasks):
-            result.append({
-                "id": f"{task_id}-pre-{i + 1}",
-                "description": before_desc,
-                "files": task.get("files", []),
-                "constraints": [],
-                "injected": True,
-                "injection_type": "before",
-                "parent_task": task_id,
-            })
+            result.append(
+                {
+                    "id": f"{task_id}-pre-{i + 1}",
+                    "description": before_desc,
+                    "files": task.get("files", []),
+                    "constraints": [],
+                    "injected": True,
+                    "injection_type": "before",
+                    "parent_task": task_id,
+                }
+            )
 
         # Main task with added constraints
         main_task = task.copy()
@@ -266,15 +259,17 @@ class SubTaskInjector:
 
         # After tasks
         for i, after_desc in enumerate(after_tasks):
-            result.append({
-                "id": f"{task_id}-post-{i + 1}",
-                "description": after_desc,
-                "files": task.get("files", []),
-                "constraints": [],
-                "injected": True,
-                "injection_type": "after",
-                "parent_task": task_id,
-            })
+            result.append(
+                {
+                    "id": f"{task_id}-post-{i + 1}",
+                    "description": after_desc,
+                    "files": task.get("files", []),
+                    "constraints": [],
+                    "injected": True,
+                    "injection_type": "after",
+                    "parent_task": task_id,
+                }
+            )
 
         logger.info(
             f"Injected {len(before_tasks)} before + {len(after_tasks)} after tasks "

@@ -6,9 +6,10 @@ Based on Athena's circuit breaker pattern.
 """
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 from vibe.exceptions import ClaudeCircuitOpenError
 

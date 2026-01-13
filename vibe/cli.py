@@ -20,42 +20,42 @@ See:
 
 # Re-export everything from the new modular structure
 from vibe.cli import (
-    # Typer app
-    app,
     # Prompt utilities
     SLASH_COMMANDS,
     VibeCompleter,
+    # Typer app
+    app,
+    # Interactive
+    conversation_loop,
     create_prompt_session,
+    # Debug
+    execute_debug_workflow,
+    # Execution
+    execute_task_with_claude,
+    execute_tasks,
     get_history_path,
+    load_project_context,
+    process_user_request,
     prompt_input,
-    # Startup
-    validate_startup,
-    show_startup_panel,
+    review_with_glm,
     # Project
     show_project_list,
     show_project_loaded,
-    load_project_context,
-    # Interactive
-    conversation_loop,
-    process_user_request,
-    execute_tasks,
-    # Execution
-    execute_task_with_claude,
-    review_with_glm,
+    show_startup_panel,
     show_task_result,
-    # Debug
-    execute_debug_workflow,
+    # Startup
+    validate_startup,
 )
 
 # For backward compatibility with direct imports
 from vibe.cli.typer_commands import (
-    main,
     add,
-    remove,
     list_projects,
-    restore,
-    ping,
     logs,
+    main,
+    ping,
+    remove,
+    restore,
 )
 
 __all__ = [

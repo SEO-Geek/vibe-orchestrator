@@ -175,14 +175,17 @@ Your job is to review Claude's code changes before they are accepted.
 - Approve good work promptly - don't nitpick
 """
 
-TASK_DECOMPOSITION_PROMPT = """Given the user's request and project context, break it down into atomic tasks.
+TASK_DECOMPOSITION_PROMPT = (
+    """Given the user's request and project context, break it down into atomic tasks.
 
 User Request: {user_request}
 
 Project Context:
 {project_context}
 
-""" + WORKFLOW_GUIDANCE + """
+"""
+    + WORKFLOW_GUIDANCE
+    + """
 
 ## CRITICAL: Check for Existing Findings in User Request
 
@@ -236,6 +239,7 @@ Example output:
 }}
 ```
 """
+)
 
 # =============================================================================
 # DEBUG WORKFLOW PROMPTS
@@ -365,4 +369,3 @@ Structure your response with these sections:
 Be SPECIFIC - include file paths, line numbers, exact error messages.
 GLM will review this output and decide next steps.
 """
-

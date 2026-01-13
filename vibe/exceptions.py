@@ -95,12 +95,15 @@ class ClaudeTimeoutError(ClaudeError):
         files_modified: list[str] | None = None,
         tool_calls_count: int = 0,
     ):
-        super().__init__(message, {
-            "timeout_seconds": timeout_seconds,
-            "checkpoint_summary": checkpoint_summary,
-            "files_modified": files_modified or [],
-            "tool_calls_count": tool_calls_count,
-        })
+        super().__init__(
+            message,
+            {
+                "timeout_seconds": timeout_seconds,
+                "checkpoint_summary": checkpoint_summary,
+                "files_modified": files_modified or [],
+                "tool_calls_count": tool_calls_count,
+            },
+        )
         self.timeout_seconds = timeout_seconds
         self.checkpoint_summary = checkpoint_summary
         self.files_modified = files_modified or []
@@ -139,7 +142,10 @@ class MemoryConnectionError(VibeMemoryError):
 
 
 class MemoryNotFoundError(VibeMemoryError):
-    """Raised when requested memory item is not found."""
+    """Raised when requested memory item is not found.
+
+    Reserved for future use in memory lookup operations.
+    """
 
     pass
 
@@ -161,7 +167,10 @@ class ReviewRejectedError(ReviewError):
 
 
 class ReviewTimeoutError(ReviewError):
-    """Raised when GLM review times out."""
+    """Raised when GLM review times out.
+
+    Reserved for future timeout handling in review operations.
+    """
 
     def __init__(self, message: str, timeout_seconds: float):
         super().__init__(message, {"timeout_seconds": timeout_seconds})
@@ -169,7 +178,10 @@ class ReviewTimeoutError(ReviewError):
 
 
 class ReviewFailedError(ReviewError):
-    """Raised when GLM review fails and cannot verify code quality."""
+    """Raised when GLM review fails and cannot verify code quality.
+
+    Reserved for future use when review system errors should propagate.
+    """
 
     pass
 
@@ -188,7 +200,10 @@ class TaskParseError(TaskError):
 
 
 class TaskQueueFullError(TaskError):
-    """Raised when task queue is at capacity."""
+    """Raised when task queue is at capacity.
+
+    Reserved for future async task queue implementation.
+    """
 
     pass
 

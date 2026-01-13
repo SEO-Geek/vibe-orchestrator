@@ -29,7 +29,17 @@ User <-> GLM (brain) <-> Claude (worker)
 /home/brian/vibe/
 ├── vibe/
 │   ├── __init__.py
-│   ├── cli.py             # Entry point, rich UI, commands
+│   ├── cli.py             # Backward-compatibility shim (imports from cli/)
+│   ├── cli/               # Refactored CLI (8 focused modules)
+│   │   ├── __init__.py    # Exports all CLI components
+│   │   ├── startup.py     # Startup validation and system checks
+│   │   ├── project.py     # Project selection and context loading
+│   │   ├── debug.py       # Debug workflow with GLM/Claude
+│   │   ├── execution.py   # Task execution and GLM review
+│   │   ├── commands.py    # Slash command handlers (/help, /debug, etc.)
+│   │   ├── interactive.py # Main conversation loop
+│   │   ├── typer_commands.py # CLI entry points (add, remove, list)
+│   │   └── prompt.py      # Enhanced prompt with history/completion
 │   ├── config.py          # Settings, projects.json loading, hook configs
 │   ├── pricing.py         # Cost calculation for GLM/Claude API calls
 │   ├── exceptions.py      # Exception hierarchy
@@ -39,7 +49,8 @@ User <-> GLM (brain) <-> Claude (worker)
 │   │   ├── __init__.py
 │   │   ├── client.py      # OpenRouter API wrapper for GLM-4.7
 │   │   ├── prompts.py     # System prompts (Supervisor, Reviewer)
-│   │   └── parser.py      # Parse GLM JSON responses
+│   │   ├── parser.py      # Parse GLM JSON responses
+│   │   └── debug_state.py # Debug session state tracking
 │   │
 │   ├── claude/
 │   │   ├── __init__.py
@@ -50,7 +61,6 @@ User <-> GLM (brain) <-> Claude (worker)
 │   │   ├── __init__.py
 │   │   ├── supervisor.py  # CORE: Main orchestration loop
 │   │   ├── reviewer.py    # GLM review gate with retry logic
-│   │   ├── task_queue.py  # Async task management
 │   │   ├── task_enforcer.py # Tool requirements + SmartTaskDetector
 │   │   ├── project_updater.py # Auto-update STARMAP/CHANGELOG
 │   │   └── workflows/      # Intelligent task orchestration
@@ -66,11 +76,18 @@ User <-> GLM (brain) <-> Claude (worker)
 │   │   ├── task_history.py # In-memory task tracking
 │   │   └── debug_session.py # Debug session management
 │   │
-│   ├── persistence/        # NEW: Unified persistence layer
+│   ├── persistence/        # Unified persistence layer
 │   │   ├── __init__.py
 │   │   ├── schema.sql     # SQLite schema (18 tables)
 │   │   ├── models.py      # Dataclasses for all entities
 │   │   └── repository.py  # VibeRepository database access
+│   │
+│   ├── logging/           # Structured logging system
+│   │   ├── __init__.py
+│   │   ├── config.py      # LogConfig with env overrides
+│   │   ├── entries.py     # Log entry types (GLM, Claude, session)
+│   │   ├── handlers.py    # File handlers with rotation
+│   │   └── viewer.py      # Log viewing and analysis
 │   │
 │   ├── tui/
 │   │   ├── __init__.py
@@ -78,10 +95,22 @@ User <-> GLM (brain) <-> Claude (worker)
 │   │
 │   └── integrations/
 │       ├── __init__.py
-│       ├── perplexity.py  # Research API client
-│       └── github.py      # GitHub CLI wrapper
+│       ├── research.py    # Perplexity research API client
+│       └── github_ops.py  # GitHub CLI wrapper
 │
-├── tests/
+├── tests/                 # 141 tests (unit + E2E integration)
+│   ├── test_state.py      # State machine tests
+│   ├── test_circuit.py    # Circuit breaker tests
+│   ├── test_config.py     # Configuration tests
+│   ├── test_exceptions.py # Exception hierarchy tests
+│   ├── test_reviewer.py   # Reviewer gate tests
+│   ├── test_supervisor.py # Investigation detection tests
+│   └── test_e2e_supervisor.py # Full workflow E2E tests
+│
+├── .github/
+│   └── workflows/
+│       └── ci.yml         # GitHub Actions CI/CD pipeline
+│
 ├── docs/
 │   └── MCP_SERVERS.md     # Recommended MCP servers
 ├── CHANGELOG.md
@@ -115,7 +144,7 @@ GLM-powered code review gate:
 - Evaluates task completion, code quality, scope adherence
 - Tracks attempts per task for retry logic
 - Builds retry context with previous rejection feedback
-- Auto-approves if review crashes to avoid losing work
+- Fails tasks if review crashes (never auto-approve unreviewed code)
 - **Memory Management**: Prevents unbounded dict growth
   - `cleanup_completed_task()` clears tracking data after task completion
   - `cleanup_stale_tasks()` removes idle tasks older than 1 hour
@@ -252,6 +281,29 @@ Projects are registered in `~/.config/vibe/projects.json`:
 
 ## Recent Changes
 
+- **2026-01-13**: Code Quality & Security Fixes
+  - Fixed security issue: review failures now reject tasks (never auto-approve)
+  - Ruff linting fixes (104 auto-fixed issues)
+  - Code formatting standardized across 34 files
+  - Exception docstrings updated for reserved exceptions
+- **2026-01-13**: CLI Module Refactoring
+  - Split 2268-line `cli.py` into 8 focused modules
+  - `cli/startup.py`: Startup validation
+  - `cli/project.py`: Project management
+  - `cli/debug.py`: Debug workflow
+  - `cli/execution.py`: Task execution
+  - `cli/commands.py`: Slash commands
+  - `cli/interactive.py`: Conversation loop
+  - `cli/typer_commands.py`: CLI entry points
+  - `cli/prompt.py`: Enhanced prompt
+- **2026-01-13**: CI/CD Pipeline
+  - GitHub Actions workflow (Python 3.11/3.12)
+  - pytest-cov with Codecov integration
+  - Ruff linting and mypy type checking
+- **2026-01-13**: E2E Integration Tests
+  - 10 comprehensive end-to-end tests
+  - Full workflow coverage (decomposition → execution → review)
+  - 141 total tests passing
 - **2026-01-13**: GLM Context & Memory Improvements
   - ExecutionDetails model for full task execution records
   - execution_details table with compressed diff storage

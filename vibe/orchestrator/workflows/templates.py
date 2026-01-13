@@ -7,7 +7,6 @@ Each workflow template specifies the phases to execute for a given task type.
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
 
 from vibe.orchestrator.task_enforcer import TaskType
 
@@ -15,12 +14,12 @@ from vibe.orchestrator.task_enforcer import TaskType
 class PhaseType(Enum):
     """Types of workflow phases in the execution pipeline."""
 
-    ANALYZE = "analyze"      # Read code, understand dependencies
-    DESIGN = "design"        # Plan the approach
+    ANALYZE = "analyze"  # Read code, understand dependencies
+    DESIGN = "design"  # Plan the approach
     IMPLEMENT = "implement"  # Write the actual code
-    DOCUMENT = "document"    # Add comments, update docs
-    VERIFY = "verify"        # Run tests, verify behavior
-    CLEANUP = "cleanup"      # Remove dead code, format
+    DOCUMENT = "document"  # Add comments, update docs
+    VERIFY = "verify"  # Run tests, verify behavior
+    CLEANUP = "cleanup"  # Remove dead code, format
 
 
 @dataclass
@@ -32,15 +31,15 @@ class WorkflowPhase:
     and how to determine success.
     """
 
-    name: str                                    # e.g., "analyze_dependencies"
-    phase_type: PhaseType                        # Category of phase
-    description: str                             # Human-readable description
-    required_tools: list[str] = field(default_factory=list)    # Tools that MUST be used
+    name: str  # e.g., "analyze_dependencies"
+    phase_type: PhaseType  # Category of phase
+    description: str  # Human-readable description
+    required_tools: list[str] = field(default_factory=list)  # Tools that MUST be used
     recommended_agents: list[str] = field(default_factory=list)  # e.g., ["perplexity", "context7"]
-    success_criteria: str = ""                   # How to verify phase completion
-    timeout_tier: str = "code"                   # quick (30s), code (2m), debug (5m), research (10m)
-    can_skip: bool = False                       # Whether phase can be skipped if not needed
-    prompt_guidance: str = ""                    # Additional prompt text for this phase
+    success_criteria: str = ""  # How to verify phase completion
+    timeout_tier: str = "code"  # quick (30s), code (2m), debug (5m), research (10m)
+    can_skip: bool = False  # Whether phase can be skipped if not needed
+    prompt_guidance: str = ""  # Additional prompt text for this phase
 
 
 @dataclass
@@ -52,9 +51,9 @@ class WorkflowTemplate:
     like feature development, debugging, refactoring, etc.
     """
 
-    task_type: TaskType                          # The task type this template handles
-    name: str                                    # Human-readable name
-    description: str                             # What this workflow is for
+    task_type: TaskType  # The task type this template handles
+    name: str  # Human-readable name
+    description: str  # What this workflow is for
     phases: list[WorkflowPhase] = field(default_factory=list)
 
 
@@ -252,7 +251,6 @@ WORKFLOW_TEMPLATES: dict[TaskType, WorkflowTemplate] = {
             PHASE_VERIFY,
         ],
     ),
-
     # Bug fixing: reproduce → investigate → fix → verify → add test
     TaskType.DEBUG: WorkflowTemplate(
         task_type=TaskType.DEBUG,
@@ -266,7 +264,6 @@ WORKFLOW_TEMPLATES: dict[TaskType, WorkflowTemplate] = {
             PHASE_ADD_TEST,
         ],
     ),
-
     # Refactoring: analyze impact → refactor → verify behavior
     TaskType.CODE_REFACTOR: WorkflowTemplate(
         task_type=TaskType.CODE_REFACTOR,
@@ -278,7 +275,6 @@ WORKFLOW_TEMPLATES: dict[TaskType, WorkflowTemplate] = {
             PHASE_VERIFY_BEHAVIOR,
         ],
     ),
-
     # Research: gather info → summarize
     TaskType.RESEARCH: WorkflowTemplate(
         task_type=TaskType.RESEARCH,
@@ -289,7 +285,6 @@ WORKFLOW_TEMPLATES: dict[TaskType, WorkflowTemplate] = {
             PHASE_SUMMARIZE,
         ],
     ),
-
     # Browser/UI testing: setup and test
     TaskType.UI_TEST: WorkflowTemplate(
         task_type=TaskType.UI_TEST,
@@ -326,7 +321,6 @@ WORKFLOW_TEMPLATES: dict[TaskType, WorkflowTemplate] = {
             ),
         ],
     ),
-
     # API testing
     TaskType.API_TEST: WorkflowTemplate(
         task_type=TaskType.API_TEST,
@@ -353,7 +347,6 @@ WORKFLOW_TEMPLATES: dict[TaskType, WorkflowTemplate] = {
             ),
         ],
     ),
-
     # Database operations: careful with transactions
     TaskType.DATABASE: WorkflowTemplate(
         task_type=TaskType.DATABASE,
@@ -379,7 +372,6 @@ WORKFLOW_TEMPLATES: dict[TaskType, WorkflowTemplate] = {
             ),
         ],
     ),
-
     # Browser work
     TaskType.BROWSER_WORK: WorkflowTemplate(
         task_type=TaskType.BROWSER_WORK,
@@ -404,7 +396,6 @@ WORKFLOW_TEMPLATES: dict[TaskType, WorkflowTemplate] = {
             ),
         ],
     ),
-
     # Docker operations
     TaskType.DOCKER: WorkflowTemplate(
         task_type=TaskType.DOCKER,
@@ -430,7 +421,6 @@ WORKFLOW_TEMPLATES: dict[TaskType, WorkflowTemplate] = {
             ),
         ],
     ),
-
     # General fallback - minimal workflow
     TaskType.GENERAL: WorkflowTemplate(
         task_type=TaskType.GENERAL,

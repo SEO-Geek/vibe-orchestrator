@@ -102,15 +102,19 @@ class PerplexityClient:
         messages = []
 
         if context:
-            messages.append({
-                "role": "system",
-                "content": f"You are a technical research assistant. Context: {context}",
-            })
+            messages.append(
+                {
+                    "role": "system",
+                    "content": f"You are a technical research assistant. Context: {context}",
+                }
+            )
 
-        messages.append({
-            "role": "user",
-            "content": query,
-        })
+        messages.append(
+            {
+                "role": "user",
+                "content": query,
+            }
+        )
 
         try:
             response = await self._client.chat.completions.create(

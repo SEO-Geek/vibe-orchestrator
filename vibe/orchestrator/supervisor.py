@@ -21,26 +21,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
+from vibe.claude.circuit import CircuitBreaker
 from vibe.config import Project
 from vibe.exceptions import (
     ClaudeCircuitOpenError,
     ClaudeError,
     GLMError,
-    ReviewFailedError,
-    ReviewRejectedError,
-    ReviewTimeoutError,
-    TaskError,
-    VibeError,
 )
 from vibe.glm.client import GLMClient
 from vibe.memory.keeper import VibeMemory
 from vibe.state import SessionContext, SessionState, Task
-from vibe.claude.circuit import CircuitBreaker
 
 # Avoid circular import - import lazily in methods that need it
 if TYPE_CHECKING:
@@ -231,8 +227,7 @@ class Supervisor:
 
         # Workflow engine setting - default from project config
         self.use_workflow_engine = (
-            use_workflow_engine if use_workflow_engine is not None
-            else project.use_workflows
+            use_workflow_engine if use_workflow_engine is not None else project.use_workflows
         )
 
         # Initialize session context
@@ -249,7 +244,7 @@ class Supervisor:
         if use_circuit_breaker:
             self._circuit_breaker = CircuitBreaker(
                 failure_threshold=3,  # Open after 3 consecutive failures
-                reset_timeout=60.0,   # Try again after 60 seconds
+                reset_timeout=60.0,  # Try again after 60 seconds
             )
 
         # Reviewer reference for cleanup (set externally if using shared reviewer)
@@ -297,13 +292,13 @@ class Supervisor:
 
         # Question words (asking for information, not changes)
         question_patterns = [
-            r"^what\s",           # "what does X do"
-            r"^how\s",            # "how does X work"
-            r"^why\s",            # "why is X happening"
-            r"^where\s",          # "where is X defined"
-            r"^which\s",          # "which files contain X"
-            r"^who\s",            # "who wrote X"
-            r"^when\s",           # "when was X changed"
+            r"^what\s",  # "what does X do"
+            r"^how\s",  # "how does X work"
+            r"^why\s",  # "why is X happening"
+            r"^where\s",  # "where is X defined"
+            r"^which\s",  # "which files contain X"
+            r"^who\s",  # "who wrote X"
+            r"^when\s",  # "when was X changed"
             r"^can\s+you\s+(find|show|explain|tell|describe)",
             r"^please\s+(find|show|explain|tell|describe|investigate)",
         ]
@@ -515,14 +510,20 @@ class Supervisor:
                 )
 
                 if proc.returncode != 0:
-                    error_output = stderr.decode("utf-8", errors="replace") if stderr else stdout.decode("utf-8", errors="replace")
+                    error_output = (
+                        stderr.decode("utf-8", errors="replace")
+                        if stderr
+                        else stdout.decode("utf-8", errors="replace")
+                    )
                     self._emit_error(f"{phase} hook failed: {hook}\n{error_output[:200]}")
                     return False
 
                 if stdout:
-                    self._emit_progress(f"Hook output: {stdout.decode('utf-8', errors='replace')[:100]}")
+                    self._emit_progress(
+                        f"Hook output: {stdout.decode('utf-8', errors='replace')[:100]}"
+                    )
 
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self._emit_error(f"{phase} hook timed out: {hook}")
                 return False
             except Exception as e:
@@ -695,7 +696,9 @@ class Supervisor:
 
             # Step 2: Ask for clarification if needed
             # Skip for investigation/research tasks (no benefit, adds latency)
-            should_ask_clarification = not skip_clarification and not self._is_investigation_task(request)
+            should_ask_clarification = not skip_clarification and not self._is_investigation_task(
+                request
+            )
 
             if should_ask_clarification:
                 self._emit_status("Checking if clarification needed...")
@@ -778,10 +781,12 @@ class Supervisor:
                 if task_result.success:
                     result.tasks_completed += 1
                     all_files_changed.update(task_result.files_changed)
-                    self.context.complete_current_task({
-                        "success": True,
-                        "files": task_result.files_changed,
-                    })
+                    self.context.complete_current_task(
+                        {
+                            "success": True,
+                            "files": task_result.files_changed,
+                        }
+                    )
                 else:
                     result.tasks_failed += 1
                     self.context.fail_current_task(task_result.error or "Unknown error")
@@ -976,12 +981,12 @@ class Supervisor:
                         self._emit_progress(f"Waiting {backoff_delay}s before retry...")
                         await asyncio.sleep(backoff_delay)
 
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # Review timed out - FAIL the task (never auto-approve)
                 logger.error(f"GLM review timed out after {GLM_REVIEW_TIMEOUT}s")
                 result.error = f"GLM review timed out after {GLM_REVIEW_TIMEOUT}s"
                 result.review_approved = False
-                self._emit_error(f"Review timeout - cannot approve without review")
+                self._emit_error("Review timeout - cannot approve without review")
                 break
 
             except GLMError as e:
@@ -1087,7 +1092,7 @@ class Supervisor:
 
                 return result
 
-            except Exception as e:
+            except Exception:
                 # Record failure in circuit breaker
                 if self._circuit_breaker:
                     self._circuit_breaker.record_failure()

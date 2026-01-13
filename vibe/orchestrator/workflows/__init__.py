@@ -17,27 +17,25 @@ Usage:
     expanded = expand_tasks(tasks)
 """
 
-from vibe.orchestrator.workflows.templates import (
-    PhaseType,
-    WorkflowPhase,
-    WorkflowTemplate,
-    WORKFLOW_TEMPLATES,
-    get_workflow_template,
-    get_phase_prompt_section,
-)
-
-from vibe.orchestrator.workflows.injector import (
-    InjectionRule,
-    SubTaskInjector,
-    INJECTION_RULES,
-    inject_subtasks,
-)
-
 from vibe.orchestrator.workflows.engine import (
     ExpandedTask,
     WorkflowEngine,
     expand_tasks,
     get_workflow_summary,
+)
+from vibe.orchestrator.workflows.injector import (
+    INJECTION_RULES,
+    InjectionRule,
+    SubTaskInjector,
+    inject_subtasks,
+)
+from vibe.orchestrator.workflows.templates import (
+    WORKFLOW_TEMPLATES,
+    PhaseType,
+    WorkflowPhase,
+    WorkflowTemplate,
+    get_phase_prompt_section,
+    get_workflow_template,
 )
 
 __all__ = [

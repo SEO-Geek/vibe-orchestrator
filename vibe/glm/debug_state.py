@@ -142,7 +142,9 @@ class DebugContext:
             for iteration in self.iterations:
                 parts.append(iteration.format_summary())
                 # Add corresponding review if exists
-                matching_reviews = [r for r in self.reviews if r.iteration_num == iteration.iteration_num]
+                matching_reviews = [
+                    r for r in self.reviews if r.iteration_num == iteration.iteration_num
+                ]
                 if matching_reviews:
                     review = matching_reviews[0]
                     status = "APPROVED" if review.approved else "NEEDS WORK"
@@ -172,7 +174,7 @@ class DebugContext:
             "",
             f"**Task Given to Claude:** {latest.task_given}",
             "",
-            f"**Claude's Output:**",
+            "**Claude's Output:**",
             latest.output,
             "",
         ]
@@ -191,8 +193,12 @@ class DebugContext:
         if len(self.iterations) > 1:
             parts.append(f"**This is iteration {len(self.iterations)}** - previous attempts:")
             for prev in self.iterations[:-1]:
-                matching_reviews = [r for r in self.reviews if r.iteration_num == prev.iteration_num]
-                status = "approved" if matching_reviews and matching_reviews[0].approved else "rejected"
+                matching_reviews = [
+                    r for r in self.reviews if r.iteration_num == prev.iteration_num
+                ]
+                status = (
+                    "approved" if matching_reviews and matching_reviews[0].approved else "rejected"
+                )
                 parts.append(f"  - Iteration {prev.iteration_num}: {status}")
             parts.append("")
 
@@ -205,13 +211,17 @@ class DebugContext:
 
         summaries = []
         for iteration in self.iterations:
-            matching_reviews = [r for r in self.reviews if r.iteration_num == iteration.iteration_num]
+            matching_reviews = [
+                r for r in self.reviews if r.iteration_num == iteration.iteration_num
+            ]
             if matching_reviews:
                 review = matching_reviews[0]
                 result = "succeeded" if review.approved else f"failed: {review.feedback[:100]}"
             else:
                 result = "pending review"
-            summaries.append(f"- Attempt {iteration.iteration_num}: {iteration.task_given[:80]}... ({result})")
+            summaries.append(
+                f"- Attempt {iteration.iteration_num}: {iteration.task_given[:80]}... ({result})"
+            )
 
         return "\n".join(summaries)
 

@@ -120,9 +120,13 @@ class VibeCompleter(Completer):
         try:
             for root, dirs, files in os.walk(project):
                 # Skip hidden and common ignore dirs
-                dirs[:] = [d for d in dirs if not d.startswith(".") and d not in (
-                    "node_modules", "__pycache__", ".venv", "venv", ".git", "dist", "build"
-                )]
+                dirs[:] = [
+                    d
+                    for d in dirs
+                    if not d.startswith(".")
+                    and d
+                    not in ("node_modules", "__pycache__", ".venv", "venv", ".git", "dist", "build")
+                ]
 
                 # Calculate relative depth
                 rel_path = Path(root).relative_to(project)
@@ -160,10 +164,12 @@ def create_prompt_session(project_path: str | None = None) -> PromptSession:
         Configured PromptSession
     """
     # Style for the prompt
-    style = Style.from_dict({
-        "prompt": "ansicyan bold",
-        "continuation": "ansigray",
-    })
+    style = Style.from_dict(
+        {
+            "prompt": "ansicyan bold",
+            "continuation": "ansigray",
+        }
+    )
 
     # Key bindings
     bindings = KeyBindings()

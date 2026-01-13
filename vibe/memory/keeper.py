@@ -17,14 +17,15 @@ import sqlite3
 import subprocess
 import threading
 import uuid
+from collections.abc import Generator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 
 from vibe.config import MEMORY_DB_PATH
-from vibe.exceptions import MemoryConnectionError, MemoryNotFoundError
+from vibe.exceptions import MemoryConnectionError
 from vibe.persistence.models import ExecutionDetails
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ GLOBAL_CHANNEL = "_vibe_global"
 # CONNECTION POOL
 # Thread-local connection pool for better performance
 # =============================================================================
+
 
 class ConnectionPool:
     """
@@ -67,7 +69,7 @@ class ConnectionPool:
             SQLite connection for current thread
         """
         # Check if current thread has a connection
-        conn = getattr(self._local, 'connection', None)
+        conn = getattr(self._local, "connection", None)
 
         # Check if connection exists and is still valid
         if conn is not None:
@@ -101,7 +103,7 @@ class ConnectionPool:
 
     def close_all(self) -> None:
         """Close all connections (call at shutdown)."""
-        conn = getattr(self._local, 'connection', None)
+        conn = getattr(self._local, "connection", None)
         if conn is not None:
             try:
                 conn.close()
@@ -175,9 +177,7 @@ class VibeMemory:
         Pool connections are thread-local and reused.
         """
         if not self._db_path.exists():
-            raise MemoryConnectionError(
-                f"Memory-keeper database not found at {self._db_path}"
-            )
+            raise MemoryConnectionError(f"Memory-keeper database not found at {self._db_path}")
 
         if self._use_pool:
             # Use global connection pool for thread-local reuse
@@ -800,11 +800,13 @@ class VibeMemory:
 
         now = datetime.now().isoformat()
         full_key = f"convention:{key}"
-        value = json.dumps({
-            "convention": convention,
-            "applies_to": applies_to,
-            "created_by": self.project_name,
-        })
+        value = json.dumps(
+            {
+                "convention": convention,
+                "applies_to": applies_to,
+                "created_by": self.project_name,
+            }
+        )
 
         with self._db_connection() as conn:
             cursor = conn.cursor()
@@ -913,21 +915,25 @@ class VibeMemory:
                 key = row[0].replace("convention:", "")
                 try:
                     data = json.loads(row[1])
-                    conventions.append({
-                        "key": key,
-                        "convention": data.get("convention", ""),
-                        "applies_to": data.get("applies_to", "all"),
-                        "created_by": data.get("created_by", "unknown"),
-                        "created_at": row[2],
-                    })
+                    conventions.append(
+                        {
+                            "key": key,
+                            "convention": data.get("convention", ""),
+                            "applies_to": data.get("applies_to", "all"),
+                            "created_by": data.get("created_by", "unknown"),
+                            "created_at": row[2],
+                        }
+                    )
                 except json.JSONDecodeError:
-                    conventions.append({
-                        "key": key,
-                        "convention": row[1],
-                        "applies_to": "all",
-                        "created_by": "unknown",
-                        "created_at": row[2],
-                    })
+                    conventions.append(
+                        {
+                            "key": key,
+                            "convention": row[1],
+                            "applies_to": "all",
+                            "created_by": "unknown",
+                            "created_at": row[2],
+                        }
+                    )
 
         return conventions
 
@@ -1083,13 +1089,15 @@ class VibeMemory:
                 try:
                     data = json.loads(row[1])
                     if include_inactive or data.get("is_active", False):
-                        sessions.append({
-                            "key": row[0],
-                            "problem": data.get("problem", "Unknown"),
-                            "attempts": len(data.get("attempts", [])),
-                            "is_active": data.get("is_active", False),
-                            "updated_at": row[2],
-                        })
+                        sessions.append(
+                            {
+                                "key": row[0],
+                                "problem": data.get("problem", "Unknown"),
+                                "attempts": len(data.get("attempts", [])),
+                                "is_active": data.get("is_active", False),
+                                "updated_at": row[2],
+                            }
+                        )
                 except json.JSONDecodeError:
                     pass
 
@@ -1170,7 +1178,9 @@ class VibeMemory:
                     compressed_diff,  # BLOB - may be gzip compressed
                     details.diff_chars,
                     1 if details.diff_was_truncated else 0,
-                    1 if details.review_approved else (0 if details.review_approved is False else None),
+                    1
+                    if details.review_approved
+                    else (0 if details.review_approved is False else None),
                     json.dumps(details.review_issues),
                     details.review_feedback,
                     details.cost_usd,
@@ -1321,9 +1331,7 @@ class VibeMemory:
             total_count = cursor.fetchone()[0]
 
             # Oldest record
-            cursor.execute(
-                "SELECT MIN(created_at) FROM execution_details"
-            )
+            cursor.execute("SELECT MIN(created_at) FROM execution_details")
             oldest = cursor.fetchone()[0]
 
             # Approved vs rejected counts
@@ -1334,9 +1342,7 @@ class VibeMemory:
                 GROUP BY review_approved
                 """
             )
-            by_approval = {
-                row[0]: row[1] for row in cursor.fetchall()
-            }
+            by_approval = {row[0]: row[1] for row in cursor.fetchall()}
 
         return {
             "total_records": total_count,

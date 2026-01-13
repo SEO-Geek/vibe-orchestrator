@@ -1,12 +1,8 @@
 """Tests for config module."""
 
-import json
-import tempfile
-from pathlib import Path
-
 import pytest
 
-from vibe.config import Project, VibeConfig, load_config
+from vibe.config import Project, VibeConfig
 from vibe.exceptions import ProjectNotFoundError
 
 
@@ -96,9 +92,7 @@ class TestVibeConfig:
 
     def test_remove_project(self):
         """Test removing a project."""
-        config = VibeConfig(
-            projects=[Project(name="toremove", path="/remove")]
-        )
+        config = VibeConfig(projects=[Project(name="toremove", path="/remove")])
 
         removed = config.remove_project("toremove")
         assert removed.name == "toremove"

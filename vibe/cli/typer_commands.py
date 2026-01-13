@@ -17,27 +17,31 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
+from vibe.cli.interactive import conversation_loop
+from vibe.cli.project import show_project_list, show_project_loaded
+from vibe.cli.startup import show_startup_panel, validate_startup
 from vibe.config import (
     Project,
-    VibeConfig,
     get_openrouter_key,
     load_config,
     save_config,
 )
 from vibe.exceptions import ConfigError
 from vibe.glm.client import GLMClient, ping_glm_sync
-from vibe.integrations import PerplexityClient, GitHubOps
-from vibe.logging import set_session_id, set_project_name, session_logger, SessionLogEntry, now_iso
-from vibe.logging.viewer import query_logs, calculate_stats, format_entry_line, format_stats, follow_logs
+from vibe.integrations import GitHubOps, PerplexityClient
+from vibe.logging import SessionLogEntry, now_iso, session_logger, set_project_name, set_session_id
+from vibe.logging.viewer import (
+    calculate_stats,
+    follow_logs,
+    format_entry_line,
+    format_stats,
+    query_logs,
+)
 from vibe.memory.keeper import VibeMemory
 from vibe.memory.task_history import TaskHistory
 from vibe.persistence.models import SessionStatus, TaskStatus
 from vibe.persistence.repository import VibeRepository
 from vibe.state import SessionContext, SessionState
-
-from vibe.cli.startup import validate_startup, show_startup_panel
-from vibe.cli.project import show_project_list, show_project_loaded
-from vibe.cli.interactive import conversation_loop
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -188,9 +192,13 @@ def _start_orchestrator(
         # Check for orphaned sessions
         orphans = _repository.get_orphaned_sessions()
         if orphans:
-            console.print(f"[yellow]⚠ Found {len(orphans)} orphaned session(s) from previous crash(es)[/yellow]")
+            console.print(
+                f"[yellow]⚠ Found {len(orphans)} orphaned session(s) from previous crash(es)[/yellow]"
+            )
             for orphan in orphans[:3]:
-                console.print(f"  [dim]- Session {orphan.id[:8]}... started {orphan.started_at}[/dim]")
+                console.print(
+                    f"  [dim]- Session {orphan.id[:8]}... started {orphan.started_at}[/dim]"
+                )
 
         # Start new session
         repo_session = _repository.start_session(repo_project.id)
@@ -211,12 +219,14 @@ def _start_orchestrator(
         set_session_id(_memory.session_id)
         set_project_name(project.name)
 
-        session_logger.info(SessionLogEntry(
-            timestamp=now_iso(),
-            session_id=_memory.session_id,
-            event_type="start",
-            project_name=project.name,
-        ).to_json())
+        session_logger.info(
+            SessionLogEntry(
+                timestamp=now_iso(),
+                session_id=_memory.session_id,
+                event_type="start",
+                project_name=project.name,
+            ).to_json()
+        )
 
         context_items = _memory.load_project_context(limit=100)
         memory_items = len(context_items)
@@ -245,6 +255,7 @@ def _start_orchestrator(
     # Step 8: Enter conversation loop or TUI
     if tui:
         from vibe.tui import run_tui
+
         console.print("[bold cyan]Starting Textual TUI...[/bold cyan]")
         console.print("[dim]Press Escape to cancel operations, Ctrl+C to quit[/dim]")
         run_tui(
@@ -327,7 +338,9 @@ def list_projects() -> None:
 @app.command()
 def restore(
     session_id: str = typer.Argument(None, help="Session ID to restore (or 'list' to see all)"),
-    show_messages: bool = typer.Option(False, "--messages", "-m", help="Show conversation messages"),
+    show_messages: bool = typer.Option(
+        False, "--messages", "-m", help="Show conversation messages"
+    ),
     show_tasks: bool = typer.Option(False, "--tasks", "-t", help="Show task details"),
 ) -> None:
     """Recover from a crashed session."""
@@ -360,7 +373,9 @@ def restore(
             session_short = orphan.get("session_id", "")[:12]
             project = orphan.get("project_name", "unknown")
             started = orphan.get("started_at", "")[:16] if orphan.get("started_at") else "-"
-            heartbeat = orphan.get("last_heartbeat", "")[:16] if orphan.get("last_heartbeat") else "-"
+            heartbeat = (
+                orphan.get("last_heartbeat", "")[:16] if orphan.get("last_heartbeat") else "-"
+            )
             tasks_completed = orphan.get("tasks_completed", 0)
             tasks_failed = orphan.get("tasks_failed", 0)
             task_info = f"{tasks_completed} done, {tasks_failed} failed"
@@ -404,40 +419,51 @@ def restore(
     tasks_info = context["tasks"]
 
     # Display session summary
-    console.print(Panel(
-        f"[bold]Session:[/bold] {session.id[:12]}...\n"
-        f"[bold]Project:[/bold] {project.name if project else 'unknown'}\n"
-        f"[bold]Status:[/bold] {session.status}\n"
-        f"[bold]Started:[/bold] {session.started_at}\n"
-        f"[bold]Last Heartbeat:[/bold] {session.last_heartbeat_at or 'never'}\n"
-        f"\n"
-        f"[bold]Messages:[/bold] {summary['total_messages']} ({summary['user_messages']} from user)\n"
-        f"[bold]Tasks:[/bold] {summary['pending_tasks']} pending, {summary['completed_tasks']} completed",
-        title="[bold cyan]Recovery Context[/bold cyan]",
-        border_style="cyan",
-    ))
+    console.print(
+        Panel(
+            f"[bold]Session:[/bold] {session.id[:12]}...\n"
+            f"[bold]Project:[/bold] {project.name if project else 'unknown'}\n"
+            f"[bold]Status:[/bold] {session.status}\n"
+            f"[bold]Started:[/bold] {session.started_at}\n"
+            f"[bold]Last Heartbeat:[/bold] {session.last_heartbeat_at or 'never'}\n"
+            f"\n"
+            f"[bold]Messages:[/bold] {summary['total_messages']} ({summary['user_messages']} from user)\n"
+            f"[bold]Tasks:[/bold] {summary['pending_tasks']} pending, {summary['completed_tasks']} completed",
+            title="[bold cyan]Recovery Context[/bold cyan]",
+            border_style="cyan",
+        )
+    )
 
     if context["last_request"]:
-        console.print(Panel(
-            context["last_request"][:500] + ("..." if len(context["last_request"]) > 500 else ""),
-            title="[bold yellow]Last User Request[/bold yellow]",
-            border_style="yellow",
-        ))
+        console.print(
+            Panel(
+                context["last_request"][:500]
+                + ("..." if len(context["last_request"]) > 500 else ""),
+                title="[bold yellow]Last User Request[/bold yellow]",
+                border_style="yellow",
+            )
+        )
 
     if tasks_info["pending"]:
         console.print("\n[bold red]Pending/In-Progress Tasks:[/bold red]")
         for i, task in enumerate(tasks_info["pending"], 1):
             status_color = "yellow" if task.status == TaskStatus.PENDING else "blue"
-            console.print(f"  [{status_color}]{i}. [{task.status.value}][/{status_color}] {task.description[:80]}")
+            console.print(
+                f"  [{status_color}]{i}. [{task.status.value}][/{status_color}] {task.description[:80]}"
+            )
 
     if show_messages:
         messages = context["messages"]
         if messages:
             console.print("\n[bold]Conversation History:[/bold]")
             for msg in messages[-20:]:
-                role_color = {"user": "green", "glm": "cyan", "system": "dim"}.get(msg.role.value, "white")
+                role_color = {"user": "green", "glm": "cyan", "system": "dim"}.get(
+                    msg.role.value, "white"
+                )
                 content_preview = msg.content[:100].replace("\n", " ")
-                console.print(f"  [{role_color}][{msg.role.value}][/{role_color}] {content_preview}...")
+                console.print(
+                    f"  [{role_color}][{msg.role.value}][/{role_color}] {content_preview}..."
+                )
 
     if show_tasks:
         all_tasks = tasks_info["pending"] + tasks_info["completed"] + tasks_info["failed"]
@@ -451,7 +477,10 @@ def restore(
 
             for i, task in enumerate(all_tasks, 1):
                 status_style = {
-                    "completed": "green", "failed": "red", "pending": "yellow", "executing": "blue"
+                    "completed": "green",
+                    "failed": "red",
+                    "pending": "yellow",
+                    "executing": "blue",
                 }.get(task.status.value, "white")
 
                 table.add_row(
@@ -464,7 +493,9 @@ def restore(
             console.print(table)
 
     console.print("\n[bold]Recovery Options:[/bold]")
-    console.print(f"  1. Start vibe with this project: [cyan]vibe {project.name if project else ''}[/cyan]")
+    console.print(
+        f"  1. Start vibe with this project: [cyan]vibe {project.name if project else ''}[/cyan]"
+    )
     console.print("  2. The pending tasks above can be re-requested in the new session")
 
 
@@ -489,13 +520,16 @@ def ping() -> None:
 @app.command()
 def logs(
     log_type: str = typer.Option("all", "--type", "-t", help="Log type: glm, claude, session, all"),
-    since: str = typer.Option(None, "--since", "-s", help="Time filter (ISO or relative: 1h, 30m, 2d)"),
+    since: str = typer.Option(
+        None, "--since", "-s", help="Time filter (ISO or relative: 1h, 30m, 2d)"
+    ),
     session: str = typer.Option(None, "--session", help="Filter by session ID"),
     tail: int = typer.Option(20, "--tail", "-n", help="Show last N entries"),
     stats: bool = typer.Option(False, "--stats", help="Show statistics instead of entries"),
     follow: bool = typer.Option(False, "--follow", "-f", help="Follow logs in real-time"),
 ) -> None:
     """View and analyze Vibe logs."""
+
     def print_entry(entry: dict) -> None:
         line = format_entry_line(entry)
         source = entry.get("_source", "")
