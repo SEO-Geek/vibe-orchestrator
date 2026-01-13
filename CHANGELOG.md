@@ -37,6 +37,23 @@ Added GitHub Actions workflow (`.github/workflows/ci.yml`):
 - **Type Checking**: mypy (advisory, non-blocking)
 - **Caching**: pip packages cached for faster builds
 
+#### E2E Integration Tests (2026-01-13)
+
+Added comprehensive end-to-end integration tests for the Supervisor workflow:
+
+- `tests/test_e2e_supervisor.py` (520 lines): Full workflow testing
+  - **TestSupervisorE2E**: Tests complete request → decomposition → execution → review flow
+    - Simple task workflow
+    - Investigation task skips clarification
+    - No-change task skips review
+    - Task failure handling
+    - GLM rejection triggers retry
+    - Multi-task workflow
+  - **TestSupervisorIntegration**: Memory system integration
+  - **TestSupervisorEdgeCases**: Empty tasks, GLM errors, clarification requests
+
+**Total**: 141 tests passing
+
 #### World-Class Vibe Improvements (2026-01-13)
 
 **Problem**: Research using 4 parallel senior agents identified significant gaps: zero test coverage, TUI bypassed review gate, no command history, unnecessary clarification/review steps adding latency.
