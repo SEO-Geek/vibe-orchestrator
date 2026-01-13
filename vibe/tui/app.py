@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from vibe.config import Project, VibeConfig
     from vibe.glm.client import GLMClient
     from vibe.memory.keeper import VibeMemory
+    from vibe.orchestrator.supervisor import Supervisor, SupervisorCallbacks
     from vibe.state import SessionContext
 
 
@@ -341,6 +342,9 @@ class VibeApp(App):
         self.context = context
         self.memory = memory
 
+        # Supervisor for proper orchestration (with review gate)
+        self._supervisor: Supervisor | None = None
+
         # Track current operation
         self._current_operation: str | None = None
         self._claude_process: asyncio.subprocess.Process | None = None
@@ -519,7 +523,7 @@ class VibeApp(App):
 
     @work(exclusive=True)
     async def process_request(self, user_request: str) -> None:
-        """Process user request through GLM (async worker)."""
+        """Process user request through Supervisor with proper review gate."""
         worker = get_current_worker()
         task_panel = self.query_one(TaskPanel)
         cost_bar = self.query_one(CostBar)
@@ -533,100 +537,118 @@ class VibeApp(App):
             return
 
         try:
-            # Phase 1: GLM analyzes and decomposes
-            self._set_status("GLM analyzing request...")
+            # Create Supervisor if not exists or project changed
+            if self._supervisor is None or self._supervisor.project != self.project:
+                from vibe.orchestrator.supervisor import Supervisor, SupervisorCallbacks
+                from vibe.state import SessionState
 
-            # Load project context (cli function doesn't use memory, but supervisor does)
-            from vibe.cli import load_project_context
-            project_context = load_project_context(self.project)
-
-            # Check cancellation
-            if worker.is_cancelled:
-                self._write_system("Cancelled during context loading")
-                return
-
-            # Ask GLM to decompose task
-            self._set_status("GLM decomposing into tasks...")
-            tasks = await self.glm_client.decompose_task(user_request, project_context)
-
-            # Track GLM cost from decomposition
-            glm_stats = self.glm_client.get_usage_stats()
-            if glm_stats.get("total_tokens", 0) > 0:
-                # Estimate cost (rough calculation)
-                from vibe.pricing import calculate_glm_cost
-                cost = calculate_glm_cost(
-                    self.glm_client.model,
-                    glm_stats.get("total_tokens", 0) // 2,  # Estimate input
-                    glm_stats.get("total_tokens", 0) // 2,  # Estimate output
+                # Create callbacks that update TUI
+                callbacks = SupervisorCallbacks(
+                    on_status=lambda msg: self.call_from_thread(self._set_status, msg),
+                    on_progress=lambda msg: self.call_from_thread(self._write_output, f"  {msg}", "dim"),
+                    on_task_start=lambda task: self.call_from_thread(self._write_claude, f"Starting: {task.description[:60]}"),
+                    on_task_complete=lambda task, success: self.call_from_thread(
+                        self._write_output,
+                        f"  {'✓' if success else '✗'} {task.description[:50]}",
+                        "green" if success else "red"
+                    ),
+                    on_review_result=lambda approved, feedback: self.call_from_thread(
+                        self._write_glm,
+                        f"Review: {'APPROVED' if approved else 'REJECTED'} - {feedback[:80]}"
+                    ),
+                    on_error=lambda msg: self.call_from_thread(self._write_error, msg),
                 )
-                cost_bar.add_glm_cost(cost)
 
+                self._supervisor = Supervisor(
+                    glm_client=self.glm_client,
+                    project=self.project,
+                    memory=self.memory,
+                    callbacks=callbacks,
+                )
+                # Set context to IDLE so it can transition to PLANNING
+                self._supervisor.context.transition_to(SessionState.IDLE)
+
+            # Check cancellation before starting
             if worker.is_cancelled:
-                self._write_system("Cancelled during task decomposition")
+                self._write_system("Cancelled before processing")
                 return
 
-            if not tasks:
-                self._write_glm("No tasks to execute for this request.")
-                self._set_ready()
-                return
+            self._set_status("Processing request through Supervisor...")
 
-            # Show task plan
-            self._write_glm(f"Decomposed into {len(tasks)} task(s):")
-            for i, task in enumerate(tasks, 1):
-                desc = task.get("description", "No description")
-                self._write_output(f"  {i}. {desc}", "dim")
-
-            # Plan review mode - show modal for approval
+            # Optional: Preview tasks before execution
             if self._enable_plan_review:
+                # First get task decomposition for preview
+                from vibe.cli import load_project_context
+                project_context = load_project_context(self.project)
+
+                self._set_status("GLM decomposing into tasks...")
+                tasks = await self.glm_client.decompose_task(user_request, project_context)
+
+                if not tasks:
+                    self._write_glm("No tasks to execute for this request.")
+                    self._set_ready()
+                    return
+
+                # Show task plan
+                self._write_glm(f"Decomposed into {len(tasks)} task(s):")
+                for i, task in enumerate(tasks, 1):
+                    desc = task.get("description", "No description")
+                    self._write_output(f"  {i}. {desc}", "dim")
+
+                # Show approval modal
                 self._set_status("Waiting for plan approval...")
-                # Use call_from_thread for modal since we're in a worker
                 approved_tasks = await self.push_screen_wait(PlanReviewScreen(tasks))
                 if approved_tasks is None or len(approved_tasks) == 0:
                     self._write_system("Plan cancelled by user")
                     task_panel.clear_tasks()
                     self._set_ready()
                     return
-                tasks = approved_tasks
-                self._write_system(f"Plan approved with {len(tasks)} task(s)")
+                self._write_system(f"Plan approved with {len(approved_tasks)} task(s)")
 
-            # Update TaskPanel with tasks
-            task_panel.set_tasks(tasks)
+                # Update TaskPanel
+                task_panel.set_tasks(approved_tasks)
 
-            # Phase 2: Execute each task with Claude
-            from vibe.claude.executor import ClaudeExecutor
+            # Run through Supervisor - includes review gate!
+            # Skip clarification since we've already decomposed
+            result = await self._supervisor.process_user_request(
+                request=user_request,
+                skip_clarification=True,  # We handled this in preview
+            )
 
-            executor = ClaudeExecutor(project_path=self.project.path)
+            # Update costs
+            if result.total_cost_usd > 0:
+                cost_bar.add_claude_cost(result.total_cost_usd)
 
-            for i, task in enumerate(tasks):
-                if worker.is_cancelled:
-                    self._write_system(f"Cancelled before task {i+1}")
-                    break
+            # Update task panel with final results
+            if result.task_results:
+                for i, task_result in enumerate(result.task_results):
+                    task_panel.mark_complete(i, task_result.success)
+                    if task_result.review_approved:
+                        self._write_output(f"  ✓ Task {i+1} reviewed and approved", "green")
+                    elif task_result.success:
+                        self._write_output(f"  ✓ Task {i+1} completed (no changes)", "cyan")
+                    else:
+                        self._write_output(f"  ✗ Task {i+1} failed: {task_result.error or 'Unknown'}", "red")
 
-                # Mark task as running in panel
-                task_panel.mark_running(i)
+            # Final summary
+            if result.success:
+                self._write_system(f"Request completed: {result.tasks_completed}/{result.total_tasks} tasks succeeded")
+            else:
+                self._write_error(f"Request failed: {result.tasks_failed}/{result.total_tasks} tasks failed")
 
-                desc = task.get("description", "Task")
-                self._set_status(f"Claude executing task {i+1}/{len(tasks)}: {desc[:50]}...")
-
-                # Execute with streaming
-                success = await self._execute_claude_task(executor, task, i+1, len(tasks), worker)
-
-                # Mark task complete in panel
-                task_panel.mark_complete(i, success)
-
-                if worker.is_cancelled:
-                    self._write_system(f"Cancelled during task {i+1}")
-                    break
+            if result.clarification_asked:
+                self._write_glm(f"Clarification needed: {result.clarification_asked}")
 
             self._set_ready()
-            self._write_system("Request processing complete")
 
         except asyncio.CancelledError:
             self._write_system("Operation cancelled by user")
             task_panel.clear_tasks()
             self._set_ready()
         except Exception as e:
+            import traceback
             self._write_error(f"Error: {e}")
+            self._write_output(traceback.format_exc(), "dim")
             self._set_ready()
 
     async def _execute_claude_task(

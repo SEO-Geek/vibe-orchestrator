@@ -1188,19 +1188,38 @@ def conversation_loop(
     Main conversation loop with GLM.
 
     This is where the user interacts with GLM, which delegates to Claude.
+    Features: command history (up/down arrows), tab completion for /commands.
     """
     console.print("[bold]What do you want to work on?[/bold]")
     console.print("[dim]Type your request, or /help for commands, /quit to exit[/dim]")
-    console.print("[dim]For multi-line input, end with an empty line or Ctrl+D[/dim]")
+    console.print("[dim]Use ↑/↓ arrows for history, Tab for command completion[/dim]")
     console.print()
+
+    # Create prompt session with history and completion
+    try:
+        from vibe.cli.prompt import create_prompt_session, prompt_input
+        prompt_session = create_prompt_session(project_path=project.path)
+        use_enhanced_prompt = True
+    except ImportError:
+        # Fallback to basic input if prompt_toolkit not available
+        prompt_session = None
+        use_enhanced_prompt = False
+        console.print("[dim]Note: Install prompt_toolkit for enhanced input features[/dim]")
 
     def read_multiline_input() -> str:
         """Read input that may span multiple lines (for paste support).
 
+        Uses prompt_toolkit for history and completion if available.
         - Commands (starting with /) are processed immediately
-        - Everything else reads until TWO consecutive empty lines or EOF
-        - This ensures pasted content is fully captured
+        - Everything else reads until empty line or EOF
         """
+        if use_enhanced_prompt and prompt_session:
+            try:
+                return prompt_input(prompt_session, "> ", multiline=True)
+            except (KeyboardInterrupt, EOFError):
+                return ""
+
+        # Fallback to basic input
         lines: list[str] = []
         console.print("[bold cyan]>[/bold cyan] ", end="")
         sys.stdout.flush()

@@ -29,6 +29,7 @@ dependencies = [
     "textual>=0.89.0",         # Async TUI framework
     "anyio>=4.0.0",            # Async support
     "typer>=0.9.0",            # CLI framework
+    "prompt_toolkit>=3.0.0",   # Command history and tab completion
 ]
 
 [project.optional-dependencies]

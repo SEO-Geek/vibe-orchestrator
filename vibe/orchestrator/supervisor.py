@@ -276,6 +276,70 @@ class Supervisor:
         if self.callbacks.on_error:
             self.callbacks.on_error(message)
 
+    def _is_investigation_task(self, request: str) -> bool:
+        """
+        Check if a request is an investigation/research task.
+
+        Investigation tasks don't need clarification because:
+        1. They're exploratory by nature (no wrong interpretation)
+        2. Claude will report findings regardless of exact interpretation
+        3. Asking clarification adds ~5-10s latency for no benefit
+
+        Args:
+            request: User request text
+
+        Returns:
+            True if this is an investigation/research task
+        """
+        import re
+
+        request_lower = request.lower().strip()
+
+        # Question words (asking for information, not changes)
+        question_patterns = [
+            r"^what\s",           # "what does X do"
+            r"^how\s",            # "how does X work"
+            r"^why\s",            # "why is X happening"
+            r"^where\s",          # "where is X defined"
+            r"^which\s",          # "which files contain X"
+            r"^who\s",            # "who wrote X"
+            r"^when\s",           # "when was X changed"
+            r"^can\s+you\s+(find|show|explain|tell|describe)",
+            r"^please\s+(find|show|explain|tell|describe|investigate)",
+        ]
+
+        # Investigation action keywords
+        investigation_keywords = [
+            r"\b(find|search|locate|look\s+for)\b",
+            r"\b(investigate|analyze|examine|inspect|explore)\b",
+            r"\b(explain|describe|show\s+me|tell\s+me)\b",
+            r"\b(what\s+is|what\s+are|what\s+does)\b",
+            r"\b(how\s+does|how\s+to|how\s+can)\b",
+            r"\b(list|enumerate|identify)\s+(all|the|any)\b",
+            r"\b(check|verify|confirm)\s+(if|whether)\b",
+            r"\breadme|docs|documentation\b",
+            r"\bunderstand|figure\s+out\b",
+        ]
+
+        # Check question patterns
+        for pattern in question_patterns:
+            if re.search(pattern, request_lower):
+                logger.debug(f"Investigation task detected (question pattern): {request[:50]}")
+                return True
+
+        # Check investigation keywords
+        for pattern in investigation_keywords:
+            if re.search(pattern, request_lower):
+                logger.debug(f"Investigation task detected (keyword): {request[:50]}")
+                return True
+
+        # Requests that end with "?" are questions
+        if request.strip().endswith("?"):
+            logger.debug(f"Investigation task detected (question mark): {request[:50]}")
+            return True
+
+        return False
+
     def _might_produce_large_diff(self, description: str) -> bool:
         """
         Heuristic check for tasks that might produce large changes.
@@ -630,7 +694,10 @@ class Supervisor:
             project_context = self._load_project_context()
 
             # Step 2: Ask for clarification if needed
-            if not skip_clarification:
+            # Skip for investigation/research tasks (no benefit, adds latency)
+            should_ask_clarification = not skip_clarification and not self._is_investigation_task(request)
+
+            if should_ask_clarification:
                 self._emit_status("Checking if clarification needed...")
                 try:
                     clarification = await self.glm_client.ask_clarification(
@@ -648,6 +715,9 @@ class Supervisor:
                 except GLMError as e:
                     self._emit_error(f"GLM clarification failed: {e}")
                     # Continue without clarification rather than fail
+            elif not skip_clarification:
+                # Investigation task - log that we're skipping
+                self._emit_progress("Investigation task detected - skipping clarification step")
 
             # Step 3: Decompose task
             self._emit_status("Decomposing request into tasks...")
@@ -816,7 +886,31 @@ class Supervisor:
             # Transition to reviewing state (must succeed after EXECUTING)
             self.context.require_transition(SessionState.REVIEWING)
 
-            # Review the task
+            # Skip review if no file changes (nothing to review)
+            # This saves ~5-15s of GLM latency when Claude only did research/analysis
+            if not execution_result.file_changes:
+                self._emit_progress("No file changes - skipping review (auto-approve)")
+                result.review_approved = True
+                result.review_feedback = "Auto-approved: no file changes to review"
+                result.success = True
+                result.files_changed = []
+
+                if self.callbacks.on_review_result:
+                    self.callbacks.on_review_result(True, result.review_feedback)
+
+                # Save successful result to memory
+                self._save_task_result(
+                    task=task,
+                    success=True,
+                    summary=execution_result.result or "Completed (no changes)",
+                    files_changed=[],
+                )
+
+                # Run post-task hooks after successful completion
+                await self._run_hooks(self.project.post_task_hooks, "post-task")
+                break
+
+            # Review the task with GLM
             try:
                 review_result = await self.review_task(task, execution_result)
                 result.review_approved = review_result.get("approved", False)

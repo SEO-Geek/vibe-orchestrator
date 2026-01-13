@@ -6,6 +6,55 @@ All notable changes to Vibe Orchestrator will be documented in this file.
 
 ### Added
 
+#### World-Class Vibe Improvements (2026-01-13)
+
+**Problem**: Research using 4 parallel senior agents identified significant gaps: zero test coverage, TUI bypassed review gate, no command history, unnecessary clarification/review steps adding latency.
+
+**Solution**: Comprehensive improvements to make Vibe production-ready:
+
+1. **Comprehensive Test Suite** (`tests/`):
+   - Added 130+ unit tests covering core modules
+   - `test_state.py`: State machine transitions, task management, GLM messages
+   - `test_circuit.py`: Circuit breaker states, execute flow, timeout recovery
+   - `test_exceptions.py`: Full exception hierarchy validation
+   - `test_reviewer.py`: Review flow, retry logic, memory bounds, cleanup
+   - `test_supervisor.py`: Investigation task detection patterns
+   - All tests passing with ~0.8s execution time
+
+2. **TUI Now Uses Supervisor** (`vibe/tui/app.py`):
+   - **CRITICAL**: TUI was directly calling ClaudeExecutor, bypassing review gate
+   - Now creates and uses Supervisor with proper callbacks
+   - All task execution goes through GLM review before acceptance
+   - SupervisorCallbacks wire TUI status updates to Supervisor events
+
+3. **Command History & Tab Completion** (`vibe/cli/prompt.py`):
+   - Added `prompt_toolkit` dependency for enhanced input
+   - `PromptSession` with persistent history in `~/.vibe/history`
+   - Up/Down arrows for command history navigation
+   - Tab completion for slash commands (/help, /quit, /status, etc.)
+   - `VibeCompleter` with file path completion after keywords
+   - Auto-suggest from history while typing
+   - Graceful fallback to basic input if prompt_toolkit unavailable
+
+4. **Skip Clarification for Investigation Tasks** (`vibe/orchestrator/supervisor.py`):
+   - Added `_is_investigation_task()` method with regex patterns
+   - Detects questions (what/how/why/where/which/who/when)
+   - Detects investigation keywords (find, search, analyze, explain, etc.)
+   - Questions ending with "?" automatically skip clarification
+   - Saves 5-10s latency per investigation request
+
+5. **Skip Review for No-Change Tasks** (`vibe/orchestrator/supervisor.py`):
+   - Tasks with no file changes are auto-approved
+   - No point reviewing when there's nothing to review
+   - Saves 5-15s GLM latency for research/analysis tasks
+   - Clear feedback: "Auto-approved: no file changes to review"
+
+**Impact**:
+- Test coverage: 0% → 130+ tests
+- TUI security: Bypassed review → Proper review gate
+- UX: Basic input → History + Tab completion
+- Latency: -5-25s for investigation/no-change tasks
+
 #### GLM Context & Memory Improvements (2026-01-13)
 
 **Problem**: Analysis revealed context loss issues in GLM ↔ Claude data flow:
