@@ -27,6 +27,16 @@ All notable changes to Vibe Orchestrator will be documented in this file.
 - `vibe/cli.py` is now a thin shim for backward compatibility
 - All 131 tests still passing
 
+#### CI/CD Pipeline (2026-01-13)
+
+Added GitHub Actions workflow (`.github/workflows/ci.yml`):
+
+- **Test Matrix**: Python 3.11 and 3.12 on Ubuntu
+- **Code Coverage**: pytest-cov with Codecov integration
+- **Linting**: Ruff for code style and formatting
+- **Type Checking**: mypy (advisory, non-blocking)
+- **Caching**: pip packages cached for faster builds
+
 #### World-Class Vibe Improvements (2026-01-13)
 
 **Problem**: Research using 4 parallel senior agents identified significant gaps: zero test coverage, TUI bypassed review gate, no command history, unnecessary clarification/review steps adding latency.

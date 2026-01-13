@@ -65,6 +65,7 @@ from vibe.cli.typer_commands import (
     restore,
     ping,
     logs,
+    run,
 )
 
 __all__ = [
@@ -101,4 +102,5 @@ __all__ = [
     "restore",
     "ping",
     "logs",
+    "run",
 ]

@@ -47,6 +47,7 @@ app = typer.Typer(
     name="vibe",
     help="GLM-4.7 as brain, Claude Code as worker - AI pair programming orchestrator",
     add_completion=False,
+    invoke_without_command=True,
 )
 
 # Global clients
@@ -91,12 +92,27 @@ signal.signal(signal.SIGINT, handle_shutdown)
 signal.signal(signal.SIGTERM, handle_shutdown)
 
 
-@app.command()
-def main(
+@app.callback()
+def callback(
+    ctx: typer.Context,
     skip_ping: bool = typer.Option(False, "--skip-ping", help="Skip GLM API ping (faster startup)"),
     tui: bool = typer.Option(False, "--tui", help="Use Textual TUI with escape-to-cancel"),
 ) -> None:
-    """Start Vibe Orchestrator."""
+    """
+    GLM-4.7 as brain, Claude Code as worker - AI pair programming orchestrator.
+
+    Run without a command to start the interactive orchestrator.
+    """
+    if ctx.invoked_subcommand is None:
+        # No subcommand - run the main orchestrator
+        _start_orchestrator(skip_ping=skip_ping, tui=tui)
+
+
+def _start_orchestrator(
+    skip_ping: bool = False,
+    tui: bool = False,
+) -> None:
+    """Start Vibe Orchestrator (internal implementation)."""
     global _glm_client, _memory, _repository, _perplexity, _github, _current_repo_session_id
 
     # Step 1: Validate startup
@@ -249,6 +265,15 @@ def main(
             perplexity=_perplexity,
             github=_github,
         )
+
+
+@app.command(hidden=True)
+def main(
+    skip_ping: bool = typer.Option(False, "--skip-ping", help="Skip GLM API ping"),
+    tui: bool = typer.Option(False, "--tui", help="Use Textual TUI"),
+) -> None:
+    """Start Vibe Orchestrator (use 'vibe' directly instead)."""
+    _start_orchestrator(skip_ping=skip_ping, tui=tui)
 
 
 @app.command()
@@ -520,5 +545,10 @@ def logs(
         raise typer.Exit(1)
 
 
-if __name__ == "__main__":
+def run() -> None:
+    """Entry point wrapper that invokes the Typer app."""
     app()
+
+
+if __name__ == "__main__":
+    run()
