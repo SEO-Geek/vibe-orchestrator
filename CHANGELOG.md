@@ -65,6 +65,35 @@ All notable changes to Vibe Orchestrator will be documented in this file.
 - `vibe/config.py` - Added pre_task_hooks, post_task_hooks to Project
 - `vibe/orchestrator/supervisor.py` - Hook execution with security validation
 
+### Fixed
+
+#### Critical Bug Fixes in Claude Executor (2026-01-13)
+
+**Problem**: Code review agents identified critical bugs in executor.py that would cause failures in streaming mode.
+
+**Fixes Applied**:
+
+1. **Method Name Typo** (line 611):
+   - Changed `self._clean_env()` to `self._clean_environment()`
+   - The method existed at line 236 but was called with wrong name
+
+2. **Double-Prompt Bug** (execute_streaming):
+   - Was passing prompt both as `-p` argument AND writing to stdin
+   - Fixed by removing prompt from command args (now only sent via stdin)
+   - Now consistent with `execute()` method behavior
+
+3. **Missing --allowedTools** (execute_streaming):
+   - Streaming method wasn't passing allowed tools to Claude
+   - Added `--allowedTools` flag to match regular execute()
+
+4. **Invalid Function Argument** (app.py line 541):
+   - `load_project_context()` was called with `memory=` argument that doesn't exist
+   - Removed the invalid argument
+
+**Files Modified**:
+- `vibe/claude/executor.py` - Fixed method name, command args, added --allowedTools
+- `vibe/tui/app.py` - Fixed load_project_context() call
+
 ---
 
 #### Textual TUI with Escape-to-Cancel (2026-01-13)

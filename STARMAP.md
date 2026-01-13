@@ -30,7 +30,8 @@ User <-> GLM (brain) <-> Claude (worker)
 ├── vibe/
 │   ├── __init__.py
 │   ├── cli.py             # Entry point, rich UI, commands
-│   ├── config.py          # Settings, projects.json loading
+│   ├── config.py          # Settings, projects.json loading, hook configs
+│   ├── pricing.py         # Cost calculation for GLM/Claude API calls
 │   ├── exceptions.py      # Exception hierarchy
 │   ├── state.py           # Session state machine
 │   │
@@ -56,6 +57,7 @@ User <-> GLM (brain) <-> Claude (worker)
 │   ├── memory/
 │   │   ├── __init__.py
 │   │   ├── keeper.py      # Direct SQLite access to memory-keeper
+│   │   ├── compaction.py  # GLM-powered context summarization
 │   │   ├── task_history.py # In-memory task tracking
 │   │   └── debug_session.py # Debug session management
 │   │
@@ -64,6 +66,10 @@ User <-> GLM (brain) <-> Claude (worker)
 │   │   ├── schema.sql     # SQLite schema (18 tables)
 │   │   ├── models.py      # Dataclasses for all entities
 │   │   └── repository.py  # VibeRepository database access
+│   │
+│   ├── tui/
+│   │   ├── __init__.py
+│   │   └── app.py         # Textual TUI with TaskPanel, CostBar, PlanReview
 │   │
 │   └── integrations/
 │       ├── __init__.py
@@ -129,6 +135,31 @@ Unified persistence layer - single source of truth:
 - WAL mode for concurrent reads, foreign keys enforced
 - Atomic operations with transaction support
 
+### TUI Components (`tui/app.py`)
+Textual-based terminal UI with Claude-like features:
+- **TaskPanel**: Visual task progress with status icons (✓/⏳/○)
+- **CostBar**: Session cost tracker (GLM + Claude costs in status bar)
+- **PlanReviewScreen**: ModalScreen for reviewing tasks before execution
+- **StatusBar**: Current state, active task, and session costs
+
+### Pricing (`pricing.py`)
+Cost calculation utilities:
+- GLM_COSTS, CLAUDE_COSTS dictionaries (per 1K tokens)
+- CostTracker class for session-wide accumulation
+- format_cost() for display formatting
+
+### Context Compaction (`memory/compaction.py`)
+GLM-powered context summarization:
+- Summarizes old items (>24h) to reduce token usage
+- Groups by category, preserves recent context
+- Safety-first: saves summary before deleting originals
+
+### Pre/Post Task Hooks (`config.py`, `supervisor.py`)
+Custom scripts before/after Claude tasks:
+- Configured in projects.json: pre_task_hooks, post_task_hooks
+- Security: path traversal prevention, executable check, 60s timeout
+- Runs in project directory with captured stdout/stderr
+
 ## CLI Commands
 
 ### Interactive Commands
@@ -176,6 +207,8 @@ Projects are registered in `~/.config/vibe/projects.json`:
 
 ## Recent Changes
 
+- **2026-01-13**: Claude-like TUI features (TaskPanel, CostBar, PlanReview, Hooks, Compaction)
+- **2026-01-13**: Critical bug fixes (executor.py double-prompt, method name typo)
 - **2026-01-11**: Unified persistence layer (VibeRepository, crash recovery, full task tracking)
 - **2026-01-11**: Core implementation complete (Supervisor, Reviewer)
 - **2026-01-11**: Robustness fixes (context overflow, state bleed, review fallback)

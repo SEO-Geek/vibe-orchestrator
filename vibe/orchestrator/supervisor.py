@@ -196,38 +196,45 @@ class Supervisor:
         if not hooks:
             return True
 
+        # Resolve project path once for security comparisons
         project_path = Path(self.project.path).resolve()
 
         for hook in hooks:
+            # Resolve to absolute path (handles ../ and symlinks)
             hook_path = (project_path / hook).resolve()
 
-            # Security: Ensure hook is within project directory (prevent path traversal)
+            # SECURITY: Prevent path traversal attacks (e.g., "../../../etc/passwd")
+            # relative_to() raises ValueError if hook_path is outside project_path
             try:
                 hook_path.relative_to(project_path)
             except ValueError:
                 self._emit_error(f"{phase} hook path traversal detected: {hook}")
                 return False
 
-            # Check hook exists and is executable
+            # Verify hook exists and has execute permissions
             if not hook_path.is_file():
                 self._emit_error(f"{phase} hook not found: {hook}")
                 return False
 
+            # os.X_OK checks execute permission for current user
             if not os.access(hook_path, os.X_OK):
                 self._emit_error(f"{phase} hook not executable: {hook}")
                 return False
 
             self._emit_progress(f"Running {phase} hook: {hook}")
             try:
+                # Run hook as subprocess in project directory
+                # Using create_subprocess_exec (not shell=True) for security
                 proc = await asyncio.create_subprocess_exec(
                     str(hook_path),
-                    cwd=self.project.path,
+                    cwd=self.project.path,  # Execute in project context
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
+                # Wait with timeout to prevent hanging hooks from blocking the pipeline
                 stdout, stderr = await asyncio.wait_for(
                     proc.communicate(),
-                    timeout=60.0,  # 60 second timeout for hooks
+                    timeout=60.0,  # 60 second timeout - hooks should be quick
                 )
 
                 if proc.returncode != 0:

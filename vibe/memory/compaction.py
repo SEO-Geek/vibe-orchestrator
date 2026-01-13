@@ -38,10 +38,11 @@ def _parse_timestamp(value: Any) -> datetime | None:
             return None
     return None
 
-# Default thresholds
-DEFAULT_MAX_ITEMS = 50  # Trigger compaction above this count
-DEFAULT_AGE_HOURS = 24  # Compact items older than this
-DEFAULT_ITEMS_PER_SUMMARY = 20  # Items to summarize together
+# Default thresholds for compaction decisions
+# These are conservative defaults to avoid losing important recent context
+DEFAULT_MAX_ITEMS = 50  # Only consider compaction if total exceeds this
+DEFAULT_AGE_HOURS = 24  # Only compact items older than this (preserve recent work)
+DEFAULT_ITEMS_PER_SUMMARY = 20  # Minimum items to justify a compaction pass
 
 
 async def compact_context(
@@ -131,24 +132,26 @@ async def compact_context(
                 logger.warning(f"Failed to summarize {category} items: {e}")
                 continue
 
-            # Collect items to delete (only delete after summary is confirmed saved)
+            # SAFETY-FIRST: Collect keys but don't delete until summary is saved
+            # This prevents data loss if the save fails
             items_to_delete = []
             for item in items:
                 item_key = getattr(item, "key", "")
                 if item_key:
                     items_to_delete.append(item_key)
 
-            # Save summary first
+            # Save summary FIRST - only proceed to deletion if this succeeds
+            # Key format: compacted-{category}-{date} for easy identification
             summary_key = f"compacted-{category}-{cutoff.strftime('%Y%m%d')}"
             memory.save(
                 key=summary_key,
                 value=summary,
                 category="note",
-                priority="low",
+                priority="low",  # Compacted items are less important than fresh context
             )
             summaries_created += 1
 
-            # Now delete original items (if any fail, we have the summary as backup)
+            # NOW safe to delete originals - we have the summary as backup
             for item_key in items_to_delete:
                 try:
                     memory.delete(item_key)

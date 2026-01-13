@@ -536,9 +536,9 @@ class VibeApp(App):
             # Phase 1: GLM analyzes and decomposes
             self._set_status("GLM analyzing request...")
 
-            # Load project context
+            # Load project context (cli function doesn't use memory, but supervisor does)
             from vibe.cli import load_project_context
-            project_context = load_project_context(self.project, memory=self.memory)
+            project_context = load_project_context(self.project)
 
             # Check cancellation
             if worker.is_cancelled:

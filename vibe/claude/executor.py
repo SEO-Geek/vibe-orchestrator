@@ -595,20 +595,23 @@ class ClaudeExecutor:
             debug_context=debug_context,
         )
 
-        # Build command
+        # Build command (prompt sent via stdin, not as -p argument)
         cmd = [
             "claude",
+            "-p",  # Print mode (non-interactive)
             "--output-format",
             "stream-json",
             "--verbose",
             "--permission-mode",
             self.permission_mode,
-            "-p",
-            prompt,
         ]
 
-        # Clean environment
-        env = self._clean_env()
+        # Add allowed tools if specified
+        if self.allowed_tools:
+            cmd.extend(["--allowedTools", ",".join(self.allowed_tools)])
+
+        # Clean environment to remove sensitive variables
+        env = self._clean_environment()
 
         tool_calls: list[ToolCall] = []
         file_changes: list[str] = []

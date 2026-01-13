@@ -7,17 +7,19 @@ Provides utilities to calculate API costs based on token usage.
 from typing import Any
 
 # GLM pricing via OpenRouter (per 1K tokens)
+# Prices sourced from OpenRouter pricing page (may change)
 GLM_COSTS: dict[str, dict[str, float]] = {
-    "z-ai/glm-4.7": {"input": 0.0003, "output": 0.0006},
-    "z-ai/glm-4-plus": {"input": 0.0005, "output": 0.0010},
-    "z-ai/glm-4": {"input": 0.0003, "output": 0.0006},
+    "z-ai/glm-4.7": {"input": 0.0003, "output": 0.0006},  # Cheapest GLM option
+    "z-ai/glm-4-plus": {"input": 0.0005, "output": 0.0010},  # Enhanced version
+    "z-ai/glm-4": {"input": 0.0003, "output": 0.0006},  # Standard GLM-4
 }
 
-# Claude pricing (per 1K tokens) - estimates for Claude Code
+# Claude pricing (per 1K tokens) - estimates for Claude Code CLI
+# Claude Code doesn't expose token counts directly, so we estimate from task cost
 CLAUDE_COSTS: dict[str, dict[str, float]] = {
-    "claude-3-opus": {"input": 0.015, "output": 0.075},
-    "claude-3-sonnet": {"input": 0.003, "output": 0.015},
-    "claude-3-haiku": {"input": 0.00025, "output": 0.00125},
+    "claude-3-opus": {"input": 0.015, "output": 0.075},  # Most capable, expensive
+    "claude-3-sonnet": {"input": 0.003, "output": 0.015},  # Balanced option
+    "claude-3-haiku": {"input": 0.00025, "output": 0.00125},  # Fast, cheap
     "claude-code": {"input": 0.003, "output": 0.015},  # Assume Sonnet-level pricing
 }
 
@@ -100,13 +102,21 @@ def format_cost(cost: float) -> str:
 
 
 class CostTracker:
-    """Track cumulative costs across a session."""
+    """
+    Track cumulative costs across a session.
+
+    Accumulates GLM and Claude costs separately for visibility,
+    and provides formatted output for the TUI status bar.
+    """
 
     def __init__(self) -> None:
+        # Separate cost tracking for GLM (orchestration) and Claude (execution)
         self.glm_cost: float = 0.0
         self.claude_cost: float = 0.0
+        # Call counts for analytics
         self.glm_calls: int = 0
         self.claude_calls: int = 0
+        # Token tracking for debugging cost spikes
         self.glm_tokens: dict[str, int] = {"input": 0, "output": 0}
         self.claude_tokens: dict[str, int] = {"input": 0, "output": 0}
 
