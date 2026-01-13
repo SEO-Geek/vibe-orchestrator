@@ -119,9 +119,23 @@ class ClaudeExecutor:
         # Task enforcer for tool requirements
         self.task_enforcer = TaskEnforcer(global_conventions=global_conventions)
 
+        # Cancellation support for TUI
+        self._cancelled = False
+        self._current_process: asyncio.subprocess.Process | None = None
+
         # Verify Claude CLI is installed
         if not shutil.which("claude"):
             raise ClaudeNotFoundError("Claude Code CLI not found in PATH")
+
+    def cancel(self) -> None:
+        """Cancel the current execution."""
+        self._cancelled = True
+        if self._current_process and self._current_process.returncode is None:
+            self._current_process.terminate()
+
+    def reset_cancellation(self) -> None:
+        """Reset cancellation flag for new execution."""
+        self._cancelled = False
 
     def build_prompt(
         self,
@@ -533,6 +547,229 @@ class ClaudeExecutor:
             return result.result or ""
         finally:
             self.timeout = original_timeout
+
+    async def execute_streaming(
+        self,
+        task_description: str,
+        files: list[str] | None = None,
+        constraints: list[str] | None = None,
+        debug_context: str | None = None,
+        timeout_tier: str | None = None,
+    ):
+        """
+        Execute a task with real-time streaming output.
+
+        This is an async generator that yields (event_type, data) tuples
+        as Claude works, allowing for real-time UI updates and cancellation.
+
+        Args:
+            task_description: What Claude should do
+            files: Files to work with
+            constraints: Constraints to follow
+            debug_context: Optional debug session context
+            timeout_tier: Optional timeout tier override
+
+        Yields:
+            Tuples of (event_type, data) where event_type is one of:
+            - 'progress': Text progress update
+            - 'tool_call': ToolCall object
+            - 'text': Text output from Claude
+            - 'result': Final TaskResult
+            - 'error': Error message
+            - 'cancelled': Cancellation notice
+        """
+        from typing import AsyncGenerator
+
+        self.reset_cancellation()
+
+        # Override timeout if specified
+        original_timeout = self.timeout
+        if timeout_tier:
+            self.timeout = TIMEOUT_TIERS.get(timeout_tier, self.timeout)
+
+        # Build prompt
+        prompt = self.build_prompt(
+            task_description=task_description,
+            files=files,
+            constraints=constraints,
+            debug_context=debug_context,
+        )
+
+        # Build command
+        cmd = [
+            "claude",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--permission-mode",
+            self.permission_mode,
+            "-p",
+            prompt,
+        ]
+
+        # Clean environment
+        env = self._clean_env()
+
+        tool_calls: list[ToolCall] = []
+        file_changes: list[str] = []
+        result_text = ""
+        session_id = ""
+        cost_usd = 0.0
+        duration_ms = 0
+        num_turns = 0
+        is_error = False
+        error_message = ""
+
+        try:
+            # Start subprocess
+            self._current_process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=self.project_path,
+                env=env,
+            )
+            process = self._current_process
+
+            # Send prompt to stdin
+            if process.stdin:
+                process.stdin.write(prompt.encode())
+                await process.stdin.drain()
+                process.stdin.close()
+
+            yield ("progress", "Claude started...")
+
+            # Read stdout line by line with timeout
+            start_time = asyncio.get_event_loop().time()
+
+            while True:
+                # Check cancellation
+                if self._cancelled:
+                    if process.returncode is None:
+                        process.terminate()
+                        await process.wait()
+                    yield ("cancelled", "Operation cancelled by user")
+                    return
+
+                # Check timeout
+                elapsed = asyncio.get_event_loop().time() - start_time
+                if elapsed > self.timeout:
+                    if process.returncode is None:
+                        process.kill()
+                        await process.wait()
+                    yield ("error", f"Timeout after {self.timeout}s")
+                    return
+
+                # Try to read a line with short timeout
+                try:
+                    line = await asyncio.wait_for(
+                        process.stdout.readline(),
+                        timeout=1.0,
+                    )
+                except asyncio.TimeoutError:
+                    # No data ready, check if process ended
+                    if process.returncode is not None:
+                        break
+                    continue
+
+                if not line:
+                    # EOF - process ended
+                    break
+
+                line_str = line.decode().strip()
+                if not line_str:
+                    continue
+
+                # Parse JSON
+                try:
+                    data = json.loads(line_str)
+                except json.JSONDecodeError:
+                    continue
+
+                msg_type = data.get("type")
+
+                # Handle different message types
+                if msg_type == "assistant":
+                    message = data.get("message", {})
+                    content = message.get("content", [])
+
+                    for block in content:
+                        block_type = block.get("type")
+
+                        if block_type == "tool_use":
+                            tool_call = ToolCall(
+                                name=block.get("name", ""),
+                                input=block.get("input", {}),
+                            )
+                            tool_calls.append(tool_call)
+
+                            # Track file modifications
+                            if tool_call.name in ("Edit", "Write"):
+                                file_path = (
+                                    tool_call.input.get("file_path")
+                                    or tool_call.input.get("path")
+                                )
+                                if file_path and file_path not in file_changes:
+                                    file_changes.append(file_path)
+
+                            yield ("tool_call", tool_call)
+
+                        elif block_type == "text":
+                            text = block.get("text", "")
+                            if text:
+                                yield ("text", text)
+
+                elif msg_type == "result":
+                    result_text = data.get("result", "")
+                    session_id = data.get("session_id", "")
+                    cost_usd = data.get("total_cost_usd", 0.0)
+                    duration_ms = data.get("duration_ms", 0)
+                    num_turns = data.get("num_turns", 0)
+                    is_error = data.get("is_error", False)
+                    if is_error:
+                        error_message = data.get("subtype", "unknown error")
+
+            # Wait for process to complete
+            await process.wait()
+
+            # Check exit code
+            if process.returncode != 0 and not is_error:
+                is_error = True
+                stderr_data = await process.stderr.read()
+                error_message = f"Process exited with code {process.returncode}"
+                if stderr_data:
+                    error_message += f": {stderr_data.decode()[:200]}"
+
+            # Yield final result
+            yield ("result", TaskResult(
+                success=not is_error,
+                result=result_text if not is_error else None,
+                error=error_message if is_error else None,
+                tool_calls=tool_calls,
+                file_changes=file_changes,
+                cost_usd=cost_usd,
+                duration_ms=duration_ms,
+                session_id=session_id,
+                num_turns=num_turns,
+            ))
+
+        except asyncio.CancelledError:
+            if self._current_process and self._current_process.returncode is None:
+                self._current_process.terminate()
+            yield ("cancelled", "Operation cancelled")
+        except Exception as e:
+            if self._current_process and self._current_process.returncode is None:
+                try:
+                    self._current_process.kill()
+                    await self._current_process.wait()
+                except Exception:
+                    pass
+            yield ("error", str(e))
+        finally:
+            self._current_process = None
+            if timeout_tier:
+                self.timeout = original_timeout
 
 
 def get_git_diff(

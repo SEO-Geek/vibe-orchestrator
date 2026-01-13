@@ -1750,6 +1750,7 @@ def conversation_loop(
 @app.command()
 def main(
     skip_ping: bool = typer.Option(False, "--skip-ping", help="Skip GLM API ping (faster startup)"),
+    tui: bool = typer.Option(False, "--tui", help="Use Textual TUI with escape-to-cancel"),
 ) -> None:
     """Start Vibe Orchestrator."""
     global _glm_client, _memory, _repository
@@ -1893,8 +1894,20 @@ def main(
 
     show_project_loaded(project, memory_items=memory_items)
 
-    # Step 8: Enter conversation loop
-    conversation_loop(context, config, project, _glm_client, _memory)
+    # Step 8: Enter conversation loop or TUI
+    if tui:
+        from vibe.tui import run_tui
+        console.print("[bold cyan]Starting Textual TUI...[/bold cyan]")
+        console.print("[dim]Press Escape to cancel operations, Ctrl+C to quit[/dim]")
+        run_tui(
+            config=config,
+            project=project,
+            glm_client=_glm_client,
+            context=context,
+            memory=_memory,
+        )
+    else:
+        conversation_loop(context, config, project, _glm_client, _memory)
 
 
 @app.command()

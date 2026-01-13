@@ -6,6 +6,46 @@ All notable changes to Vibe Orchestrator will be documented in this file.
 
 ### Added
 
+#### Textual TUI with Escape-to-Cancel (2026-01-13)
+
+**Problem**: Old CLI used blocking input() - no way to cancel GLM or Claude mid-operation. If Claude went off track, users had to wait or kill the process.
+
+**Solution**: New async Textual TUI with real-time cancellation:
+
+1. **New TUI Mode** (`vibe --tui`):
+   - Async Textual app with output area + input prompt
+   - Escape key cancels GLM API calls or Claude execution anytime
+   - Real-time streaming output from Claude (line by line)
+   - Status bar shows current operation
+
+2. **Streaming Claude Executor**:
+   - New `execute_streaming()` method in ClaudeExecutor
+   - Yields events as they happen (tool_call, text, progress, result)
+   - Cancellation flag checked each line - can terminate subprocess
+   - No more blocking `process.communicate()`
+
+3. **Cancellation Flow**:
+   - User presses Escape → `workers.cancel_all()`
+   - Worker checks `is_cancelled` → returns early
+   - If Claude running → `process.terminate()`
+   - User can redirect with new instructions
+
+**Usage**:
+```bash
+vibe --tui    # Start with Textual TUI
+# Press Escape anytime to cancel current operation
+# Press Ctrl+C to quit
+```
+
+**Files Created**:
+- `vibe/tui/__init__.py`
+- `vibe/tui/app.py` - Main Textual App with VibeApp class
+
+**Files Modified**:
+- `vibe/cli.py` - Added `--tui` flag to main()
+- `vibe/claude/executor.py` - Added `execute_streaming()`, `cancel()`, `reset_cancellation()`
+- `pyproject.toml` - Added `textual>=0.89.0` dependency
+
 #### Unified Persistence Layer (2026-01-11)
 
 **Problem**: Two separate memory systems (TaskHistory in-memory, VibeMemory SQLite) that were mostly decoupled. User requests and chat context not persisted. No crash recovery. Context lost between sessions.
