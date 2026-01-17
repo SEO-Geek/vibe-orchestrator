@@ -643,26 +643,28 @@ async def conversation_loop(
     # Track debug session
     debug_session: DebugSession | None = None
 
-    def read_input() -> str:
-        """Read single-line input from user."""
+    async def read_input() -> str:
+        """Read single-line input from user (async for prompt_toolkit compatibility)."""
         if use_enhanced_prompt and prompt_session:
             try:
-                # Simple single-line input with history/completion
-                return prompt_session.prompt("> ")
+                # Use prompt_async() since we're in an async context
+                # prompt() internally calls asyncio.run() which fails in async context
+                return await prompt_session.prompt_async("> ")
             except (KeyboardInterrupt, EOFError):
                 return ""
 
-        # Fallback to basic input
+        # Fallback to basic input (run in executor to not block event loop)
         try:
             console.print("[bold cyan]>[/bold cyan] ", end="")
             sys.stdout.flush()
-            return input()
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, input)
         except EOFError:
             return ""
 
     while True:
         try:
-            user_input = read_input()
+            user_input = await read_input()
 
             if not user_input.strip():
                 continue
