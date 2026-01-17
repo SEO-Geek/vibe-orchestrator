@@ -6,6 +6,31 @@ All notable changes to Vibe Orchestrator will be documented in this file.
 
 ### Changed
 
+#### Gemini/GLM Architecture Split (2026-01-17)
+
+**Problem**: The architecture was using GLM-4.7 for EVERYTHING - task decomposition, clarification, AND code review. This was incorrect per the agreed plan.
+
+**Solution**: Properly separated responsibilities:
+- **Gemini 2.0 Flash**: Brain/orchestrator - task decomposition and clarification checks
+- **GLM-4.7**: Code reviewer only - reviews Claude's work for quality/correctness
+- **Claude**: Worker - executes tasks via subprocess
+
+**Files Changed**:
+- NEW: `vibe/gemini/__init__.py` - Module entry point
+- NEW: `vibe/gemini/client.py` - GeminiClient for orchestration
+- NEW: `vibe/gemini/prompts.py` - Orchestrator system prompts
+- `vibe/glm/prompts.py` - Updated to code review only
+- `vibe/exceptions.py` - Added Gemini exception classes
+- `vibe/orchestrator/supervisor.py` - Now accepts both gemini_client and glm_client
+- `vibe/cli/startup.py` - Validates both Gemini and GLM connections
+- `vibe/cli/typer_commands.py` - Initializes both clients
+- `vibe/cli/interactive.py` - Uses Gemini for decomposition, GLM for review
+- `vibe/cli/commands.py` - Updated `/usage` to show both clients
+- `tests/test_supervisor.py` - Updated for dual-client architecture
+- `tests/test_e2e_supervisor.py` - Updated for dual-client architecture
+
+---
+
 #### Autonomous Claude Control (2026-01-17)
 
 **Problem**: Claude subprocess could prompt for permissions (e.g., dangerous bash commands), blocking execution since GLM has no way to interact with Claude's stdin.

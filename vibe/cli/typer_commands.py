@@ -2,6 +2,11 @@
 Vibe CLI - Typer Commands
 
 CLI commands for managing projects and sessions.
+
+Architecture:
+  User → Gemini (brain/orchestrator) → Claude (worker)
+                     ↓                      ↓
+                  GLM (code review/verification)
 """
 
 import atexit
@@ -38,7 +43,8 @@ from vibe.config import (
     save_config,
 )
 from vibe.exceptions import ConfigError
-from vibe.glm.client import GLMClient, ping_glm_sync
+from vibe.gemini.client import GeminiClient  # Brain/orchestrator
+from vibe.glm.client import GLMClient, ping_glm_sync  # Code reviewer only
 from vibe.integrations import GitHubOps, PerplexityClient
 from vibe.logging import SessionLogEntry, now_iso, session_logger, set_project_name, set_session_id
 from vibe.logging.viewer import (
@@ -60,13 +66,14 @@ console = Console()
 # Typer app for CLI
 app = typer.Typer(
     name="vibe",
-    help="GLM-4.7 as brain, Claude Code as worker - AI pair programming orchestrator",
+    help="Gemini as brain, Claude as worker, GLM as reviewer - AI pair programming orchestrator",
     add_completion=False,
     invoke_without_command=True,
 )
 
 # Global clients
-_glm_client: GLMClient | None = None
+_gemini_client: GeminiClient | None = None  # Brain/orchestrator
+_glm_client: GLMClient | None = None  # Code reviewer only
 _memory: VibeMemory | None = None
 _repository: VibeRepository | None = None
 _perplexity: PerplexityClient | None = None
@@ -110,10 +117,10 @@ signal.signal(signal.SIGTERM, handle_shutdown)
 @app.callback()
 def callback(
     ctx: typer.Context,
-    skip_ping: bool = typer.Option(False, "--skip-ping", help="Skip GLM API ping (faster startup)"),
+    skip_ping: bool = typer.Option(False, "--skip-ping", help="Skip API pings (faster startup)"),
 ) -> None:
     """
-    GLM-4.7 as brain, Claude Code as worker - AI pair programming orchestrator.
+    Gemini as brain, Claude as worker, GLM as reviewer - AI pair programming orchestrator.
 
     Run without a command to start the interactive orchestrator.
     For split terminal view (recommended): use vibe-split instead.
@@ -127,7 +134,7 @@ def _start_orchestrator(
     skip_ping: bool = False,
 ) -> None:
     """Start Vibe Orchestrator (internal implementation)."""
-    global _glm_client, _memory, _repository, _perplexity, _github, _current_repo_session_id
+    global _gemini_client, _glm_client, _memory, _repository, _perplexity, _github, _current_repo_session_id
 
     # Step 1: Validate startup
     with Progress(
@@ -137,10 +144,10 @@ def _start_orchestrator(
         transient=True,
     ) as progress:
         progress.add_task(
-            description="Validating systems..." + (" (pinging GLM)" if not skip_ping else ""),
+            description="Validating systems..." + (" (pinging APIs)" if not skip_ping else ""),
             total=None,
         )
-        results = validate_startup(ping_glm=not skip_ping)
+        results = validate_startup(ping_api=not skip_ping)
 
     all_passed = show_startup_panel(results)
 
@@ -156,12 +163,13 @@ def _start_orchestrator(
         console.print(f"[bold red]Configuration error:[/bold red] {e}")
         raise typer.Exit(1)
 
-    # Step 3: Initialize GLM client
+    # Step 3: Initialize Gemini (brain/orchestrator) and GLM (reviewer) clients
     try:
         api_key = get_openrouter_key()
-        _glm_client = GLMClient(api_key)
+        _gemini_client = GeminiClient(api_key)  # Brain for task decomposition
+        _glm_client = GLMClient(api_key)  # Code review only
     except ConfigError as e:
-        console.print(f"[bold red]GLM initialization failed:[/bold red] {e}")
+        console.print(f"[bold red]Client initialization failed:[/bold red] {e}")
         raise typer.Exit(1)
 
     # Step 4: Initialize optional integrations
@@ -270,7 +278,8 @@ def _start_orchestrator(
         context=context,
         config=config,
         project=project,
-        glm_client=_glm_client,
+        gemini_client=_gemini_client,  # Brain/orchestrator
+        glm_client=_glm_client,  # Code reviewer only
         memory=_memory,
         repository=_repository,
         perplexity=_perplexity,
@@ -511,19 +520,36 @@ def restore(
 
 @app.command()
 def ping() -> None:
-    """Test GLM API connectivity."""
+    """Test Gemini and GLM API connectivity."""
+    from vibe.gemini.client import ping_gemini_sync
+
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
     if not api_key:
         console.print("[red]OPENROUTER_API_KEY not set[/red]")
         raise typer.Exit(1)
 
-    with console.status("[bold blue]Pinging GLM...[/bold blue]"):
+    all_ok = True
+
+    # Ping Gemini (brain/orchestrator)
+    with console.status("[bold blue]Pinging Gemini (brain)...[/bold blue]"):
+        try:
+            model = ping_gemini_sync(api_key)
+            console.print(f"[green]Gemini (Brain) OK:[/green] {model}")
+        except Exception as e:
+            console.print(f"[red]Gemini (Brain) failed:[/red] {e}")
+            all_ok = False
+
+    # Ping GLM (code reviewer)
+    with console.status("[bold blue]Pinging GLM (reviewer)...[/bold blue]"):
         success, message = ping_glm_sync(api_key, timeout=15.0)
 
     if success:
-        console.print(f"[green]GLM API OK:[/green] {message}")
+        console.print(f"[green]GLM (Reviewer) OK:[/green] {message}")
     else:
-        console.print(f"[red]GLM API failed:[/red] {message}")
+        console.print(f"[red]GLM (Reviewer) failed:[/red] {message}")
+        all_ok = False
+
+    if not all_ok:
         raise typer.Exit(1)
 
 

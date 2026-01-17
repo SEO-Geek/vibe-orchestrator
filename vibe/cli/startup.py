@@ -2,6 +2,11 @@
 Vibe CLI - Startup Validation
 
 Validates all required systems are available before starting Vibe.
+
+Architecture:
+  User → Gemini (brain/orchestrator) → Claude (worker)
+                     ↓                      ↓
+                  GLM (code review/verification)
 """
 
 import os
@@ -13,24 +18,40 @@ from rich.console import Console
 from rich.panel import Panel
 
 from vibe.config import MEMORY_DB_PATH
+from vibe.gemini.client import ping_gemini_sync
 from vibe.glm.client import ping_glm_sync
 
 console = Console()
 
 
-def _check_openrouter(ping_glm: bool) -> tuple[str, tuple[bool, str]]:
-    """Check OpenRouter API (optionally ping GLM)."""
+def _check_gemini(ping_api: bool) -> tuple[str, tuple[bool, str]]:
+    """Check Gemini API connectivity (brain/orchestrator)."""
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
     if not api_key:
-        return ("OpenRouter API", (False, "OPENROUTER_API_KEY not set"))
-    elif ping_glm:
+        return ("Gemini (Brain)", (False, "OPENROUTER_API_KEY not set"))
+    elif ping_api:
+        try:
+            model = ping_gemini_sync(api_key)
+            return ("Gemini (Brain)", (True, model.split("/")[-1]))
+        except Exception as e:
+            return ("Gemini (Brain)", (False, str(e)[:50]))
+    else:
+        return ("Gemini (Brain)", (True, "key configured"))
+
+
+def _check_glm(ping_api: bool) -> tuple[str, tuple[bool, str]]:
+    """Check GLM API connectivity (code reviewer)."""
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not api_key:
+        return ("GLM (Reviewer)", (False, "OPENROUTER_API_KEY not set"))
+    elif ping_api:
         success, message = ping_glm_sync(api_key, timeout=15.0)
         if success:
-            return ("OpenRouter API", (True, f"GLM-4 ({message})"))
+            return ("GLM (Reviewer)", (True, message))
         else:
-            return ("OpenRouter API", (False, message))
+            return ("GLM (Reviewer)", (False, message))
     else:
-        return ("OpenRouter API", (True, "key configured"))
+        return ("GLM (Reviewer)", (True, "key configured"))
 
 
 def _check_claude_cli() -> tuple[str, tuple[bool, str]]:
@@ -84,14 +105,14 @@ def _check_github_cli() -> tuple[str, tuple[bool, str]]:
         return ("GitHub CLI", (False, "not installed"))
 
 
-def validate_startup(ping_glm: bool = True) -> dict[str, tuple[bool, str]]:
+def validate_startup(ping_api: bool = True) -> dict[str, tuple[bool, str]]:
     """
     Validate all required systems are available.
 
     Runs all checks in parallel for faster startup.
 
     Args:
-        ping_glm: Whether to actually ping GLM API (slower but more reliable)
+        ping_api: Whether to actually ping APIs (slower but more reliable)
 
     Returns:
         Dict mapping system name to (success, message) tuple
@@ -102,9 +123,10 @@ def validate_startup(ping_glm: bool = True) -> dict[str, tuple[bool, str]]:
     results: dict[str, tuple[bool, str]] = {}
 
     # Run all checks in parallel for faster startup
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=5) as executor:
         futures = [
-            executor.submit(_check_openrouter, ping_glm),
+            executor.submit(_check_gemini, ping_api),  # Brain/orchestrator
+            executor.submit(_check_glm, ping_api),     # Code reviewer
             executor.submit(_check_claude_cli),
             executor.submit(_check_memory_keeper),
             executor.submit(_check_github_cli),

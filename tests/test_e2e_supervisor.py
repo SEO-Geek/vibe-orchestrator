@@ -1,8 +1,14 @@
 """
 End-to-end integration tests for the Supervisor workflow.
 
-Tests the full flow: user request → GLM decomposition → Claude execution → GLM review.
-Uses mocked GLM and Claude clients to avoid real API calls.
+Tests the full flow: user request → Gemini decomposition → Claude execution → GLM review.
+
+Architecture:
+  User → Gemini (brain/orchestrator) → Claude (worker)
+                     ↓                      ↓
+                  GLM (code review/verification)
+
+Uses mocked Gemini, GLM, and Claude clients to avoid real API calls.
 """
 
 from dataclasses import dataclass
@@ -12,7 +18,7 @@ import pytest
 
 from vibe.claude.executor import TaskResult
 from vibe.config import Project
-from vibe.exceptions import GLMError
+from vibe.exceptions import GeminiError, GLMError
 from vibe.orchestrator.supervisor import Supervisor, SupervisorCallbacks
 from vibe.state import SessionState
 
@@ -53,13 +59,13 @@ class TestSupervisorE2E:
         return Project(name="test_project", path=str(project_dir))
 
     @pytest.fixture
-    def mock_glm_client(self):
-        """Create a mocked GLM client."""
+    def mock_gemini_client(self):
+        """Create a mocked Gemini client (brain/orchestrator)."""
         client = MagicMock()
 
-        # Mock ask_clarification - no clarification needed
-        async def mock_ask_clarification(*args, **kwargs):
-            return None  # No clarification needed
+        # Mock check_clarification - no clarification needed
+        async def mock_check_clarification(*args, **kwargs):
+            return {"needs_clarification": False}
 
         # Mock decompose_task - return a simple task
         async def mock_decompose(*args, **kwargs):
@@ -72,6 +78,23 @@ class TestSupervisorE2E:
                 }
             ]
 
+        client.check_clarification = AsyncMock(side_effect=mock_check_clarification)
+        client.decompose_task = AsyncMock(side_effect=mock_decompose)
+        client.get_usage_stats = MagicMock(
+            return_value={
+                "model": "mock-gemini",
+                "request_count": 2,
+                "total_tokens": 100,
+            }
+        )
+
+        return client
+
+    @pytest.fixture
+    def mock_glm_client(self):
+        """Create a mocked GLM client (code reviewer only)."""
+        client = MagicMock()
+
         # Mock review_changes - approve the changes
         async def mock_review(*args, **kwargs):
             return {
@@ -80,14 +103,12 @@ class TestSupervisorE2E:
                 "feedback": "Changes look good.",
             }
 
-        client.ask_clarification = AsyncMock(side_effect=mock_ask_clarification)
-        client.decompose_task = AsyncMock(side_effect=mock_decompose)
         client.review_changes = AsyncMock(side_effect=mock_review)
         client.get_usage_stats = MagicMock(
             return_value={
                 "model": "mock-glm",
-                "request_count": 2,
-                "total_tokens": 100,
+                "request_count": 1,
+                "total_tokens": 50,
             }
         )
 
@@ -107,11 +128,12 @@ class TestSupervisorE2E:
         )
 
     @pytest.mark.asyncio
-    async def test_simple_task_workflow(self, project, mock_glm_client, mock_callbacks):
+    async def test_simple_task_workflow(self, project, mock_gemini_client, mock_glm_client, mock_callbacks):
         """Test a simple task workflow from request to completion."""
         # Create supervisor with mocked clients
         supervisor = Supervisor(
-            glm_client=mock_glm_client,
+            gemini_client=mock_gemini_client,  # Brain/orchestrator
+            glm_client=mock_glm_client,  # Code reviewer only
             project=project,
             callbacks=mock_callbacks,
             use_circuit_breaker=False,  # Disable for testing
@@ -139,8 +161,9 @@ class TestSupervisorE2E:
         assert result.tasks_completed == 1
         assert result.tasks_failed == 0
 
-        # Verify GLM was called correctly
-        mock_glm_client.decompose_task.assert_called_once()
+        # Verify Gemini (brain) was called for decomposition
+        mock_gemini_client.decompose_task.assert_called_once()
+        # Verify GLM (reviewer) was called for code review
         mock_glm_client.review_changes.assert_called_once()
 
         # Verify callbacks were triggered
@@ -150,10 +173,11 @@ class TestSupervisorE2E:
 
     @pytest.mark.asyncio
     async def test_investigation_task_skips_clarification(
-        self, project, mock_glm_client, mock_callbacks
+        self, project, mock_gemini_client, mock_glm_client, mock_callbacks
     ):
         """Test that investigation tasks skip the clarification step."""
         supervisor = Supervisor(
+            gemini_client=mock_gemini_client,
             glm_client=mock_glm_client,
             project=project,
             callbacks=mock_callbacks,
@@ -172,7 +196,7 @@ class TestSupervisorE2E:
                 }
             ]
 
-        mock_glm_client.decompose_task = AsyncMock(side_effect=mock_decompose)
+        mock_gemini_client.decompose_task = AsyncMock(side_effect=mock_decompose)
 
         # Mock executor
         mock_result = TaskResult(
@@ -194,12 +218,13 @@ class TestSupervisorE2E:
         # Verify investigation detection worked
         assert result.success is True
         # Clarification should not have been called (investigation task)
-        mock_glm_client.ask_clarification.assert_not_called()
+        mock_gemini_client.check_clarification.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_no_change_task_skips_review(self, project, mock_glm_client, mock_callbacks):
+    async def test_no_change_task_skips_review(self, project, mock_gemini_client, mock_glm_client, mock_callbacks):
         """Test that tasks with no file changes skip the review step."""
         supervisor = Supervisor(
+            gemini_client=mock_gemini_client,
             glm_client=mock_glm_client,
             project=project,
             callbacks=mock_callbacks,
@@ -227,9 +252,10 @@ class TestSupervisorE2E:
         mock_glm_client.review_changes.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_task_failure_handling(self, project, mock_glm_client, mock_callbacks):
+    async def test_task_failure_handling(self, project, mock_gemini_client, mock_glm_client, mock_callbacks):
         """Test that task failures are handled gracefully."""
         supervisor = Supervisor(
+            gemini_client=mock_gemini_client,
             glm_client=mock_glm_client,
             project=project,
             callbacks=mock_callbacks,
@@ -257,9 +283,10 @@ class TestSupervisorE2E:
         mock_callbacks.on_error.assert_called()
 
     @pytest.mark.asyncio
-    async def test_glm_rejection_triggers_retry(self, project, mock_glm_client, mock_callbacks):
+    async def test_glm_rejection_triggers_retry(self, project, mock_gemini_client, mock_glm_client, mock_callbacks):
         """Test that GLM rejections trigger retries with feedback."""
         supervisor = Supervisor(
+            gemini_client=mock_gemini_client,
             glm_client=mock_glm_client,
             project=project,
             callbacks=mock_callbacks,
@@ -309,9 +336,10 @@ class TestSupervisorE2E:
         assert result.success is True
 
     @pytest.mark.asyncio
-    async def test_multi_task_workflow(self, project, mock_glm_client, mock_callbacks):
-        """Test workflow with multiple tasks from GLM decomposition."""
+    async def test_multi_task_workflow(self, project, mock_gemini_client, mock_glm_client, mock_callbacks):
+        """Test workflow with multiple tasks from Gemini decomposition."""
         supervisor = Supervisor(
+            gemini_client=mock_gemini_client,
             glm_client=mock_glm_client,
             project=project,
             callbacks=mock_callbacks,
@@ -319,7 +347,7 @@ class TestSupervisorE2E:
         )
         prepare_supervisor_for_request(supervisor)
 
-        # Mock decompose to return multiple tasks
+        # Mock decompose to return multiple tasks (using Gemini)
         async def mock_decompose(*args, **kwargs):
             return [
                 {
@@ -342,7 +370,7 @@ class TestSupervisorE2E:
                 },
             ]
 
-        mock_glm_client.decompose_task = AsyncMock(side_effect=mock_decompose)
+        mock_gemini_client.decompose_task = AsyncMock(side_effect=mock_decompose)
 
         # Track execution count
         call_count = 0
@@ -398,11 +426,16 @@ class TestSupervisorIntegration:
     @pytest.mark.asyncio
     async def test_supervisor_with_memory(self, project):
         """Test Supervisor integration with memory system."""
-        mock_glm = MagicMock()
-        mock_glm.ask_clarification = AsyncMock(return_value=None)
-        mock_glm.decompose_task = AsyncMock(
+        # Mock Gemini (brain/orchestrator)
+        mock_gemini = MagicMock()
+        mock_gemini.check_clarification = AsyncMock(return_value={"needs_clarification": False})
+        mock_gemini.decompose_task = AsyncMock(
             return_value=[{"id": "t1", "description": "Test task", "files": [], "constraints": []}]
         )
+        mock_gemini.get_usage_stats = MagicMock(return_value={"total_tokens": 0})
+
+        # Mock GLM (code reviewer only)
+        mock_glm = MagicMock()
         mock_glm.review_changes = AsyncMock(return_value={"approved": True, "issues": []})
         mock_glm.get_usage_stats = MagicMock(return_value={"total_tokens": 0})
 
@@ -412,6 +445,7 @@ class TestSupervisorIntegration:
         mock_memory.create_checkpoint_with_git = MagicMock()
 
         supervisor = Supervisor(
+            gemini_client=mock_gemini,
             glm_client=mock_glm,
             project=project,
             memory=mock_memory,
@@ -449,14 +483,18 @@ class TestSupervisorEdgeCases:
         return Project(name="edge_test", path=str(project_dir))
 
     @pytest.mark.asyncio
-    async def test_empty_task_list_from_glm(self, project):
-        """Test handling when GLM returns no tasks."""
+    async def test_empty_task_list_from_gemini(self, project):
+        """Test handling when Gemini returns no tasks."""
+        mock_gemini = MagicMock()
+        mock_gemini.check_clarification = AsyncMock(return_value={"needs_clarification": False})
+        mock_gemini.decompose_task = AsyncMock(return_value=[])  # Empty list
+        mock_gemini.get_usage_stats = MagicMock(return_value={"total_tokens": 0})
+
         mock_glm = MagicMock()
-        mock_glm.ask_clarification = AsyncMock(return_value=None)
-        mock_glm.decompose_task = AsyncMock(return_value=[])  # Empty list
         mock_glm.get_usage_stats = MagicMock(return_value={"total_tokens": 0})
 
         supervisor = Supervisor(
+            gemini_client=mock_gemini,
             glm_client=mock_glm,
             project=project,
             use_circuit_breaker=False,
@@ -471,14 +509,18 @@ class TestSupervisorEdgeCases:
         assert "no tasks" in result.error.lower()
 
     @pytest.mark.asyncio
-    async def test_glm_decomposition_error(self, project):
-        """Test handling when GLM decomposition fails."""
+    async def test_gemini_decomposition_error(self, project):
+        """Test handling when Gemini decomposition fails."""
+        mock_gemini = MagicMock()
+        mock_gemini.check_clarification = AsyncMock(return_value={"needs_clarification": False})
+        mock_gemini.decompose_task = AsyncMock(side_effect=GeminiError("API error"))
+        mock_gemini.get_usage_stats = MagicMock(return_value={"total_tokens": 0})
+
         mock_glm = MagicMock()
-        mock_glm.ask_clarification = AsyncMock(return_value=None)
-        mock_glm.decompose_task = AsyncMock(side_effect=GLMError("API error"))
         mock_glm.get_usage_stats = MagicMock(return_value={"total_tokens": 0})
 
         supervisor = Supervisor(
+            gemini_client=mock_gemini,
             glm_client=mock_glm,
             project=project,
             use_circuit_breaker=False,
@@ -494,14 +536,21 @@ class TestSupervisorEdgeCases:
 
     @pytest.mark.asyncio
     async def test_clarification_request(self, project):
-        """Test handling when GLM requests clarification."""
-        mock_glm = MagicMock()
-        mock_glm.ask_clarification = AsyncMock(
-            return_value="Do you want to use Python or JavaScript?"
+        """Test handling when Gemini requests clarification."""
+        mock_gemini = MagicMock()
+        mock_gemini.check_clarification = AsyncMock(
+            return_value={
+                "needs_clarification": True,
+                "question": "Do you want to use Python or JavaScript?"
+            }
         )
+        mock_gemini.get_usage_stats = MagicMock(return_value={"total_tokens": 0})
+
+        mock_glm = MagicMock()
         mock_glm.get_usage_stats = MagicMock(return_value={"total_tokens": 0})
 
         supervisor = Supervisor(
+            gemini_client=mock_gemini,
             glm_client=mock_glm,
             project=project,
             use_circuit_breaker=False,

@@ -15,6 +15,7 @@ from vibe.claude.executor import ClaudeExecutor
 from vibe.cli.project import load_project_context
 from vibe.config import Project
 from vibe.exceptions import GitHubError, ResearchError
+from vibe.gemini.client import GeminiClient
 from vibe.glm.client import GLMClient
 from vibe.integrations import GitHubOps, PerplexityClient
 from vibe.memory.debug_session import AttemptResult, DebugSession
@@ -30,9 +31,9 @@ def handle_help() -> None:
     console.print("\n[bold]Commands:[/bold]")
     console.print("  /quit       - Exit Vibe")
     console.print("  /status     - Show session status")
-    console.print("  /usage      - Show GLM usage stats")
+    console.print("  /usage      - Show Gemini/GLM usage stats")
     console.print("  /memory     - Show memory stats")
-    console.print("  /history    - Show task history (what GLM sees)")
+    console.print("  /history    - Show task history")
     console.print("  /redo       - Re-execute the most recent failed task")
     console.print("  /convention - Manage global conventions")
     console.print("  /debug      - Debug session tracking")
@@ -58,13 +59,22 @@ def handle_status(context: SessionContext) -> None:
     console.print()
 
 
-def handle_usage(glm_client: GLMClient) -> None:
+def handle_usage(gemini_client: GeminiClient | None, glm_client: GLMClient) -> None:
     """Handle /usage command."""
-    usage = glm_client.get_usage_stats()
-    console.print("\n[bold]GLM Usage:[/bold]")
-    console.print(f"  Model: {usage['model']}")
-    console.print(f"  Requests: {usage['request_count']}")
-    console.print(f"  Total tokens: {usage['total_tokens']}")
+    # Show Gemini (brain) usage
+    if gemini_client:
+        gemini_usage = gemini_client.get_usage_stats()
+        console.print("\n[bold]Gemini (Brain/Orchestrator) Usage:[/bold]")
+        console.print(f"  Model: {gemini_usage['model']}")
+        console.print(f"  Requests: {gemini_usage['request_count']}")
+        console.print(f"  Total tokens: {gemini_usage['total_tokens']}")
+
+    # Show GLM (reviewer) usage
+    glm_usage = glm_client.get_usage_stats()
+    console.print("\n[bold]GLM (Code Reviewer) Usage:[/bold]")
+    console.print(f"  Model: {glm_usage['model']}")
+    console.print(f"  Requests: {glm_usage['request_count']}")
+    console.print(f"  Total tokens: {glm_usage['total_tokens']}")
     console.print()
 
 

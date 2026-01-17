@@ -68,6 +68,33 @@ class GLMRateLimitError(GLMError):
         self.retry_after = retry_after
 
 
+# Gemini (Brain/Orchestrator) Errors
+class GeminiError(VibeError):
+    """Base exception for Gemini API errors."""
+
+    pass
+
+
+class GeminiConnectionError(GeminiError):
+    """Raised when connection to Gemini via OpenRouter fails."""
+
+    pass
+
+
+class GeminiResponseError(GeminiError):
+    """Raised when Gemini returns an unexpected response."""
+
+    pass
+
+
+class GeminiRateLimitError(GeminiError):
+    """Raised when Gemini rate limit is hit."""
+
+    def __init__(self, message: str, retry_after: int | None = None):
+        super().__init__(message, {"retry_after": retry_after})
+        self.retry_after = retry_after
+
+
 # Claude Errors
 class ClaudeError(VibeError):
     """Base exception for Claude CLI errors."""

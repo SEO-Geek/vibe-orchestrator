@@ -1,7 +1,12 @@
 """
 Vibe CLI - Interactive Conversation Loop
 
-The main interactive conversation loop where users interact with GLM/Claude.
+The main interactive conversation loop where users interact with the AI team.
+
+Architecture:
+  User → Gemini (brain/orchestrator) → Claude (worker)
+                     ↓                      ↓
+                  GLM (code review/verification)
 """
 
 import asyncio
@@ -22,7 +27,8 @@ from vibe.cli.execution import execute_task_with_claude, review_with_glm, show_t
 from vibe.cli.project import load_project_context
 from vibe.config import Project, VibeConfig
 from vibe.exceptions import ClaudeError
-from vibe.glm.client import GLMClient
+from vibe.gemini.client import GeminiClient  # Brain/orchestrator
+from vibe.glm.client import GLMClient  # Code reviewer only
 from vibe.integrations import GitHubOps, PerplexityClient
 from vibe.logging import SessionLogEntry, get_session_id, now_iso, session_logger
 from vibe.memory.debug_session import DebugSession
@@ -387,6 +393,7 @@ async def execute_tasks(
 
 
 async def process_user_request(
+    gemini_client: GeminiClient,
     glm_client: GLMClient,
     context: SessionContext,
     project: Project,
@@ -396,10 +403,11 @@ async def process_user_request(
     debug_session: DebugSession | None = None,
 ) -> None:
     """
-    Process a user request through GLM and execute with Claude.
+    Process a user request through Gemini (brain) and execute with Claude.
 
     Args:
-        glm_client: GLM client instance
+        gemini_client: Gemini client (brain/orchestrator)
+        glm_client: GLM client (code review only)
         context: Session context
         project: Current project
         user_request: User's request text
@@ -446,41 +454,42 @@ async def process_user_request(
     add_request(user_request)
     context.add_glm_message("user", user_request)
 
-    # Check if clarification is needed
+    # Check if clarification is needed (using Gemini as brain)
     console.print()
-    console.print("[dim]Calling GLM for clarification check...[/dim]")
+    console.print("[dim]Gemini analyzing request...[/dim]")
     try:
-        with console.status("[bold blue]GLM analyzing request...[/bold blue]"):
-            clarification = await glm_client.ask_clarification(
-                user_request, project_context, clarification_count=context.clarification_count
+        with console.status("[bold blue]Gemini checking clarification...[/bold blue]"):
+            clarification_result = await gemini_client.check_clarification(
+                user_request, project_context
             )
-        console.print("[dim]GLM responded.[/dim]")
+        console.print("[dim]Gemini responded.[/dim]")
     except Exception as e:
-        console.print(f"[red]GLM clarification error: {e}[/red]")
-        raise
+        console.print(f"[yellow]Gemini clarification check failed: {e}, proceeding[/yellow]")
+        clarification_result = {"needs_clarification": False}
 
-    if clarification:
+    if clarification_result.get("needs_clarification"):
         context.clarification_count += 1
+        question = clarification_result.get("question", "Could you clarify your request?")
         console.print(
             Panel(
-                clarification,
-                title="[bold yellow]GLM needs clarification[/bold yellow]",
+                question,
+                title="[bold yellow]Gemini needs clarification[/bold yellow]",
                 border_style="yellow",
             )
         )
-        context.add_glm_message("assistant", clarification)
+        context.add_glm_message("assistant", question)
         return
 
     # Reset clarification count when proceeding
     context.clarification_count = 0
 
-    # Decompose into tasks
+    # Decompose into tasks (using Gemini as brain)
     console.print()
-    console.print("[dim]Calling GLM to decompose into tasks...[/dim]")
-    with console.status("[bold blue]GLM decomposing into tasks...[/bold blue]"):
+    console.print("[dim]Gemini decomposing into tasks...[/dim]")
+    with console.status("[bold blue]Gemini planning tasks...[/bold blue]"):
         try:
-            tasks = await glm_client.decompose_task(user_request, project_context)
-            console.print(f"[dim]GLM returned {len(tasks) if tasks else 0} task(s).[/dim]")
+            tasks = await gemini_client.decompose_task(user_request, project_context)
+            console.print(f"[dim]Gemini returned {len(tasks) if tasks else 0} task(s).[/dim]")
         except Exception as e:
             console.print(f"[red]Error decomposing task: {e}[/red]")
             import traceback
@@ -590,6 +599,7 @@ def conversation_loop(
     context: SessionContext,
     config: VibeConfig,
     project: Project,
+    gemini_client: GeminiClient,
     glm_client: GLMClient,
     memory: VibeMemory | None = None,
     repository: VibeRepository | None = None,
@@ -597,9 +607,13 @@ def conversation_loop(
     github: GitHubOps | None = None,
 ) -> None:
     """
-    Main conversation loop with GLM.
+    Main conversation loop with the AI team.
 
-    This is where the user interacts with GLM, which delegates to Claude.
+    Architecture:
+      User → Gemini (brain/orchestrator) → Claude (worker)
+                       ↓                      ↓
+                    GLM (code review/verification)
+
     Features: command history (up/down arrows), tab completion for /commands.
     """
     # Check if running in interactive terminal
@@ -691,7 +705,7 @@ def conversation_loop(
                 elif cmd == "/status":
                     commands.handle_status(context)
                 elif cmd == "/usage":
-                    commands.handle_usage(glm_client)
+                    commands.handle_usage(gemini_client, glm_client)
                 elif cmd == "/memory":
                     commands.handle_memory(memory)
                 elif cmd == "/history":
@@ -746,12 +760,12 @@ def conversation_loop(
                 except Exception:
                     pass
 
-            # Process request through GLM
+            # Process request through Gemini (brain) with Claude (worker) and GLM (reviewer)
             try:
                 console.print("[dim]Processing request...[/dim]")
                 asyncio.run(
                     process_user_request(
-                        glm_client, context, project, user_input, memory, repository, debug_session
+                        gemini_client, glm_client, context, project, user_input, memory, repository, debug_session
                     )
                 )
             except Exception as e:

@@ -1,4 +1,10 @@
-"""Tests for supervisor module."""
+"""Tests for supervisor module.
+
+Architecture:
+  User → Gemini (brain/orchestrator) → Claude (worker)
+                     ↓                      ↓
+                  GLM (code review/verification)
+"""
 
 from unittest.mock import MagicMock
 
@@ -13,11 +19,13 @@ class TestInvestigationTaskDetection:
 
     @pytest.fixture
     def supervisor(self):
-        """Create a Supervisor with mock GLM client."""
-        mock_client = MagicMock()
+        """Create a Supervisor with mock Gemini and GLM clients."""
+        mock_gemini = MagicMock()  # Brain/orchestrator
+        mock_glm = MagicMock()  # Code reviewer only
         project = Project(name="test", path="/test")
         return Supervisor(
-            glm_client=mock_client,
+            gemini_client=mock_gemini,
+            glm_client=mock_glm,
             project=project,
         )
 

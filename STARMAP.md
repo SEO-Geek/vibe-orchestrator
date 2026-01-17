@@ -2,12 +2,18 @@
 
 ## Overview
 
-Vibe is a Python CLI tool that uses GLM-4.7 as the brain/project manager and Claude Code as the worker. User talks to GLM, GLM delegates tasks to Claude, reviews output, and maintains project state.
+Vibe is a Python CLI tool that orchestrates AI models to accomplish software engineering tasks.
+
+**Architecture:**
+- **Gemini (Brain/Orchestrator)**: Understands user intent, decomposes into atomic tasks
+- **Claude (Worker)**: Executes tasks via subprocess
+- **GLM (Code Reviewer)**: Reviews Claude's output for quality and correctness
 
 ```
-User <-> GLM (brain) <-> Claude (worker)
-              |
-              v
+User → Gemini (brain/orchestrator) → Claude (worker)
+                  ↓                        ↓
+              GLM (code review/verification)
+                  ↓
         Memory-keeper + Starmap + Changelog
 ```
 
@@ -15,13 +21,14 @@ User <-> GLM (brain) <-> Claude (worker)
 
 ### Core Flow
 
-1. **Startup**: Validate all systems, show project list, load context
-2. **Conversation**: User talks to GLM
-3. **Task Delegation**: GLM creates atomic tasks for Claude
-4. **Execution**: Claude runs task via subprocess
-5. **Review Gate**: GLM reviews Claude's output
-6. **Accept/Reject**: Update project state or send feedback (max 3 retries)
-7. **Loop**: Continue until goal complete
+1. **Startup**: Validate all systems (Gemini, GLM, Claude), show project list, load context
+2. **Conversation**: User provides request
+3. **Clarification** (if needed): Gemini checks if clarification is required
+4. **Task Decomposition**: Gemini breaks request into atomic tasks
+5. **Execution**: Claude runs each task via subprocess
+6. **Review Gate**: GLM reviews Claude's output for quality/correctness
+7. **Accept/Reject**: Update project state or send feedback (max 3 retries)
+8. **Loop**: Continue until all tasks complete
 
 ## Directory Structure
 
@@ -47,10 +54,15 @@ User <-> GLM (brain) <-> Claude (worker)
 │   ├── exceptions.py      # Exception hierarchy
 │   ├── state.py           # Session state machine
 │   │
-│   ├── glm/
+│   ├── gemini/           # Brain/Orchestrator (task decomposition)
+│   │   ├── __init__.py
+│   │   ├── client.py      # OpenRouter API wrapper for Gemini 2.0 Flash
+│   │   └── prompts.py     # Orchestrator system prompts
+│   │
+│   ├── glm/              # Code Reviewer (quality verification)
 │   │   ├── __init__.py
 │   │   ├── client.py      # OpenRouter API wrapper for GLM-4.7
-│   │   ├── prompts.py     # System prompts (Supervisor, Reviewer)
+│   │   ├── prompts.py     # Code review prompts only
 │   │   ├── parser.py      # Parse GLM JSON responses
 │   │   └── debug_state.py # Debug session state tracking
 │   │
@@ -120,12 +132,15 @@ User <-> GLM (brain) <-> Claude (worker)
 ## Key Components
 
 ### Supervisor (`orchestrator/supervisor.py`)
-The CORE of Vibe. Coordinates the full GLM → Claude → GLM loop:
-- Loads project context (STARMAP, CLAUDE.md, memory)
-- Asks GLM to decompose user requests into atomic tasks
+The CORE of Vibe. Coordinates the full Gemini → Claude → GLM loop:
+- Uses **Gemini** (brain) for:
+  - Task decomposition into atomic tasks
+  - Clarification checks when requests are ambiguous
+- Uses **Claude** (worker) for:
+  - Task execution via subprocess
+- Uses **GLM** (reviewer) for:
+  - Code review and quality verification only
 - **WorkflowEngine Integration**: Auto-expands tasks into multi-phase workflows
-- Executes each task via Claude subprocess
-- Sends Claude's output to GLM for review
 - Handles retries with feedback injection (max 3 attempts)
 - Persists results to memory-keeper
 - **Circuit Breaker Integration**: Prevents cascading failures
@@ -159,11 +174,18 @@ Subprocess integration with Claude Code CLI:
   - `save_checkpoint()` persists to `~/.config/vibe/checkpoints/`
   - `get_last_checkpoint()` retrieves for retry context
 
-### GLMClient (`glm/client.py`)
-OpenRouter API wrapper for GLM-4.7:
+### GeminiClient (`gemini/client.py`)
+OpenRouter API wrapper for Gemini 2.0 Flash (brain/orchestrator):
 - Task decomposition into atomic tasks
-- Code review with structured JSON output
 - Clarification question detection
+- Streaming responses for real-time display
+- Usage tracking and statistics
+
+### GLMClient (`glm/client.py`)
+OpenRouter API wrapper for GLM-4.7 (code reviewer only):
+- Code review with structured JSON output
+- Reviews Claude's work for quality and correctness
+- Scope verification (did Claude stay on task?)
 - Streaming responses for real-time display
 
 ### VibeMemory (`memory/keeper.py`)
@@ -232,7 +254,7 @@ Injection rules auto-add tasks:
 |---------|-------------|
 | `/help` | Show available commands |
 | `/status` | Show session status |
-| `/usage` | Show GLM token usage |
+| `/usage` | Show Gemini/GLM token usage |
 | `/memory` | Show memory statistics |
 | `/research <query>` | Research via Perplexity |
 | `/github` | Show GitHub repo info |
@@ -250,7 +272,7 @@ Injection rules auto-add tasks:
 | `vibe list` | List all registered projects |
 | `vibe add <name> <path>` | Add a new project |
 | `vibe remove <name>` | Remove a project |
-| `vibe ping` | Test GLM API connectivity |
+| `vibe ping` | Test Gemini and GLM API connectivity |
 | `vibe restore` | List/recover crashed sessions |
 | `vibe logs` | View and analyze logs |
 
@@ -274,6 +296,14 @@ Projects are registered in `~/.config/vibe/projects.json`:
 
 ## Recent Changes
 
+- **2026-01-17**: Gemini/GLM Architecture Split
+  - **Gemini** is now the brain/orchestrator (task decomposition, clarification)
+  - **GLM** is now code reviewer only (quality verification)
+  - Added `vibe/gemini/` module with GeminiClient and prompts
+  - Updated Supervisor to use both Gemini and GLM clients
+  - Updated all tests to reflect new architecture
+  - Updated startup to validate both Gemini and GLM connections
+  - Updated `/usage` and `vibe ping` to show both models
 - **2026-01-17**: Buffer Overflow Fix
   - Fixed `LimitOverrunError` when Claude outputs large JSON lines (>64KB)
   - Replaced `readline()` with chunked `read()` in executor

@@ -42,6 +42,7 @@ from vibe.state import SessionContext, SessionState, Task
 # not at runtime. This breaks the circular dependency: supervisor -> executor -> supervisor
 if TYPE_CHECKING:
     from vibe.claude.executor import ClaudeExecutor, TaskResult
+    from vibe.gemini.client import GeminiClient
     from vibe.orchestrator.reviewer import Reviewer
 
 logger = logging.getLogger(__name__)
@@ -199,18 +200,24 @@ class Supervisor:
     """
     Main supervisor that orchestrates the Vibe workflow.
 
+    Architecture:
+        User → Gemini (brain/orchestrator) → Claude (worker)
+                        ↓                        ↓
+                     GLM (code review only)
+
     Responsibilities:
     - Receive user requests
-    - Ask GLM to decompose into tasks
-    - Execute tasks via Claude
-    - Send output to GLM for review
-    - Accept or reject based on review
+    - Ask GEMINI to decompose into tasks (brain)
+    - Execute tasks via Claude (worker)
+    - Send output to GLM for code review (verifier)
+    - Accept or reject based on GLM review
     - Handle retries with feedback
     - Persist state to memory
     """
 
     def __init__(
         self,
+        gemini_client: "GeminiClient",
         glm_client: GLMClient,
         project: Project,
         memory: VibeMemory | None = None,
@@ -223,7 +230,8 @@ class Supervisor:
         Initialize supervisor.
 
         Args:
-            glm_client: Initialized GLMClient for task decomposition and review
+            gemini_client: GeminiClient for task decomposition (the brain)
+            glm_client: GLMClient for code review only (the verifier)
             project: Project configuration with path and settings
             memory: Optional VibeMemory for persistence
             callbacks: Optional callbacks for progress updates
@@ -231,7 +239,8 @@ class Supervisor:
             use_workflow_engine: Enable workflow phase expansion (default: from project config)
             use_circuit_breaker: Enable circuit breaker for Claude calls (default: True)
         """
-        self.glm_client = glm_client
+        self.gemini_client = gemini_client
+        self.glm_client = glm_client  # Only for code review
         self.project = project
         self.memory = memory
         self.callbacks = callbacks or SupervisorCallbacks()
@@ -740,7 +749,7 @@ class Supervisor:
             # Decision tree:
             # - skip_clarification=True (CLI flag) -> skip
             # - Investigation task (questions, research) -> skip (no ambiguity)
-            # - Everything else -> ask GLM if request is ambiguous
+            # - Everything else -> ask GEMINI if request is ambiguous
             should_ask_clarification = not skip_clarification and not self._is_investigation_task(
                 request
             )
@@ -748,42 +757,43 @@ class Supervisor:
             if should_ask_clarification:
                 self._emit_status("Checking if clarification needed...")
                 try:
-                    clarification = await self.glm_client.ask_clarification(
+                    # Gemini (the brain) decides if clarification is needed
+                    clarification_result = await self.gemini_client.check_clarification(
                         user_request=request,
                         project_context=project_context,
                     )
 
-                    if clarification:
-                        # GLM needs more info - return early.
+                    if clarification_result.get("needs_clarification"):
+                        # Gemini needs more info - return early.
                         # This is success=True because the system worked correctly;
                         # we just need user input before proceeding.
-                        result.clarification_asked = clarification
+                        result.clarification_asked = clarification_result.get("question", "Please clarify your request.")
                         result.success = True
                         self.context.transition_to(SessionState.IDLE)
                         return result
 
-                except GLMError as e:
-                    self._emit_error(f"GLM clarification failed: {e}")
+                except Exception as e:
+                    self._emit_error(f"Gemini clarification failed: {e}")
                     # Continue without clarification rather than fail
             elif not skip_clarification:
                 # Investigation task - log that we're skipping
                 self._emit_progress("Investigation task detected - skipping clarification step")
 
-            # Step 3: Decompose task
-            self._emit_status("Decomposing request into tasks...")
+            # Step 3: Decompose task - GEMINI is the brain that plans
+            self._emit_status("Gemini decomposing request into tasks...")
             try:
-                task_dicts = await self.glm_client.decompose_task(
+                task_dicts = await self.gemini_client.decompose_task(
                     user_request=request,
                     project_context=project_context,
                 )
-            except GLMError as e:
+            except Exception as e:
                 result.error = f"Task decomposition failed: {e}"
                 self._emit_error(result.error)
                 self.context.transition_to(SessionState.ERROR)
                 return result
 
             if not task_dicts:
-                result.error = "GLM returned no tasks"
+                result.error = "Gemini returned no tasks"
                 self._emit_error(result.error)
                 self.context.transition_to(SessionState.ERROR)
                 return result
