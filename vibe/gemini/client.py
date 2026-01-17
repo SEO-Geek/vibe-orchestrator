@@ -438,12 +438,17 @@ class GeminiClient:
         self._conversation.clear()
 
 
-def ping_gemini_sync(api_key: str) -> str:
+def ping_gemini_sync(api_key: str, timeout: float = 30.0) -> str:
     """
     Synchronous ping for startup checks.
 
+    Handles both cases:
+    - Called from sync context: uses asyncio.run()
+    - Called from async context: spawns thread with own event loop
+
     Args:
         api_key: OpenRouter API key
+        timeout: Request timeout in seconds
 
     Returns:
         Model identifier
@@ -452,6 +457,19 @@ def ping_gemini_sync(api_key: str) -> str:
         GeminiConnectionError: If ping fails
     """
     import asyncio
+    import concurrent.futures
 
     client = GeminiClient(api_key)
-    return asyncio.get_event_loop().run_until_complete(client.ping())
+
+    try:
+        # Check if there's already a running event loop
+        asyncio.get_running_loop()  # Raises RuntimeError if no loop
+    except RuntimeError:
+        # No running loop - simple case, just use asyncio.run()
+        return asyncio.run(client.ping())
+
+    # EDGE CASE: If called from within an async context (e.g., pytest-asyncio),
+    # we can't use asyncio.run(). Spawn a thread with its own event loop instead.
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future = executor.submit(asyncio.run, client.ping())
+        return future.result(timeout=timeout + 5)
