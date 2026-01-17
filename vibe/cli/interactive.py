@@ -595,7 +595,7 @@ async def process_user_request(
     )
 
 
-def conversation_loop(
+async def conversation_loop(
     context: SessionContext,
     config: VibeConfig,
     project: Project,
@@ -615,6 +615,9 @@ def conversation_loop(
                     GLM (code review/verification)
 
     Features: command history (up/down arrows), tab completion for /commands.
+
+    NOTE: This function is async to use a single event loop for the entire session.
+    This prevents "Event loop is closed" errors from multiple asyncio.run() calls.
     """
     # Check if running in interactive terminal
     if not sys.stdin.isatty():
@@ -711,17 +714,18 @@ def conversation_loop(
                 elif cmd == "/history":
                     commands.handle_history()
                 elif cmd == "/redo" or cmd.startswith("/redo "):
-                    commands.handle_redo(
+                    await commands.handle_redo_async(
                         project,
                         glm_client,
                         context,
                         memory,
-                        lambda **kw: asyncio.run(execute_tasks(**kw, repository=repository)),
+                        execute_tasks,
+                        repository,
                     )
                 elif cmd.startswith("/convention"):
                     commands.handle_convention(user_input, memory)
                 elif cmd.startswith("/research"):
-                    commands.handle_research(user_input, project, perplexity)
+                    await commands.handle_research_async(user_input, project, perplexity)
                 elif cmd == "/github":
                     commands.handle_github(github)
                 elif cmd == "/issues":
@@ -763,10 +767,8 @@ def conversation_loop(
             # Process request through Gemini (brain) with Claude (worker) and GLM (reviewer)
             try:
                 console.print("[dim]Processing request...[/dim]")
-                asyncio.run(
-                    process_user_request(
-                        gemini_client, glm_client, context, project, user_input, memory, repository, debug_session
-                    )
+                await process_user_request(
+                    gemini_client, glm_client, context, project, user_input, memory, repository, debug_session
                 )
             except Exception as e:
                 console.print(f"[bold red]ERROR: {type(e).__name__}: {e}[/bold red]")

@@ -561,3 +561,92 @@ def handle_rollback(
         for attempt in debug_session.attempts:
             if attempt.rollback_commit:
                 console.print(f"  #{attempt.id} ({attempt.rollback_commit})")
+
+
+# =============================================================================
+# Async versions of commands (for use in async conversation_loop)
+# =============================================================================
+
+
+async def handle_redo_async(
+    project: Project,
+    glm_client: GLMClient,
+    context: SessionContext,
+    memory: VibeMemory | None,
+    execute_tasks_func,  # async callable
+    repository=None,
+) -> None:
+    """
+    Async version of handle_redo for use in async conversation_loop.
+
+    Uses await instead of asyncio.run() to stay in the same event loop.
+    """
+    failed_tasks = [t for t in TaskHistory.get_recent_tasks(20) if t.status == "failed"]
+    if not failed_tasks:
+        console.print("[yellow]No failed tasks to redo[/yellow]")
+        return
+
+    console.print(f"\n[bold]Failed Tasks ({len(failed_tasks)}):[/bold]")
+    for i, task in enumerate(failed_tasks, 1):
+        console.print(f"  {i}. {task.description[:70]}")
+    console.print()
+    console.print("[dim]Re-executing most recent failed task...[/dim]")
+
+    # Create task dict from the failed task
+    retry_task = {
+        "id": "retry-1",
+        "description": failed_tasks[0].description,
+        "files": ["investigate relevant files"],
+        "constraints": ["This is a retry of a previously failed task"],
+    }
+
+    # Execute with await instead of asyncio.run()
+    await execute_tasks_func(
+        glm_client=glm_client,
+        executor=ClaudeExecutor(project.path),
+        project=project,
+        tasks=[retry_task],
+        memory=memory,
+        context=context,
+        user_request=f"Retry: {failed_tasks[0].description}",
+        repository=repository,
+    )
+
+
+async def handle_research_async(
+    user_input: str,
+    project: Project,
+    perplexity: PerplexityClient | None,
+) -> None:
+    """
+    Async version of handle_research for use in async conversation_loop.
+
+    Uses await instead of asyncio.run() to stay in the same event loop.
+    """
+    if not perplexity or not perplexity.is_available:
+        console.print("[yellow]Perplexity not available (PERPLEXITY_API_KEY not set)[/yellow]")
+        return
+
+    query = user_input[9:].strip()  # Remove "/research "
+    if not query:
+        query = Prompt.ask("What do you want to research?")
+    if query:
+        with console.status("[bold blue]Researching...[/bold blue]"):
+            try:
+                # Use await instead of asyncio.run()
+                result = await perplexity.research(query, context=load_project_context(project))
+                console.print(
+                    Panel(
+                        Markdown(result.answer),
+                        title=f"[bold]Research: {query[:50]}...[/bold]"
+                        if len(query) > 50
+                        else f"[bold]Research: {query}[/bold]",
+                        border_style="green",
+                    )
+                )
+                if result.citations:
+                    console.print("[dim]Citations:[/dim]")
+                    for citation in result.citations[:5]:
+                        console.print(f"  [dim]• {citation}[/dim]")
+            except ResearchError as e:
+                console.print(f"[red]Research failed: {e}[/red]")

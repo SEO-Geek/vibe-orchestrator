@@ -936,7 +936,7 @@ class ClaudeExecutor:
 
             # Streaming read loop with cancellation and timeout support.
             # Uses chunked reads to avoid 64KB readline buffer limit.
-            start_time = asyncio.get_event_loop().time()
+            start_time = asyncio.get_running_loop().time()
             buffer = b""
             CHUNK_SIZE = 64 * 1024  # 64KB chunks for responsive streaming
 
@@ -950,7 +950,7 @@ class ClaudeExecutor:
                     return
 
                 # Check overall timeout
-                elapsed = asyncio.get_event_loop().time() - start_time
+                elapsed = asyncio.get_running_loop().time() - start_time
                 if elapsed > self.timeout:
                     if process.returncode is None:
                         process.kill()

@@ -240,3 +240,11 @@ Provide current best practices and code examples."""
             "model": self.model,
             "request_count": self.request_count,
         }
+
+    async def close(self) -> None:
+        """Close the client and release resources."""
+        if self._client:
+            try:
+                await self._client.close()
+            except Exception:
+                pass  # Ignore errors during cleanup
