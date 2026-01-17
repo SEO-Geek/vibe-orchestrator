@@ -36,6 +36,9 @@ from vibe.exceptions import (
 )
 from vibe.glm.client import GLMClient
 from vibe.memory.keeper import VibeMemory
+from vibe.memory.pattern_learning import PatternLearner, get_pattern_learner
+from vibe.orchestrator.task_board import TaskBoard, get_task_board
+from vibe.orchestrator.task_routing import TaskRouter, get_task_router
 from vibe.state import SessionContext, SessionState, Task
 
 # TYPE_CHECKING imports are only evaluated by type checkers (mypy, pyright),
@@ -225,6 +228,7 @@ class Supervisor:
         max_retries: int = MAX_RETRY_ATTEMPTS,
         use_workflow_engine: bool | None = None,
         use_circuit_breaker: bool = True,
+        task_router: TaskRouter | None = None,
     ):
         """
         Initialize supervisor.
@@ -238,6 +242,7 @@ class Supervisor:
             max_retries: Maximum retry attempts for rejected tasks
             use_workflow_engine: Enable workflow phase expansion (default: from project config)
             use_circuit_breaker: Enable circuit breaker for Claude calls (default: True)
+            task_router: Optional TaskRouter for task-type-aware configuration
         """
         self.gemini_client = gemini_client
         self.glm_client = glm_client  # Only for code review
@@ -245,6 +250,18 @@ class Supervisor:
         self.memory = memory
         self.callbacks = callbacks or SupervisorCallbacks()
         self.max_retries = max_retries
+
+        # Task router for intelligent per-task-type configuration
+        # Determines timeout, review requirements, retries based on task type
+        self.task_router = task_router or get_task_router()
+
+        # Task board for kanban-style visualization
+        # Tracks tasks as they move through: BACKLOG -> IN_PROGRESS -> REVIEW -> DONE/REJECTED
+        self.task_board = get_task_board(project.name)
+
+        # Pattern learner for continuous improvement
+        # Learns from successful tasks and warns about common failures
+        self.pattern_learner = get_pattern_learner(project.name)
 
         # Workflow engine setting - default from project config
         self.use_workflow_engine = (
@@ -814,6 +831,17 @@ class Supervisor:
                 tasks.append(task)
                 self.context.queue_task(task)
 
+                # Add task to kanban board (BACKLOG)
+                try:
+                    self.task_board.add_task(
+                        task_id=task.id,
+                        description=task.description,
+                        session_id=self.context.session_id,
+                        metadata={"files": task.files, "constraints": task.constraints},
+                    )
+                except ValueError as e:
+                    logger.warning(f"Could not add task to board: {e}")
+
             result.total_tasks = len(tasks)
             self._emit_status(f"Decomposed into {len(tasks)} tasks")
 
@@ -888,6 +916,11 @@ class Supervisor:
         """
         Execute a task with retry logic on rejection.
 
+        Uses TaskRouter to determine task-type-specific settings:
+        - Max retries (fewer for delicate operations like refactoring)
+        - Review requirements (skip for research/investigation tasks)
+        - Test requirements (run after code changes)
+
         Args:
             task: Task to execute
 
@@ -896,6 +929,15 @@ class Supervisor:
         """
         result = TaskExecutionResult(task=task, success=False)
         previous_feedback: str | None = None
+
+        # Get task-type-specific routing configuration
+        routing_config = self.task_router.get_config(task.description)
+        task_max_retries = min(routing_config.max_retries, self.max_retries)
+
+        self._emit_progress(
+            f"Task type: {routing_config.task_type.value} "
+            f"(timeout={routing_config.get_timeout()}s, retries={task_max_retries})"
+        )
 
         # Pre-check: Warn about tasks that might produce large diffs
         if self._might_produce_large_diff(task.description):
@@ -912,9 +954,15 @@ class Supervisor:
             result.error = "Pre-task hook failed"
             return result
 
-        for attempt in range(1, self.max_retries + 1):
+        for attempt in range(1, task_max_retries + 1):
             result.attempts = attempt
-            self._emit_progress(f"Attempt {attempt}/{self.max_retries}")
+            self._emit_progress(f"Attempt {attempt}/{task_max_retries}")
+
+            # Move task to IN_PROGRESS on kanban board
+            try:
+                self.task_board.start_task(task.id)
+            except Exception as e:
+                logger.debug(f"Could not update board: {e}")
 
             # Transition to executing state (must succeed)
             self.context.require_transition(SessionState.EXECUTING)
@@ -951,14 +999,52 @@ class Supervisor:
             # State machine enforces valid transitions: IDLE -> PLANNING -> EXECUTING -> REVIEWING
             self.context.require_transition(SessionState.REVIEWING)
 
-            # Optimization: Skip review for read-only tasks (research, investigation).
-            # GLM review adds ~5-15s latency; pointless when there's nothing to verify.
-            if not execution_result.file_changes:
-                self._emit_progress("No file changes - skipping review (auto-approve)")
+            # Move task to REVIEW column on kanban board
+            try:
+                self.task_board.send_to_review(task.id)
+            except Exception as e:
+                logger.debug(f"Could not update board for review: {e}")
+
+            # Smart review skipping based on task type and file changes.
+            # Uses TaskRouter to determine if this task type requires review.
+            # Research/investigation tasks skip review; code changes require it.
+            should_skip_review = self.task_router.should_skip_review(
+                task.description,
+                has_file_changes=bool(execution_result.file_changes),
+            )
+
+            if should_skip_review:
+                skip_reason = (
+                    "Task type doesn't require review"
+                    if routing_config.require_review is False
+                    else "No file changes to review"
+                )
+                self._emit_progress(f"Skipping review: {skip_reason}")
                 result.review_approved = True
-                result.review_feedback = "Auto-approved: no file changes to review"
+                result.review_feedback = f"Auto-approved: {skip_reason}"
                 result.success = True
-                result.files_changed = []
+                result.files_changed = execution_result.file_changes
+
+                # Move task to DONE column on kanban board (auto-approved)
+                try:
+                    self.task_board.complete_task(
+                        task.id,
+                        files_changed=execution_result.file_changes,
+                    )
+                except Exception as e:
+                    logger.debug(f"Could not update board for auto-approval: {e}")
+
+                # Record success pattern for learning
+                try:
+                    self.pattern_learner.record_success(
+                        task_description=task.description,
+                        task_type=routing_config.task_type,
+                        tools_used=execution_result.tool_calls if hasattr(execution_result, 'tool_calls') else [],
+                        duration_seconds=0,  # Not tracked for auto-approved
+                        cost_usd=execution_result.cost_usd,
+                    )
+                except Exception as e:
+                    logger.debug(f"Could not record success pattern: {e}")
 
                 if self.callbacks.on_review_result:
                     self.callbacks.on_review_result(True, result.review_feedback)
@@ -967,12 +1053,18 @@ class Supervisor:
                 self._save_task_result(
                     task=task,
                     success=True,
-                    summary=execution_result.result or "Completed (no changes)",
-                    files_changed=[],
+                    summary=execution_result.result or "Completed",
+                    files_changed=execution_result.file_changes,
                 )
 
                 # Run post-task hooks after successful completion
                 await self._run_hooks(self.project.post_task_hooks, "post-task")
+
+                # Run tests if configured for this task type
+                if self.task_router.should_run_tests(task.description, task_failed=False):
+                    self._emit_progress("Running tests after task completion...")
+                    await self._run_project_tests()
+
                 break
 
             # Review the task with GLM
@@ -1002,8 +1094,35 @@ class Supervisor:
 
                     self._emit_progress("Task approved by GLM")
 
+                    # Move task to DONE column on kanban board
+                    try:
+                        self.task_board.complete_task(
+                            task.id,
+                            files_changed=execution_result.file_changes,
+                        )
+                    except Exception as e:
+                        logger.debug(f"Could not update board for completion: {e}")
+
+                    # Record success pattern for learning
+                    try:
+                        self.pattern_learner.record_success(
+                            task_description=task.description,
+                            task_type=routing_config.task_type,
+                            tools_used=execution_result.tool_calls if hasattr(execution_result, 'tool_calls') else [],
+                            duration_seconds=0,  # Could track if needed
+                            cost_usd=execution_result.cost_usd,
+                        )
+                    except Exception as e:
+                        logger.debug(f"Could not record success pattern: {e}")
+
                     # Run post-task hooks after successful completion
                     await self._run_hooks(self.project.post_task_hooks, "post-task")
+
+                    # Run tests if configured for this task type
+                    if self.task_router.should_run_tests(task.description, task_failed=False):
+                        self._emit_progress("Running tests after task completion...")
+                        await self._run_project_tests()
+
                     break
                 else:
                     # Rejected - prepare retry with GLM's feedback as guidance.
@@ -1068,11 +1187,28 @@ class Supervisor:
                 break
 
         # If we exhausted retries without success
-        if not result.success and result.attempts >= self.max_retries:
+        if not result.success and result.attempts >= task_max_retries:
             result.error = (
-                f"Task failed after {self.max_retries} attempts. "
+                f"Task failed after {task_max_retries} attempts. "
                 f"Last feedback: {result.review_feedback}"
             )
+
+            # Move task to REJECTED column on kanban board
+            try:
+                self.task_board.reject_task(task.id, result.review_feedback)
+            except Exception as e:
+                logger.debug(f"Could not update board for rejection: {e}")
+
+            # Record failure pattern for learning
+            try:
+                self.pattern_learner.record_failure(
+                    task_description=task.description,
+                    task_type=routing_config.task_type,
+                    feedback=result.review_feedback,
+                )
+            except Exception as e:
+                logger.debug(f"Could not record failure pattern: {e}")
+
             self._save_task_result(
                 task=task,
                 success=False,
@@ -1139,6 +1275,19 @@ class Supervisor:
         mcp_hints = self._get_mcp_hints(task.description)
         if mcp_hints:
             constraints.append(mcp_hints)
+
+        # Inject learned patterns and warnings from previous tasks
+        # This helps Claude avoid repeating past mistakes and use proven approaches
+        from vibe.orchestrator.task_enforcer import TaskType, get_smart_detector
+
+        try:
+            detector = get_smart_detector()
+            detection = detector.detect(task.description)
+            learnings = self.pattern_learner.generate_learnings_context(detection.task_type)
+            if learnings:
+                constraints.append(learnings)
+        except Exception as e:
+            logger.debug(f"Could not generate learnings context: {e}")
 
         # async with ensures executor cleanup (subprocess termination, temp files)
         # even if execute() raises an exception or times out.
@@ -1225,6 +1374,43 @@ class Supervisor:
         )
 
         return review_result
+
+    async def _run_project_tests(self) -> bool:
+        """
+        Run project tests if configured.
+
+        Uses the project's test_command setting.
+
+        Returns:
+            True if tests passed, False otherwise
+        """
+        if not self.project.test_command:
+            return True
+
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                self.project.test_command,
+                cwd=self.project.path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300.0)
+
+            if proc.returncode == 0:
+                self._emit_progress("Tests passed")
+                return True
+            else:
+                error_output = stderr.decode("utf-8", errors="replace")[:500]
+                self._emit_error(f"Tests failed: {error_output}")
+                return False
+
+        except TimeoutError:
+            self._emit_error("Test command timed out")
+            return False
+        except Exception as e:
+            self._emit_error(f"Test execution error: {e}")
+            return False
 
     def get_stats(self) -> dict[str, Any]:
         """Get supervisor statistics including circuit breaker status."""

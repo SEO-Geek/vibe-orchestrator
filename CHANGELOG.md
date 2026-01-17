@@ -41,6 +41,68 @@ All notable changes to Vibe Orchestrator will be documented in this file.
 
 ---
 
+### Added
+
+#### Task-Type-Aware Routing (2026-01-17)
+
+Intelligent per-task-type configuration that optimizes execution based on task characteristics:
+
+- **Timeout Tiers**: SHORT (60s), MEDIUM (120s), LONG (300s), CODE (180s)
+- **Review Skipping**: Research/investigation tasks skip GLM review automatically
+- **Smart Retries**: Different max retries per task type (DB: 1, debug: 3)
+- **Test Integration**: Auto-run tests after code changes
+
+**Files Added**:
+- NEW: `vibe/orchestrator/task_routing.py` - TaskRouter, TaskRoutingConfig, TimeoutTier
+
+**Task-Type Configurations**:
+| Task Type | Timeout | Review | Retries | Run Tests |
+|-----------|---------|--------|---------|-----------|
+| RESEARCH | MEDIUM | Skip | 1 | No |
+| DEBUG | LONG | Required | 3 | Yes |
+| CODE_WRITE | CODE | Required | 3 | Yes |
+| CODE_REFACTOR | LONG | Required | 2 | Yes |
+| DATABASE | MEDIUM | Required | 1 | Yes |
+
+---
+
+#### Kanban Task Board (2026-01-17)
+
+Visual task tracking with SQLite persistence and WIP limits:
+
+- **Columns**: BACKLOG → IN_PROGRESS → REVIEW → DONE/REJECTED/BLOCKED
+- **WIP Limits**: Configurable limits per column (default: 3 in_progress, 5 review)
+- **Task History**: Full audit trail of column transitions
+- **JSON Export**: `to_json()` method for web UI integration
+
+**Files Added**:
+- NEW: `vibe/orchestrator/task_board.py` - TaskBoard, BoardTask, TaskColumn, BoardStats
+
+**Database**: `~/.config/vibe/task_board.db` (SQLite)
+
+---
+
+#### Pattern Learning System (2026-01-17)
+
+Machine learning for task execution patterns:
+
+- **Success Patterns**: Records what works (tools used, duration, cost)
+- **Failure Patterns**: Records what fails with error categories
+- **Learnings Injection**: Auto-injects relevant patterns into Claude prompts
+- **Pattern Generalization**: Converts specific descriptions to templates
+
+**Files Added**:
+- NEW: `vibe/memory/pattern_learning.py` - PatternLearner, TaskPattern, FailurePattern
+
+**Example Learning Injection**:
+```
+For [CODE_WRITE] tasks in this project:
+- Successful approach: Use Edit, Read tools (85% success rate, avg 45s)
+- Avoid: Large file rewrites often timeout
+```
+
+---
+
 ### Fixed
 
 #### Buffer Overflow Fix (2026-01-17)

@@ -76,6 +76,8 @@ User → Gemini (brain/orchestrator) → Claude (worker)
 │   │   ├── supervisor.py  # CORE: Main orchestration loop
 │   │   ├── reviewer.py    # GLM review gate with retry logic
 │   │   ├── task_enforcer.py # Tool requirements + SmartTaskDetector
+│   │   ├── task_routing.py # Task-type-aware routing configuration
+│   │   ├── task_board.py  # Kanban-style task tracking
 │   │   ├── project_updater.py # Auto-update STARMAP/CHANGELOG
 │   │   └── workflows/      # Intelligent task orchestration
 │   │       ├── __init__.py
@@ -88,7 +90,8 @@ User → Gemini (brain/orchestrator) → Claude (worker)
 │   │   ├── keeper.py      # Direct SQLite access to memory-keeper
 │   │   ├── compaction.py  # GLM-powered context summarization
 │   │   ├── task_history.py # In-memory task tracking
-│   │   └── debug_session.py # Debug session management
+│   │   ├── debug_session.py # Debug session management
+│   │   └── pattern_learning.py # Task pattern recording & learning
 │   │
 │   ├── persistence/        # Unified persistence layer
 │   │   ├── __init__.py
@@ -296,6 +299,12 @@ Projects are registered in `~/.config/vibe/projects.json`:
 
 ## Recent Changes
 
+- **2026-01-17**: Task-Type Routing, Kanban Board & Pattern Learning
+  - Added `task_routing.py`: Intelligent per-task-type configuration (timeout tiers, review skipping, retries)
+  - Added `task_board.py`: Kanban-style task tracking (BACKLOG → IN_PROGRESS → REVIEW → DONE)
+  - Added `pattern_learning.py`: Records success/failure patterns, injects learnings into prompts
+  - Supervisor now uses task-aware routing for timeouts and review decisions
+  - All 141 tests pass
 - **2026-01-17**: Gemini/GLM Architecture Split
   - **Gemini** is now the brain/orchestrator (task decomposition, clarification)
   - **GLM** is now code reviewer only (quality verification)
