@@ -173,10 +173,14 @@ class PatternLearner:
             conn.commit()
 
     def _get_connection(self) -> sqlite3.Connection:
-        """Get database connection."""
-        conn = sqlite3.connect(str(self._db_path), timeout=30.0)
-        conn.row_factory = sqlite3.Row
-        return conn
+        """Get database connection with error handling."""
+        try:
+            conn = sqlite3.connect(str(self._db_path), timeout=30.0)
+            conn.row_factory = sqlite3.Row
+            return conn
+        except sqlite3.Error as e:
+            logger.error(f"PatternLearner: Database connection failed: {e}")
+            raise
 
     def _generalize_description(self, description: str) -> str:
         """
@@ -221,7 +225,7 @@ class PatternLearner:
         duration_seconds: float = 0.0,
         cost_usd: float = 0.0,
         metadata: dict[str, Any] | None = None,
-    ) -> TaskPattern:
+    ) -> TaskPattern | None:
         """
         Record a successful task execution to learn from.
 
@@ -236,118 +240,122 @@ class PatternLearner:
             metadata: Additional metadata
 
         Returns:
-            Updated or created TaskPattern
+            Updated or created TaskPattern, or None if database error
         """
         template = self._generalize_description(task_description)
         pattern_id = f"{self.project}:{task_type.value}:{hash(template)}"
 
-        with self._lock:
-            with self._get_connection() as conn:
-                # Check for existing pattern
-                cursor = conn.execute(
-                    "SELECT * FROM task_patterns WHERE id = ?",
-                    (pattern_id,),
-                )
-                existing = cursor.fetchone()
-
-                now = datetime.now()
-
-                if existing:
-                    # Update existing pattern with new data
-                    old_count = existing["success_count"]
-                    new_count = old_count + 1
-
-                    # Running average for duration and cost
-                    new_avg_duration = (
-                        (existing["avg_duration_seconds"] * old_count + duration_seconds)
-                        / new_count
+        try:
+            with self._lock:
+                with self._get_connection() as conn:
+                    # Check for existing pattern
+                    cursor = conn.execute(
+                        "SELECT * FROM task_patterns WHERE id = ?",
+                        (pattern_id,),
                     )
-                    new_avg_cost = (
-                        (existing["avg_cost_usd"] * old_count + cost_usd)
-                        / new_count
-                    )
+                    existing = cursor.fetchone()
 
-                    # Merge tools
-                    old_tools = json.loads(existing["tools_used"]) if existing["tools_used"] else []
-                    merged_tools = list(set(old_tools + tools_used))
+                    now = datetime.now()
 
-                    conn.execute("""
-                        UPDATE task_patterns SET
-                            success_count = ?,
-                            tools_used = ?,
-                            avg_duration_seconds = ?,
-                            avg_cost_usd = ?,
-                            last_used = ?
-                        WHERE id = ?
-                    """, (
-                        new_count,
-                        json.dumps(merged_tools),
-                        new_avg_duration,
-                        new_avg_cost,
-                        now.isoformat(),
-                        pattern_id,
-                    ))
-                    conn.commit()
+                    if existing:
+                        # Update existing pattern with new data
+                        old_count = existing["success_count"]
+                        new_count = old_count + 1
 
-                    return TaskPattern(
-                        id=pattern_id,
-                        project=self.project,
-                        task_type=task_type.value,
-                        description_template=template,
-                        tools_used=merged_tools,
-                        success_count=new_count,
-                        failure_count=existing["failure_count"],
-                        avg_duration_seconds=new_avg_duration,
-                        avg_cost_usd=new_avg_cost,
-                        last_used=now,
-                        created_at=datetime.fromisoformat(existing["created_at"]),
-                    )
+                        # Running average for duration and cost
+                        new_avg_duration = (
+                            (existing["avg_duration_seconds"] * old_count + duration_seconds)
+                            / new_count
+                        )
+                        new_avg_cost = (
+                            (existing["avg_cost_usd"] * old_count + cost_usd)
+                            / new_count
+                        )
 
-                else:
-                    # Create new pattern
-                    conn.execute("""
-                        INSERT INTO task_patterns
-                        (id, project, task_type, description_template, tools_used,
-                         success_count, failure_count, avg_duration_seconds, avg_cost_usd,
-                         last_used, created_at, metadata)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        pattern_id,
-                        self.project,
-                        task_type.value,
-                        template,
-                        json.dumps(tools_used),
-                        1, 0,
-                        duration_seconds,
-                        cost_usd,
-                        now.isoformat(),
-                        now.isoformat(),
-                        json.dumps(metadata or {}),
-                    ))
-                    conn.commit()
+                        # Merge tools
+                        old_tools = json.loads(existing["tools_used"]) if existing["tools_used"] else []
+                        merged_tools = list(set(old_tools + tools_used))
 
-                    logger.info(f"PatternLearner: Created new pattern for {task_type.value}")
+                        conn.execute("""
+                            UPDATE task_patterns SET
+                                success_count = ?,
+                                tools_used = ?,
+                                avg_duration_seconds = ?,
+                                avg_cost_usd = ?,
+                                last_used = ?
+                            WHERE id = ?
+                        """, (
+                            new_count,
+                            json.dumps(merged_tools),
+                            new_avg_duration,
+                            new_avg_cost,
+                            now.isoformat(),
+                            pattern_id,
+                        ))
+                        conn.commit()
 
-                    return TaskPattern(
-                        id=pattern_id,
-                        project=self.project,
-                        task_type=task_type.value,
-                        description_template=template,
-                        tools_used=tools_used,
-                        success_count=1,
-                        failure_count=0,
-                        avg_duration_seconds=duration_seconds,
-                        avg_cost_usd=cost_usd,
-                        last_used=now,
-                        created_at=now,
-                    )
+                        return TaskPattern(
+                            id=pattern_id,
+                            project=self.project,
+                            task_type=task_type.value,
+                            description_template=template,
+                            tools_used=merged_tools,
+                            success_count=new_count,
+                            failure_count=existing["failure_count"],
+                            avg_duration_seconds=new_avg_duration,
+                            avg_cost_usd=new_avg_cost,
+                            last_used=now,
+                            created_at=datetime.fromisoformat(existing["created_at"]),
+                        )
+
+                    else:
+                        # Create new pattern
+                        conn.execute("""
+                            INSERT INTO task_patterns
+                            (id, project, task_type, description_template, tools_used,
+                             success_count, failure_count, avg_duration_seconds, avg_cost_usd,
+                             last_used, created_at, metadata)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            pattern_id,
+                            self.project,
+                            task_type.value,
+                            template,
+                            json.dumps(tools_used),
+                            1, 0,
+                            duration_seconds,
+                            cost_usd,
+                            now.isoformat(),
+                            now.isoformat(),
+                            json.dumps(metadata or {}),
+                        ))
+                        conn.commit()
+
+                        logger.info(f"PatternLearner: Created new pattern for {task_type.value}")
+
+                        return TaskPattern(
+                            id=pattern_id,
+                            project=self.project,
+                            task_type=task_type.value,
+                            description_template=template,
+                            tools_used=tools_used,
+                            success_count=1,
+                            failure_count=0,
+                            avg_duration_seconds=duration_seconds,
+                            avg_cost_usd=cost_usd,
+                            last_used=now,
+                            created_at=now,
+                        )
+        except sqlite3.Error as e:
+            logger.error(f"PatternLearner: Failed to record success: {e}")
+            return None
 
     def record_failure(
         self,
         task_description: str,
         task_type: TaskType,
         feedback: str,
-    ) -> FailurePattern | TaskPattern:
+    ) -> FailurePattern | TaskPattern | None:
         """
         Record a task failure to learn what to avoid.
 
@@ -360,95 +368,106 @@ class PatternLearner:
             feedback: GLM feedback explaining failure
 
         Returns:
-            Updated TaskPattern or new FailurePattern
+            Updated TaskPattern or new FailurePattern, or None on error
         """
         template = self._generalize_description(task_description)
         pattern_id = f"{self.project}:{task_type.value}:{hash(template)}"
         failure_id = f"fail:{pattern_id}"
 
-        with self._lock:
-            with self._get_connection() as conn:
-                # Check if we have a success pattern to update
-                cursor = conn.execute(
-                    "SELECT * FROM task_patterns WHERE id = ?",
-                    (pattern_id,),
-                )
-                success_pattern = cursor.fetchone()
+        # Log full feedback before truncation (for debugging)
+        if len(feedback) > 500:
+            logger.debug(f"PatternLearner: Full feedback ({len(feedback)} chars): {feedback}")
+            feedback_stored = feedback[:497] + "..."
+        else:
+            feedback_stored = feedback
 
-                if success_pattern:
-                    # Increment failure count on existing success pattern
-                    conn.execute("""
-                        UPDATE task_patterns SET failure_count = failure_count + 1
-                        WHERE id = ?
-                    """, (pattern_id,))
-                    conn.commit()
-
-                    return TaskPattern(
-                        id=pattern_id,
-                        project=self.project,
-                        task_type=task_type.value,
-                        description_template=template,
-                        tools_used=json.loads(success_pattern["tools_used"]) if success_pattern["tools_used"] else [],
-                        success_count=success_pattern["success_count"],
-                        failure_count=success_pattern["failure_count"] + 1,
-                        avg_duration_seconds=success_pattern["avg_duration_seconds"],
-                        avg_cost_usd=success_pattern["avg_cost_usd"],
+        try:
+            with self._lock:
+                with self._get_connection() as conn:
+                    # Check if we have a success pattern to update
+                    cursor = conn.execute(
+                        "SELECT * FROM task_patterns WHERE id = ?",
+                        (pattern_id,),
                     )
+                    success_pattern = cursor.fetchone()
 
-                # Check for existing failure pattern
-                cursor = conn.execute(
-                    "SELECT * FROM failure_patterns WHERE id = ?",
-                    (failure_id,),
-                )
-                existing_failure = cursor.fetchone()
+                    if success_pattern:
+                        # Increment failure count on existing success pattern
+                        conn.execute("""
+                            UPDATE task_patterns SET failure_count = failure_count + 1
+                            WHERE id = ?
+                        """, (pattern_id,))
+                        conn.commit()
 
-                now = datetime.now()
+                        return TaskPattern(
+                            id=pattern_id,
+                            project=self.project,
+                            task_type=task_type.value,
+                            description_template=template,
+                            tools_used=json.loads(success_pattern["tools_used"]) if success_pattern["tools_used"] else [],
+                            success_count=success_pattern["success_count"],
+                            failure_count=success_pattern["failure_count"] + 1,
+                            avg_duration_seconds=success_pattern["avg_duration_seconds"],
+                            avg_cost_usd=success_pattern["avg_cost_usd"],
+                        )
 
-                if existing_failure:
+                    # Check for existing failure pattern
+                    cursor = conn.execute(
+                        "SELECT * FROM failure_patterns WHERE id = ?",
+                        (failure_id,),
+                    )
+                    existing_failure = cursor.fetchone()
+
+                    now = datetime.now()
+
+                    if existing_failure:
+                        conn.execute("""
+                            UPDATE failure_patterns SET
+                                failure_count = failure_count + 1,
+                                last_feedback = ?
+                            WHERE id = ?
+                        """, (feedback_stored, failure_id))
+                        conn.commit()
+
+                        return FailurePattern(
+                            id=failure_id,
+                            project=self.project,
+                            task_type=task_type.value,
+                            error_pattern=template,
+                            failure_count=existing_failure["failure_count"] + 1,
+                            last_feedback=feedback_stored,
+                        )
+
+                    # Create new failure pattern
                     conn.execute("""
-                        UPDATE failure_patterns SET
-                            failure_count = failure_count + 1,
-                            last_feedback = ?
-                        WHERE id = ?
-                    """, (feedback[:500], failure_id))
+                        INSERT INTO failure_patterns
+                        (id, project, task_type, error_pattern, failure_count, last_feedback, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        failure_id,
+                        self.project,
+                        task_type.value,
+                        template,
+                        1,
+                        feedback_stored,
+                        now.isoformat(),
+                    ))
                     conn.commit()
+
+                    logger.info(f"PatternLearner: Recorded failure pattern for {task_type.value}")
 
                     return FailurePattern(
                         id=failure_id,
                         project=self.project,
                         task_type=task_type.value,
                         error_pattern=template,
-                        failure_count=existing_failure["failure_count"] + 1,
-                        last_feedback=feedback[:500],
+                        failure_count=1,
+                        last_feedback=feedback_stored,
+                        created_at=now,
                     )
-
-                # Create new failure pattern
-                conn.execute("""
-                    INSERT INTO failure_patterns
-                    (id, project, task_type, error_pattern, failure_count, last_feedback, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    failure_id,
-                    self.project,
-                    task_type.value,
-                    template,
-                    1,
-                    feedback[:500],
-                    now.isoformat(),
-                ))
-                conn.commit()
-
-                logger.info(f"PatternLearner: Recorded failure pattern for {task_type.value}")
-
-                return FailurePattern(
-                    id=failure_id,
-                    project=self.project,
-                    task_type=task_type.value,
-                    error_pattern=template,
-                    failure_count=1,
-                    last_feedback=feedback[:500],
-                    created_at=now,
-                )
+        except sqlite3.Error as e:
+            logger.error(f"PatternLearner: Failed to record failure: {e}")
+            return None
 
     def get_relevant_patterns(
         self,

@@ -459,17 +459,21 @@ def ping_gemini_sync(api_key: str, timeout: float = 30.0) -> str:
     import asyncio
     import concurrent.futures
 
-    client = GeminiClient(api_key)
+    async def _do_ping() -> str:
+        """Create client and ping within the same async context."""
+        client = GeminiClient(api_key)
+        return await client.ping()
 
     try:
         # Check if there's already a running event loop
         asyncio.get_running_loop()  # Raises RuntimeError if no loop
     except RuntimeError:
         # No running loop - simple case, just use asyncio.run()
-        return asyncio.run(client.ping())
+        return asyncio.run(_do_ping())
 
     # EDGE CASE: If called from within an async context (e.g., pytest-asyncio),
-    # we can't use asyncio.run(). Spawn a thread with its own event loop instead.
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        future = executor.submit(asyncio.run, client.ping())
-        return future.result(timeout=timeout + 5)
+    # we can't use asyncio.run(). Spawn a thread with its own event loop.
+    # Create client inside the thread to avoid httpx cross-thread issues.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(asyncio.run, _do_ping())
+        return future.result(timeout=timeout)
