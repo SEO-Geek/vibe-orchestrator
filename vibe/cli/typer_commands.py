@@ -20,7 +20,9 @@ from typing import NoReturn
 import typer
 
 
-# Suppress httpx/asyncio cleanup errors on exit by silencing stderr at exit
+# Suppress any remaining httpx/asyncio cleanup errors on exit
+# The main cleanup happens in _start_orchestrator's finally block,
+# but this catches any stragglers from other async clients
 @atexit.register
 def _cleanup_suppress_errors():
     """Suppress asyncio cleanup errors by redirecting stderr at exit."""
@@ -274,17 +276,30 @@ def _start_orchestrator(
 
     # Step 8: Enter conversation loop
     # For split terminal view, use vibe-split instead
-    conversation_loop(
-        context=context,
-        config=config,
-        project=project,
-        gemini_client=_gemini_client,  # Brain/orchestrator
-        glm_client=_glm_client,  # Code reviewer only
-        memory=_memory,
-        repository=_repository,
-        perplexity=_perplexity,
-        github=_github,
-    )
+    try:
+        conversation_loop(
+            context=context,
+            config=config,
+            project=project,
+            gemini_client=_gemini_client,  # Brain/orchestrator
+            glm_client=_glm_client,  # Code reviewer only
+            memory=_memory,
+            repository=_repository,
+            perplexity=_perplexity,
+            github=_github,
+        )
+    finally:
+        # Clean up async clients before event loop closes
+        # This prevents "Event loop is closed" errors on exit
+        import asyncio
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(_gemini_client.close())
+            loop.run_until_complete(_glm_client.close())
+            loop.close()
+        except Exception:
+            pass  # Ignore cleanup errors
 
 
 @app.command(hidden=True)
