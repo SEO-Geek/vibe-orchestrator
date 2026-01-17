@@ -145,7 +145,7 @@ class ClaudeExecutor:
         project_path: str,
         timeout_tier: str = "code",
         allowed_tools: list[str] | None = None,
-        permission_mode: str = "acceptEdits",
+        permission_mode: str = "bypassPermissions",
         global_conventions: list[str] | None = None,
     ):
         """
@@ -155,7 +155,7 @@ class ClaudeExecutor:
             project_path: Working directory for Claude
             timeout_tier: One of 'quick', 'code', 'debug', 'research'
             allowed_tools: List of allowed tool names (default: standard set)
-            permission_mode: Permission mode for Claude (default: acceptEdits)
+            permission_mode: Permission mode for Claude (default: bypassPermissions for autonomous operation)
             global_conventions: List of global conventions to enforce
         """
         self.project_path = project_path
@@ -379,7 +379,7 @@ class ClaudeExecutor:
             "stream-json",  # Enables real-time parsing of tool calls and results
             "--verbose",  # Include tool call details in output
             "--permission-mode",
-            self.permission_mode,  # acceptEdits allows file writes without prompts
+            self.permission_mode,  # bypassPermissions for fully autonomous GLM control
         ]
 
         # Restrict Claude to specific tools. Without this, Claude could use any tool

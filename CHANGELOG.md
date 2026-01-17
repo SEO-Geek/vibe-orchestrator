@@ -4,6 +4,18 @@ All notable changes to Vibe Orchestrator will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+#### Autonomous Claude Control (2026-01-17)
+
+**Problem**: Claude subprocess could prompt for permissions (e.g., dangerous bash commands), blocking execution since GLM has no way to interact with Claude's stdin.
+
+**Solution**: Changed default permission mode from `acceptEdits` to `bypassPermissions` for fully autonomous GLM → Claude operation. No user interaction required.
+
+**Files Changed**: `vibe/claude/executor.py`
+
+---
+
 ### Fixed
 
 #### Buffer Overflow Fix (2026-01-17)
