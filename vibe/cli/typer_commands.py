@@ -276,44 +276,19 @@ def _start_orchestrator(
 
     # Step 8: Enter conversation loop
     # For split terminal view, use vibe-split instead
-    # NOTE: conversation_loop is async - we run it with asyncio.run() to use a SINGLE
-    # event loop for the entire session. This prevents "Event loop is closed" errors
-    # that occur when multiple asyncio.run() calls create/destroy event loops.
-    import asyncio
-
-    async def run_session():
-        """Run the conversation loop and clean up clients on exit."""
-        try:
-            await conversation_loop(
-                context=context,
-                config=config,
-                project=project,
-                gemini_client=_gemini_client,  # Brain/orchestrator
-                glm_client=_glm_client,  # Code reviewer only
-                memory=_memory,
-                repository=_repository,
-                perplexity=_perplexity,
-                github=_github,
-            )
-        finally:
-            # Clean up async clients within the same event loop
-            # This prevents "Event loop is closed" errors
-            try:
-                await _gemini_client.close()
-            except Exception:
-                pass
-            try:
-                await _glm_client.close()
-            except Exception:
-                pass
-            # Close Perplexity client if it has a close method
-            if _perplexity and hasattr(_perplexity, 'close'):
-                try:
-                    await _perplexity.close()
-                except Exception:
-                    pass
-
-    asyncio.run(run_session())
+    # NOTE: conversation_loop is SYNC. Async operations inside use asyncio.run()
+    # with fresh event loops. This avoids prompt_toolkit conflicts.
+    conversation_loop(
+        context=context,
+        config=config,
+        project=project,
+        gemini_client=_gemini_client,  # Brain/orchestrator
+        glm_client=_glm_client,  # Code reviewer only
+        memory=_memory,
+        repository=_repository,
+        perplexity=_perplexity,
+        github=_github,
+    )
 
 
 @app.command(hidden=True)
