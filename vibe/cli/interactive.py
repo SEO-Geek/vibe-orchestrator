@@ -448,10 +448,16 @@ async def process_user_request(
 
     # Check if clarification is needed
     console.print()
-    with console.status("[bold blue]GLM analyzing request...[/bold blue]"):
-        clarification = await glm_client.ask_clarification(
-            user_request, project_context, clarification_count=context.clarification_count
-        )
+    console.print("[dim]Calling GLM for clarification check...[/dim]")
+    try:
+        with console.status("[bold blue]GLM analyzing request...[/bold blue]"):
+            clarification = await glm_client.ask_clarification(
+                user_request, project_context, clarification_count=context.clarification_count
+            )
+        console.print("[dim]GLM responded.[/dim]")
+    except Exception as e:
+        console.print(f"[red]GLM clarification error: {e}[/red]")
+        raise
 
     if clarification:
         context.clarification_count += 1
@@ -470,11 +476,15 @@ async def process_user_request(
 
     # Decompose into tasks
     console.print()
+    console.print("[dim]Calling GLM to decompose into tasks...[/dim]")
     with console.status("[bold blue]GLM decomposing into tasks...[/bold blue]"):
         try:
             tasks = await glm_client.decompose_task(user_request, project_context)
+            console.print(f"[dim]GLM returned {len(tasks) if tasks else 0} task(s).[/dim]")
         except Exception as e:
             console.print(f"[red]Error decomposing task: {e}[/red]")
+            import traceback
+            console.print(f"[dim]{traceback.format_exc()}[/dim]")
             return
 
     # Persist GLM decomposition
@@ -592,78 +602,50 @@ def conversation_loop(
     This is where the user interacts with GLM, which delegates to Claude.
     Features: command history (up/down arrows), tab completion for /commands.
     """
+    # Check if running in interactive terminal
+    if not sys.stdin.isatty():
+        console.print("[red]Error: Vibe requires an interactive terminal.[/red]")
+        console.print("[dim]Run vibe directly in a terminal, not piped or in CI.[/dim]")
+        return
+
     console.print("[bold]What do you want to work on?[/bold]")
     console.print("[dim]Type your request, or /help for commands, /quit to exit[/dim]")
-    console.print("[dim]Use ↑/↓ arrows for history, Tab for command completion[/dim]")
+    console.print("[dim]TIP: Use 'vibe-split' for split terminal view (Vibe left, Claude right)[/dim]")
     console.print()
 
     # Create prompt session with history and completion
     try:
-        from vibe.cli.prompt import create_prompt_session, prompt_input
+        from vibe.cli.prompt import create_prompt_session
 
         prompt_session = create_prompt_session(project_path=project.path)
         use_enhanced_prompt = True
     except ImportError:
         prompt_session = None
         use_enhanced_prompt = False
-        console.print("[dim]Note: Install prompt_toolkit for enhanced input features[/dim]")
 
     # Track debug session
     debug_session: DebugSession | None = None
 
-    def read_multiline_input() -> str:
-        """Read input that may span multiple lines."""
+    def read_input() -> str:
+        """Read single-line input from user."""
         if use_enhanced_prompt and prompt_session:
             try:
-                return prompt_input(prompt_session, "> ", multiline=True)
+                # Simple single-line input with history/completion
+                return prompt_session.prompt("> ")
             except (KeyboardInterrupt, EOFError):
                 return ""
 
         # Fallback to basic input
-        lines: list[str] = []
-        console.print("[bold cyan]>[/bold cyan] ", end="")
-        sys.stdout.flush()
-
-        empty_count = 0
-
         try:
-            while True:
-                line = input()
-
-                if not lines and line.startswith("/"):
-                    return line
-
-                if not line.strip():
-                    empty_count += 1
-                    if empty_count >= 2 and lines:
-                        break
-                    if empty_count >= 1 and lines:
-                        lines.append("")
-                        import select
-
-                        if hasattr(select, "select"):
-                            readable, _, _ = select.select([sys.stdin], [], [], 0.15)
-                            if not readable:
-                                if lines and lines[-1] == "":
-                                    lines.pop()
-                                break
-                        else:
-                            lines.pop()
-                            break
-                    continue
-                else:
-                    empty_count = 0
-
-                lines.append(line)
-
+            console.print("[bold cyan]>[/bold cyan] ", end="")
+            sys.stdout.flush()
+            return input()
         except EOFError:
-            pass
-
-        return "\n".join(lines)
+            return ""
 
     while True:
         try:
-            user_input = read_multiline_input()
+            user_input = read_input()
 
             if not user_input.strip():
                 continue
@@ -765,11 +747,18 @@ def conversation_loop(
                     pass
 
             # Process request through GLM
-            asyncio.run(
-                process_user_request(
-                    glm_client, context, project, user_input, memory, repository, debug_session
+            try:
+                console.print("[dim]Processing request...[/dim]")
+                asyncio.run(
+                    process_user_request(
+                        glm_client, context, project, user_input, memory, repository, debug_session
+                    )
                 )
-            )
+            except Exception as e:
+                console.print(f"[bold red]ERROR: {type(e).__name__}: {e}[/bold red]")
+                import traceback
+                console.print(f"[dim]{traceback.format_exc()}[/dim]")
+                logger.exception(f"Error processing request: {e}")
 
         except KeyboardInterrupt:
             console.print("\n[yellow]Use /quit to exit[/yellow]")

@@ -153,6 +153,13 @@ class GLMClient:
         self._consecutive_failures = 0
         self._circuit_open_until: datetime | None = None
 
+    async def close(self) -> None:
+        """Close the client and release resources."""
+        try:
+            await self._client.close()
+        except Exception:
+            pass  # Ignore errors during cleanup
+
     def _is_circuit_open(self) -> bool:
         """Check if circuit breaker is open (GLM calls should be skipped)."""
         if self._circuit_open_until is None:

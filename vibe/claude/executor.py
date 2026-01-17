@@ -550,41 +550,62 @@ class ClaudeExecutor:
                     live_log.flush()
 
                     async def read_with_timeout() -> bytes:
-                        """Read stdout line-by-line, streaming to log file."""
+                        """Read stdout in chunks, streaming to log file.
+
+                        Uses chunked reads instead of readline() to handle
+                        large JSON lines that exceed asyncio's 64KB buffer limit.
+                        """
                         output = b""
+                        buffer = b""
+                        CHUNK_SIZE = 1024 * 1024  # 1MB chunks
+
                         while True:
                             if process.stdout is None:
                                 break
-                            line = await process.stdout.readline()
-                            if not line:
-                                break
-                            output += line
-                            stdout_lines.append(line)
 
-                            # Stream to live log for split terminal view
+                            # Read in chunks - avoids 64KB line limit issue
                             try:
-                                decoded = line.decode().strip()
-                                if decoded:
-                                    # Parse JSON to show human-readable output
-                                    try:
-                                        data = json.loads(decoded)
-                                        msg_type = data.get("type", "")
-                                        if msg_type == "assistant":
-                                            content = data.get("message", {}).get("content", [])
-                                            for block in content:
-                                                if block.get("type") == "text":
-                                                    live_log.write(f"{block.get('text', '')}\n")
-                                                elif block.get("type") == "tool_use":
-                                                    tool_name = block.get("name", "")
-                                                    live_log.write(f"[TOOL] {tool_name}\n")
-                                        elif msg_type == "result":
-                                            cost = data.get('total_cost_usd', 0)
-                                            live_log.write(f"\n[DONE] Cost: ${cost:.4f}\n")
-                                    except json.JSONDecodeError:
-                                        live_log.write(f"{decoded}\n")
-                                    live_log.flush()
-                            except Exception:
-                                pass  # Don't fail main execution for log issues
+                                chunk = await process.stdout.read(CHUNK_SIZE)
+                            except Exception as e:
+                                logger.warning(f"Read error: {e}")
+                                break
+
+                            if not chunk:
+                                break
+
+                            buffer += chunk
+
+                            # Process complete lines from buffer
+                            while b'\n' in buffer:
+                                line, buffer = buffer.split(b'\n', 1)
+                                line_with_newline = line + b'\n'
+                                output += line_with_newline
+                                stdout_lines.append(line_with_newline)
+
+                                # Stream to live log for split terminal view
+                                try:
+                                    decoded = line.decode().strip()
+                                    if decoded:
+                                        # Parse JSON to show human-readable output
+                                        try:
+                                            data = json.loads(decoded)
+                                            msg_type = data.get("type", "")
+                                            if msg_type == "assistant":
+                                                content = data.get("message", {}).get("content", [])
+                                                for block in content:
+                                                    if block.get("type") == "text":
+                                                        live_log.write(f"{block.get('text', '')}\n")
+                                                    elif block.get("type") == "tool_use":
+                                                        tool_name = block.get("name", "")
+                                                        live_log.write(f"[TOOL] {tool_name}\n")
+                                            elif msg_type == "result":
+                                                cost = data.get('total_cost_usd', 0)
+                                                live_log.write(f"\n[DONE] Cost: ${cost:.4f}\n")
+                                        except json.JSONDecodeError:
+                                            live_log.write(f"{decoded}\n")
+                                        live_log.flush()
+                                except Exception:
+                                    pass  # Don't fail main execution for log issues
 
                             # Check output size limit
                             if len(output) > MAX_OUTPUT_BYTES:
@@ -592,6 +613,12 @@ class ClaudeExecutor:
                                     f"Output truncated: {len(output)} -> {MAX_OUTPUT_BYTES}B"
                                 )
                                 break
+
+                        # Handle any remaining data in buffer (last line without newline)
+                        if buffer:
+                            output += buffer
+                            stdout_lines.append(buffer)
+
                         return output
 
                     stdout = await asyncio.wait_for(
@@ -908,8 +935,10 @@ class ClaudeExecutor:
             yield ("progress", "Claude started...")
 
             # Streaming read loop with cancellation and timeout support.
-            # We read line-by-line with short timeouts to remain responsive.
+            # Uses chunked reads to avoid 64KB readline buffer limit.
             start_time = asyncio.get_event_loop().time()
+            buffer = b""
+            CHUNK_SIZE = 64 * 1024  # 64KB chunks for responsive streaming
 
             while True:
                 # Check cancellation first - user can abort via TUI
@@ -932,8 +961,8 @@ class ClaudeExecutor:
                 # Short 1s read timeout allows us to check cancellation/timeout
                 # frequently while still waiting for data efficiently.
                 try:
-                    line = await asyncio.wait_for(
-                        process.stdout.readline(),
+                    chunk = await asyncio.wait_for(
+                        process.stdout.read(CHUNK_SIZE),
                         timeout=1.0,
                     )
                 except TimeoutError:
@@ -942,61 +971,66 @@ class ClaudeExecutor:
                         break
                     continue
 
-                if not line:
+                if not chunk:
                     # EOF - process ended
                     break
 
-                line_str = line.decode().strip()
-                if not line_str:
-                    continue
+                buffer += chunk
 
-                # Parse JSON
-                try:
-                    data = json.loads(line_str)
-                except json.JSONDecodeError:
-                    continue
+                # Process complete lines from buffer
+                while b'\n' in buffer:
+                    line, buffer = buffer.split(b'\n', 1)
+                    line_str = line.decode().strip()
+                    if not line_str:
+                        continue
 
-                msg_type = data.get("type")
+                    # Parse JSON
+                    try:
+                        data = json.loads(line_str)
+                    except json.JSONDecodeError:
+                        continue
 
-                # Handle different message types
-                if msg_type == "assistant":
-                    message = data.get("message", {})
-                    content = message.get("content", [])
+                    msg_type = data.get("type")
 
-                    for block in content:
-                        block_type = block.get("type")
+                    # Handle different message types
+                    if msg_type == "assistant":
+                        message = data.get("message", {})
+                        content = message.get("content", [])
 
-                        if block_type == "tool_use":
-                            tool_call = ToolCall(
-                                name=block.get("name", ""),
-                                input=block.get("input", {}),
-                            )
-                            tool_calls.append(tool_call)
+                        for block in content:
+                            block_type = block.get("type")
 
-                            # Track file modifications
-                            if tool_call.name in ("Edit", "Write"):
-                                file_path = tool_call.input.get("file_path") or tool_call.input.get(
-                                    "path"
+                            if block_type == "tool_use":
+                                tool_call = ToolCall(
+                                    name=block.get("name", ""),
+                                    input=block.get("input", {}),
                                 )
-                                if file_path and file_path not in file_changes:
-                                    file_changes.append(file_path)
+                                tool_calls.append(tool_call)
 
-                            yield ("tool_call", tool_call)
+                                # Track file modifications
+                                if tool_call.name in ("Edit", "Write"):
+                                    file_path = tool_call.input.get("file_path") or tool_call.input.get(
+                                        "path"
+                                    )
+                                    if file_path and file_path not in file_changes:
+                                        file_changes.append(file_path)
 
-                        elif block_type == "text":
-                            text = block.get("text", "")
-                            if text:
-                                yield ("text", text)
+                                yield ("tool_call", tool_call)
 
-                elif msg_type == "result":
-                    result_text = data.get("result", "")
-                    session_id = data.get("session_id", "")
-                    cost_usd = data.get("total_cost_usd", 0.0)
-                    duration_ms = data.get("duration_ms", 0)
-                    num_turns = data.get("num_turns", 0)
-                    is_error = data.get("is_error", False)
-                    if is_error:
-                        error_message = data.get("subtype", "unknown error")
+                            elif block_type == "text":
+                                text = block.get("text", "")
+                                if text:
+                                    yield ("text", text)
+
+                    elif msg_type == "result":
+                        result_text = data.get("result", "")
+                        session_id = data.get("session_id", "")
+                        cost_usd = data.get("total_cost_usd", 0.0)
+                        duration_ms = data.get("duration_ms", 0)
+                        num_turns = data.get("num_turns", 0)
+                        is_error = data.get("is_error", False)
+                        if is_error:
+                            error_message = data.get("subtype", "unknown error")
 
             # Wait for process to complete
             await process.wait()

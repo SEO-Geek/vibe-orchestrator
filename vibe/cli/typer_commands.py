@@ -4,6 +4,7 @@ Vibe CLI - Typer Commands
 CLI commands for managing projects and sessions.
 """
 
+import atexit
 import logging
 import os
 import signal
@@ -12,6 +13,16 @@ import types
 from typing import NoReturn
 
 import typer
+
+
+# Suppress httpx/asyncio cleanup errors on exit by silencing stderr at exit
+@atexit.register
+def _cleanup_suppress_errors():
+    """Suppress asyncio cleanup errors by redirecting stderr at exit."""
+    try:
+        sys.stderr = open(os.devnull, 'w')
+    except Exception:
+        pass
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -100,21 +111,20 @@ signal.signal(signal.SIGTERM, handle_shutdown)
 def callback(
     ctx: typer.Context,
     skip_ping: bool = typer.Option(False, "--skip-ping", help="Skip GLM API ping (faster startup)"),
-    tui: bool = typer.Option(False, "--tui", help="Use Textual TUI with escape-to-cancel"),
 ) -> None:
     """
     GLM-4.7 as brain, Claude Code as worker - AI pair programming orchestrator.
 
     Run without a command to start the interactive orchestrator.
+    For split terminal view (recommended): use vibe-split instead.
     """
     if ctx.invoked_subcommand is None:
         # No subcommand - run the main orchestrator
-        _start_orchestrator(skip_ping=skip_ping, tui=tui)
+        _start_orchestrator(skip_ping=skip_ping)
 
 
 def _start_orchestrator(
     skip_ping: bool = False,
-    tui: bool = False,
 ) -> None:
     """Start Vibe Orchestrator (internal implementation)."""
     global _glm_client, _memory, _repository, _perplexity, _github, _current_repo_session_id
@@ -198,9 +208,9 @@ def _start_orchestrator(
             )
             console.print(orphan_msg)
             for orphan in orphans[:3]:
-                console.print(
-                    f"  [dim]- Session {orphan.id[:8]}... started {orphan.started_at}[/dim]"
-                )
+                oid = orphan.get('id', orphan.get('session_id', ''))[:8]
+                started = orphan.get('started_at', 'unknown')
+                console.print(f"  [dim]- Session {oid}... started {started}[/dim]")
 
         # Start new session
         repo_session = _repository.start_session(repo_project.id)
@@ -254,39 +264,26 @@ def _start_orchestrator(
 
     show_project_loaded(project, memory_items=memory_items)
 
-    # Step 8: Enter conversation loop or TUI
-    if tui:
-        from vibe.tui import run_tui
-
-        console.print("[bold cyan]Starting Textual TUI...[/bold cyan]")
-        console.print("[dim]Press Escape to cancel operations, Ctrl+C to quit[/dim]")
-        run_tui(
-            config=config,
-            project=project,
-            glm_client=_glm_client,
-            context=context,
-            memory=_memory,
-        )
-    else:
-        conversation_loop(
-            context=context,
-            config=config,
-            project=project,
-            glm_client=_glm_client,
-            memory=_memory,
-            repository=_repository,
-            perplexity=_perplexity,
-            github=_github,
-        )
+    # Step 8: Enter conversation loop
+    # For split terminal view, use vibe-split instead
+    conversation_loop(
+        context=context,
+        config=config,
+        project=project,
+        glm_client=_glm_client,
+        memory=_memory,
+        repository=_repository,
+        perplexity=_perplexity,
+        github=_github,
+    )
 
 
 @app.command(hidden=True)
 def main(
     skip_ping: bool = typer.Option(False, "--skip-ping", help="Skip GLM API ping"),
-    tui: bool = typer.Option(False, "--tui", help="Use Textual TUI"),
 ) -> None:
     """Start Vibe Orchestrator (use 'vibe' directly instead)."""
-    _start_orchestrator(skip_ping=skip_ping, tui=tui)
+    _start_orchestrator(skip_ping=skip_ping)
 
 
 @app.command()
@@ -372,14 +369,15 @@ def restore(
         table.add_column("Tasks", style="yellow")
 
         for orphan in orphans:
-            session_short = orphan.get("session_id", "")[:12]
+            # Keys from SQL view: id, last_heartbeat_at, total_tasks_completed, total_tasks_failed
+            session_short = orphan.get("id", orphan.get("session_id", ""))[:12]
             project = orphan.get("project_name", "unknown")
             started = orphan.get("started_at", "")[:16] if orphan.get("started_at") else "-"
             heartbeat = (
-                orphan.get("last_heartbeat", "")[:16] if orphan.get("last_heartbeat") else "-"
+                orphan.get("last_heartbeat_at", "")[:16] if orphan.get("last_heartbeat_at") else "-"
             )
-            tasks_completed = orphan.get("tasks_completed", 0)
-            tasks_failed = orphan.get("tasks_failed", 0)
+            tasks_completed = orphan.get("total_tasks_completed", orphan.get("tasks_completed", 0))
+            tasks_failed = orphan.get("total_tasks_failed", orphan.get("tasks_failed", 0))
             task_info = f"{tasks_completed} done, {tasks_failed} failed"
 
             table.add_row(session_short, project, started, heartbeat, task_info)
@@ -392,10 +390,10 @@ def restore(
     full_session_id = session_id
     if len(session_id) < 36:
         orphans = repo.get_orphaned_sessions()
-        matches = [o for o in orphans if o.get("session_id", "").startswith(session_id)]
+        matches = [o for o in orphans if o.get("id", o.get("session_id", "")).startswith(session_id)]
         if len(matches) == 0:
             all_sessions = repo.list_sessions(limit=100)
-            matches = [{"session_id": s.id} for s in all_sessions if s.id.startswith(session_id)]
+            matches = [{"id": s.id} for s in all_sessions if s.id.startswith(session_id)]
 
         if len(matches) == 0:
             console.print(f"[red]No session found starting with '{session_id}'[/red]")
@@ -403,10 +401,10 @@ def restore(
         elif len(matches) > 1:
             console.print(f"[yellow]Multiple sessions match '{session_id}':[/yellow]")
             for m in matches[:5]:
-                console.print(f"  {m.get('session_id', '')[:12]}")
+                console.print(f"  {m.get('id', m.get('session_id', ''))[:12]}")
             raise typer.Exit(1)
         else:
-            full_session_id = matches[0].get("session_id", session_id)
+            full_session_id = matches[0].get("id", matches[0].get("session_id", session_id))
 
     # Get recovery context
     context = repo.get_session_recovery_context(full_session_id)

@@ -4,6 +4,80 @@ All notable changes to Vibe Orchestrator will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+#### Buffer Overflow Fix (2026-01-17)
+
+**Problem**: Claude executor crashed with `LimitOverrunError: Separator is not found, and chunk exceed the limit` when Claude output large JSON lines (>64KB).
+
+**Root Cause**: Python's `asyncio.StreamReader.readline()` has a default 64KB buffer limit. When Claude outputs a single JSON line larger than this (common with tool results containing file contents), the read fails.
+
+**Solution**: Replaced `readline()` with chunked `read()` calls that manually buffer and split by newlines:
+- `read_with_timeout()` in `execute()`: Now uses 1MB chunk reads with manual line splitting
+- `execute_streaming()`: Same fix with 64KB chunks for responsive streaming
+
+**Files Changed**: `vibe/claude/executor.py`
+
+---
+
+### DISASTER SESSION - 2026-01-13 (Claude Opus 4.5)
+
+**This section documents a complete failure of AI-assisted debugging.**
+
+#### What Happened
+
+User reported vibe was broken. Instead of properly diagnosing the root causes, Claude Opus 4.5:
+
+1. Made band-aid fixes that introduced NEW errors
+2. Failed to test changes before claiming "fixed"
+3. Ignored user's clear requirements (split terminal)
+4. Wasted hours on patches instead of proper diagnosis
+
+#### Bugs Found (That Should Have Been Found First)
+
+| Bug | Severity | Description |
+|-----|----------|-------------|
+| TUI deleted but references remained | HIGH | `/tui` command in SLASH_COMMANDS pointed to deleted module |
+| Persistence key mismatch | HIGH | `orphan.id` vs `orphan.get('id')` - dict accessed as object |
+| vibe-split "size missing" | CRITICAL | tmux in WSL needs explicit size or single-command chain |
+| Multiline input stuck | HIGH | Prompt showed `...` waiting for more input, confusing UX |
+| httpx "Event loop is closed" | MEDIUM | Async cleanup error on exit, ugly traceback |
+| Non-TTY infinite loop | MEDIUM | When stdin not a terminal, app loops forever |
+| OpenRouter API timeout | INTERMITTENT | Startup ping times out randomly |
+
+#### Failed Fix Attempts
+
+1. **First httpx fix** - Monkey-patched `__del__` method, caused `TypeError: 'NoneType' object is not callable`
+2. **Second httpx fix** - Broke differently, still showed error
+3. **vibe-split v1** - Used detached session, failed with "size missing"
+4. **vibe-split v2** - Added `-x` and `-y` flags, still failed
+5. **vibe-split v3** - Finally worked using single tmux command chain
+
+#### What Should Have Been Done
+
+1. **Run the actual code first** - Not just read it
+2. **Capture ALL errors in one pass** - Used debugger agent too late
+3. **Test in user's environment** - WSL has different behavior
+4. **Don't claim "fixed" without verification**
+5. **Listen to user frustration** - They said "CRAP" multiple times
+
+#### Lessons for Future AI Sessions
+
+- **Never claim fixed without testing**
+- **Use debugger agent FIRST, not as last resort**
+- **WSL/tmux has quirks - test there**
+- **httpx cleanup errors need proper async handling, not hacks**
+- **When user is frustrated, STOP and diagnose properly**
+
+#### Current Status (End of Session)
+
+- Split terminal: WORKING (after 3 attempts)
+- httpx error: SUPPRESSED (hack - redirects stderr at exit)
+- Core functionality: UNTESTED
+- User trust: DAMAGED
+
+---
+
 ### Added
 
 #### Split Terminal Mode (2026-01-13)

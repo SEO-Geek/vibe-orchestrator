@@ -1,62 +1,36 @@
 #!/bin/bash
 # Vibe Split Terminal Launcher
-# Left pane: Vibe orchestrator (GLM brain)
-# Right pane: Live Claude output (real-time streaming)
+# Left pane: Vibe orchestrator
+# Right pane: Claude live output
 
-set -e
-
-# Configuration
 VIBE_DIR="/home/brian/vibe"
 VENV_PATH="$VIBE_DIR/venv/bin/activate"
 LIVE_LOG="$HOME/.config/vibe/claude-live.log"
-SESSION_NAME="vibe"
+SESSION="vibe"
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-
-# Check dependencies
+# Check tmux
 if ! command -v tmux &> /dev/null; then
-    echo -e "${RED}Error: tmux is not installed${NC}"
-    echo "Install with: sudo apt install tmux"
+    echo "Error: tmux not installed. Run: sudo apt install tmux"
     exit 1
 fi
 
-# Ensure log directory exists
+# Check terminal
+if [ ! -t 0 ]; then
+    echo "Error: Not in a terminal"
+    exit 1
+fi
+
+# Setup log
 mkdir -p "$(dirname "$LIVE_LOG")"
+echo "=== Claude Live Output ===" > "$LIVE_LOG"
+echo "Waiting for tasks..." >> "$LIVE_LOG"
 
-# Clear old log and add header
-echo "" > "$LIVE_LOG"
-echo "============================================================" >> "$LIVE_LOG"
-echo "  Vibe - Claude Live Output" >> "$LIVE_LOG"
-echo "  Waiting for tasks..." >> "$LIVE_LOG"
-echo "============================================================" >> "$LIVE_LOG"
+# Kill old session
+tmux kill-session -t "$SESSION" 2>/dev/null
 
-# Kill existing session if present
-tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
-
-# Create new tmux session with split panes
-# Left (60%): Vibe orchestrator
-# Right (40%): Claude live output
-tmux new-session -d -s "$SESSION_NAME" -x "$(tput cols)" -y "$(tput lines)"
-
-# Set up left pane - Vibe
-tmux send-keys -t "$SESSION_NAME" "source $VENV_PATH && cd $VIBE_DIR && clear && echo -e '${GREEN}Vibe Orchestrator${NC}' && echo '----------------' && vibe $*" C-m
-
-# Split vertically (40% for right pane)
-tmux split-window -h -p 40 -t "$SESSION_NAME"
-
-# Set up right pane - Claude live output
-tmux send-keys -t "$SESSION_NAME" "clear && echo -e '${YELLOW}Claude Live Output${NC}' && echo '-------------------' && tail -f $LIVE_LOG" C-m
-
-# Select left pane (vibe)
-tmux select-pane -t "$SESSION_NAME:0.0"
-
-# Set pane border style
-tmux set-option -t "$SESSION_NAME" pane-border-style fg=colour240
-tmux set-option -t "$SESSION_NAME" pane-active-border-style fg=colour39
-
-# Attach to session
-tmux attach-session -t "$SESSION_NAME"
+# Create session with split IN ONE COMMAND (critical for WSL)
+exec tmux new-session -s "$SESSION" \
+    "source $VENV_PATH && cd $VIBE_DIR && vibe $*; read -p 'Press Enter to exit...'" \; \
+    split-window -h -l 40% \
+    "tail -f $LIVE_LOG; read -p 'Press Enter...'" \; \
+    select-pane -t 0

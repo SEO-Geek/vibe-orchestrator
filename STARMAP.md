@@ -91,10 +91,6 @@ User <-> GLM (brain) <-> Claude (worker)
 │   │   ├── handlers.py    # File handlers with rotation
 │   │   └── viewer.py      # Log viewing and analysis
 │   │
-│   ├── tui/
-│   │   ├── __init__.py
-│   │   └── app.py         # Textual TUI with TaskPanel, CostBar, PlanReview
-│   │
 │   └── integrations/
 │       ├── __init__.py
 │       ├── research.py    # Perplexity research API client
@@ -191,13 +187,6 @@ Unified persistence layer - single source of truth:
 - WAL mode for concurrent reads, foreign keys enforced
 - Atomic operations with transaction support
 
-### TUI Components (`tui/app.py`)
-Textual-based terminal UI with Claude-like features:
-- **TaskPanel**: Visual task progress with status icons (✓/⏳/○)
-- **CostBar**: Session cost tracker (GLM + Claude costs in status bar)
-- **PlanReviewScreen**: ModalScreen for reviewing tasks before execution
-- **StatusBar**: Current state, active task, and session costs
-
 ### Pricing (`pricing.py`)
 Cost calculation utilities:
 - GLM_COSTS, CLAUDE_COSTS dictionaries (per 1K tokens)
@@ -257,7 +246,6 @@ Injection rules auto-add tasks:
 | Command | Description |
 |---------|-------------|
 | `vibe` | Start interactive session (single terminal) |
-| `vibe --tui` | Start with Textual TUI (escape-to-cancel) |
 | `vibe-split` | **Recommended**: Split terminal (vibe left, claude right) |
 | `vibe list` | List all registered projects |
 | `vibe add <name> <path>` | Add a new project |
@@ -286,6 +274,10 @@ Projects are registered in `~/.config/vibe/projects.json`:
 
 ## Recent Changes
 
+- **2026-01-17**: Buffer Overflow Fix
+  - Fixed `LimitOverrunError` when Claude outputs large JSON lines (>64KB)
+  - Replaced `readline()` with chunked `read()` in executor
+  - Removed TUI module (replaced by split terminal workflow)
 - **2026-01-13**: Split Terminal Mode & Installation
   - `vibe-split` command: tmux launcher with left=vibe, right=claude output
   - Real-time Claude output streaming to `~/.config/vibe/claude-live.log`
@@ -336,7 +328,6 @@ Projects are registered in `~/.config/vibe/projects.json`:
   - Fixed UPSERT bug in memory keeper (preserves IDs)
   - WorkflowEngine integration in Supervisor
 - **2026-01-13**: Intelligent GLM Orchestration (WorkflowEngine, SubTaskInjector, SmartTaskDetector)
-- **2026-01-13**: Claude-like TUI features (TaskPanel, CostBar, PlanReview, Hooks, Compaction)
 - **2026-01-13**: Critical bug fixes (executor.py double-prompt, method name typo)
 - **2026-01-11**: Unified persistence layer (VibeRepository, crash recovery, full task tracking)
 - **2026-01-11**: Core implementation complete (Supervisor, Reviewer)
