@@ -798,10 +798,22 @@ class Supervisor:
 
             # Step 3: Decompose task - GEMINI is the brain that plans
             self._emit_status("Gemini decomposing request into tasks...")
+
+            # Get historical patterns for adaptive decomposition
+            # This allows Gemini to learn from past successes/failures
+            pattern_context = ""
+            try:
+                pattern_context = self.pattern_learner.get_decomposition_hints(request)
+                if pattern_context and pattern_context != "(No historical patterns yet)":
+                    logger.debug(f"Injecting {len(pattern_context)} chars of pattern context to Gemini")
+            except Exception as e:
+                logger.debug(f"Could not get decomposition hints: {e}")
+
             try:
                 task_dicts = await self.gemini_client.decompose_task(
                     user_request=request,
                     project_context=project_context,
+                    pattern_context=pattern_context,
                 )
             except Exception as e:
                 result.error = f"Task decomposition failed: {e}"
@@ -1068,8 +1080,11 @@ class Supervisor:
                 break
 
             # Review the task with GLM
+            # Pass task_type for task-type-specific review criteria
             try:
-                review_result = await self.review_task(task, execution_result)
+                review_result = await self.review_task(
+                    task, execution_result, task_type=routing_config.task_type.value
+                )
                 result.review_approved = review_result.get("approved", False)
                 result.review_feedback = review_result.get("feedback", "")
 
@@ -1296,6 +1311,22 @@ class Supervisor:
             timeout_tier="code",  # "code" tier = longer timeout for complex tasks
             global_conventions=global_conventions,
         ) as executor:
+            # Check for previous checkpoint (recovery from timeout)
+            # This allows Claude to continue from where it left off instead of starting over
+            checkpoint = executor.load_checkpoint_from_disk(task.id)
+            if checkpoint:
+                logger.info(f"Found checkpoint for task {task.id}: {checkpoint.summary()}")
+                checkpoint_context = (
+                    f"CONTINUE FROM PREVIOUS WORK (task timed out after {checkpoint.elapsed_seconds:.1f}s):\n"
+                    f"- Tool calls made: {len(checkpoint.tool_calls)}\n"
+                    f"- Files modified: {', '.join(checkpoint.file_changes) if checkpoint.file_changes else 'none'}\n"
+                    f"- Partial progress: {checkpoint.partial_output[:500]}..."
+                    if len(checkpoint.partial_output) > 500
+                    else f"- Partial progress: {checkpoint.partial_output}"
+                )
+                constraints.append(checkpoint_context)
+                self._emit_progress(f"Resuming from checkpoint: {checkpoint.summary()}")
+
             # Execute with circuit breaker tracking
             try:
                 result = await executor.execute(
@@ -1303,6 +1334,7 @@ class Supervisor:
                     files=task.files if task.files else None,
                     constraints=constraints if constraints else None,
                     on_progress=self.callbacks.on_progress,
+                    task_id=task.id,  # Pass task_id for checkpoint persistence
                 )
 
                 # Record success/failure in circuit breaker
@@ -1311,6 +1343,10 @@ class Supervisor:
                         self._circuit_breaker.record_success()
                     else:
                         self._circuit_breaker.record_failure()
+
+                # Clear checkpoint on success (no longer needed)
+                if result.success:
+                    executor.clear_checkpoint_from_disk(task.id)
 
                 return result
 
@@ -1324,6 +1360,7 @@ class Supervisor:
         self,
         task: Task,
         result: TaskResult,
+        task_type: str = "code_write",
     ) -> dict[str, Any]:
         """
         Have GLM review a task's output.
@@ -1331,6 +1368,7 @@ class Supervisor:
         Args:
             task: The task that was executed
             result: Claude's execution result
+            task_type: Type of task for task-type-specific review criteria
 
         Returns:
             Review result with approved/issues/feedback
@@ -1362,6 +1400,9 @@ class Supervisor:
         # Get Claude's summary
         claude_summary = result.result or "(no summary provided)"
 
+        # Format files changed for GLM context
+        files_changed = ", ".join(result.file_changes) if result.file_changes else ""
+
         # wait_for wraps the coroutine with a timeout. If GLM takes longer than
         # GLM_REVIEW_TIMEOUT, raises TimeoutError (handled by _execute_task_with_retries).
         review_result = await asyncio.wait_for(
@@ -1369,6 +1410,8 @@ class Supervisor:
                 task_description=task.description,
                 changes_diff=changes_diff,
                 claude_summary=claude_summary,
+                task_type=task_type,
+                files_changed=files_changed,
             ),
             timeout=GLM_REVIEW_TIMEOUT,
         )

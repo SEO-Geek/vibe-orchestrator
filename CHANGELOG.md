@@ -98,6 +98,57 @@ Fixed "Event loop is closed" errors by implementing lazy initialization for asyn
 
 - **GeminiClient**: Creates AsyncOpenAI in `_get_client()` when needed
 - **GLMClient**: Same lazy initialization pattern
+
+---
+
+#### Task-Type Specific GLM Reviews (2026-01-18)
+
+GLM now uses different review criteria based on task type:
+
+- **CODE_WRITE_REVIEW_PROMPT**: Expects implementation in existing files, minimal changes
+- **TEST_REVIEW_PROMPT**: Expects execution output + report, NOT new code
+- **ANALYZE_REVIEW_PROMPT**: Expects findings only, NO implementation
+- **Specific Rejection Triggers**: Each type has clear rejection criteria
+
+**Files Changed**: `vibe/glm/prompts.py`, `vibe/glm/client.py`, `vibe/orchestrator/reviewer.py`, `vibe/cli/execution.py`
+
+---
+
+#### Unified Timeout Configuration (2026-01-18)
+
+Aligned timeout tiers between executor and task routing to prevent mismatch:
+
+- **QUICK**: 120s (2 min) - simple reads, small edits
+- **CODE**: 300s (5 min) - code writing tasks
+- **DEBUG**: 600s (10 min) - debugging sessions
+- **RESEARCH**: 900s (15 min) - research and exploration
+
+**Files Changed**: `vibe/orchestrator/task_routing.py`
+
+---
+
+#### Persistent Checkpoint Recovery (2026-01-18)
+
+Checkpoints now persist to disk for recovery after crashes/timeouts:
+
+- **Disk Persistence**: Saves to `~/.config/vibe/checkpoints/{task_id}.json`
+- **Recovery on Retry**: Loads checkpoint and injects partial progress into prompt
+- **Auto-Cleanup**: Clears checkpoint file on successful completion
+- **TimeoutCheckpoint.from_dict()**: Enables loading from disk
+
+**Files Changed**: `vibe/claude/executor.py`, `vibe/orchestrator/supervisor.py`
+
+---
+
+#### Gemini Pattern-Aware Decomposition (2026-01-18)
+
+Gemini now uses historical patterns when decomposing tasks:
+
+- **Pattern Context Injection**: Historical success/failure rates inform decomposition
+- **get_decomposition_hints()**: New method generates hints from task history
+- **Adaptive Learning**: Gemini sees which task types struggle and can adjust
+
+**Files Changed**: `vibe/gemini/client.py`, `vibe/gemini/prompts.py`, `vibe/memory/pattern_learning.py`, `vibe/orchestrator/supervisor.py`
 - **PerplexityClient**: Same lazy initialization pattern
 - **Event Loop Tracking**: Recreates client if event loop changes
 

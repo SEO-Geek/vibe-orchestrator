@@ -301,6 +301,12 @@ Projects are registered in `~/.config/vibe/projects.json`:
 
 ## Recent Changes
 
+- **2026-01-18**: Performance Improvements - Adaptive Learning & Recovery
+  - Task-type specific GLM reviews (CODE_WRITE, TEST, ANALYZE prompts)
+  - Unified timeout tiers: QUICK (120s), CODE (300s), DEBUG (600s), RESEARCH (900s)
+  - Persistent checkpoint recovery: saves to `~/.config/vibe/checkpoints/`
+  - Gemini pattern-aware decomposition: historical patterns inform task planning
+  - get_decomposition_hints() provides success/failure rates to Gemini
 - **2026-01-18**: Direct Gemini Chat, ESC Cancellation & Claim Verification
   - Added `/gemini <msg>` command for direct orchestrator conversation (strategy, clarification)
   - Added ESC key support to cancel running tasks without killing session

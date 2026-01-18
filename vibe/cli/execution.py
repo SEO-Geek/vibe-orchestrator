@@ -9,6 +9,7 @@ from rich.panel import Panel
 
 from vibe.claude.executor import ClaudeExecutor, TaskResult, ToolCall, get_git_diff
 from vibe.glm.client import GLMClient, is_investigation_request
+from vibe.orchestrator.task_enforcer import get_smart_detector
 
 console = Console()
 
@@ -110,12 +111,23 @@ async def review_with_glm(
     # Get Claude's summary
     claude_summary = result.result or "(no summary provided)"
 
-    # Have GLM review
+    # Detect task type for task-type-specific review criteria
+    task_description = task.get("description", "")
+    detector = get_smart_detector()
+    detection = detector.detect(task_description)
+    task_type = detection.task_type.name.lower()
+
+    # Format files changed for GLM context
+    files_changed = ", ".join(result.file_changes) if result.file_changes else ""
+
+    # Have GLM review with task-type awareness
     with console.status("[bold yellow]GLM reviewing changes...[/bold yellow]"):
         review = await glm_client.review_changes(
-            task_description=task.get("description", ""),
+            task_description=task_description,
             changes_diff=diff,
             claude_summary=claude_summary,
+            task_type=task_type,
+            files_changed=files_changed,
         )
 
     return review

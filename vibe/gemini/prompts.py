@@ -71,12 +71,22 @@ PROJECT CONTEXT:
 {project_context}
 {recent_context}
 
+HISTORICAL PATTERNS (from previous tasks in this project):
+{pattern_context}
+
+USE THESE HISTORICAL INSIGHTS:
+- For task types with high failure/rejection rates, add explicit verification steps
+- For task types with timeout issues, break into smaller chunks
+- Include tool recommendations that have historically succeeded
+- Avoid approaches that have consistently failed before
+
 INSTRUCTIONS:
 1. Analyze what the user wants
 2. Break into small, focused tasks (each under 5 minutes)
 3. Order tasks logically (dependencies first)
 4. Include specific files to modify
 5. Add constraints to prevent scope creep
+6. Learn from historical patterns above
 
 MANDATORY CONSTRAINTS FOR EVERY TASK:
 - "MODIFY existing files, do NOT create new files unless explicitly requested"

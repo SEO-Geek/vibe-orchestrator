@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from vibe.glm.client import GLMClient
+from vibe.orchestrator.task_enforcer import get_smart_detector
 from vibe.state import Task
 
 # TYPE_CHECKING guard prevents runtime circular import:
@@ -149,12 +150,23 @@ class Reviewer:
         # Get Claude's summary from result
         claude_summary = claude_result.result or "No summary provided"
 
-        # Call GLM to review the changes
+        # Detect task type for task-type-specific review criteria
+        # SmartTaskDetector classifies based on keywords in the description
+        detector = get_smart_detector()
+        detection = detector.detect(task.description)
+        task_type = detection.task_type.name.lower()
+
+        # Format files changed for GLM context
+        files_changed = ", ".join(claude_result.file_changes) if claude_result.file_changes else ""
+
+        # Call GLM to review the changes with task-type awareness
         try:
             glm_result = await self.glm_client.review_changes(
                 task_description=task.description,
                 changes_diff=review_diff,
                 claude_summary=claude_summary,
+                task_type=task_type,
+                files_changed=files_changed,
             )
         except Exception as e:
             logger.error(f"GLM review failed: {e}")

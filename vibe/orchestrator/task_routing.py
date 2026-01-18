@@ -18,20 +18,26 @@ from vibe.orchestrator.task_enforcer import TaskType, get_smart_detector
 
 
 class TimeoutTier(Enum):
-    """Timeout tiers for Claude execution."""
+    """
+    Timeout tiers for Claude execution.
 
-    SHORT = "short"  # 60s - quick tasks
-    MEDIUM = "medium"  # 120s - standard tasks
-    LONG = "long"  # 300s - complex tasks
-    CODE = "code"  # 180s - code writing (existing tier)
+    These are aligned with executor.py TIMEOUT_TIERS for consistency.
+    Longer timeouts prevent premature kills during legitimate work.
+    """
+
+    QUICK = "quick"  # 120s - simple reads, small edits
+    CODE = "code"  # 300s - code writing tasks
+    DEBUG = "debug"  # 600s - debugging sessions (need investigation time)
+    RESEARCH = "research"  # 900s - research and exploration
 
 
 # Timeout durations in seconds for each tier
+# Aligned with executor.py TIMEOUT_TIERS to prevent mismatch issues
 TIMEOUT_DURATIONS: dict[TimeoutTier, int] = {
-    TimeoutTier.SHORT: 60,
-    TimeoutTier.MEDIUM: 120,
-    TimeoutTier.LONG: 300,
-    TimeoutTier.CODE: 180,
+    TimeoutTier.QUICK: 120,  # 2 min - quick tasks
+    TimeoutTier.CODE: 300,  # 5 min - code writing
+    TimeoutTier.DEBUG: 600,  # 10 min - debugging needs time
+    TimeoutTier.RESEARCH: 900,  # 15 min - research/exploration
 }
 
 
@@ -91,20 +97,21 @@ class TaskRoutingConfig:
 
 
 # Default routing configurations per task type
+# Timeout tiers aligned with executor.py for consistency
 DEFAULT_ROUTING_CONFIGS: dict[TaskType, TaskRoutingConfig] = {
-    # Investigation tasks - no review needed, quick timeout
+    # Investigation tasks - longer timeout for thorough research
     TaskType.RESEARCH: TaskRoutingConfig(
         task_type=TaskType.RESEARCH,
-        timeout_tier=TimeoutTier.MEDIUM,
+        timeout_tier=TimeoutTier.RESEARCH,  # 15 min - research needs time
         require_review=False,  # Research doesn't need code review
         max_retries=1,  # Don't retry research tasks
         expand_to_phases=False,  # Keep research simple
         priority=3,
     ),
-    # Debug tasks - longer timeout, review required
+    # Debug tasks - long timeout for investigation
     TaskType.DEBUG: TaskRoutingConfig(
         task_type=TaskType.DEBUG,
-        timeout_tier=TimeoutTier.LONG,
+        timeout_tier=TimeoutTier.DEBUG,  # 10 min - debugging needs time
         require_review=True,
         max_retries=3,
         run_tests_after=True,  # Verify fix with tests
@@ -114,7 +121,7 @@ DEFAULT_ROUTING_CONFIGS: dict[TaskType, TaskRoutingConfig] = {
     # Code writing - standard timeout, review required
     TaskType.CODE_WRITE: TaskRoutingConfig(
         task_type=TaskType.CODE_WRITE,
-        timeout_tier=TimeoutTier.CODE,
+        timeout_tier=TimeoutTier.CODE,  # 5 min - code writing
         require_review=True,
         max_retries=3,
         run_tests_after=True,
@@ -124,7 +131,7 @@ DEFAULT_ROUTING_CONFIGS: dict[TaskType, TaskRoutingConfig] = {
     # Code refactoring - longer timeout, strict review
     TaskType.CODE_REFACTOR: TaskRoutingConfig(
         task_type=TaskType.CODE_REFACTOR,
-        timeout_tier=TimeoutTier.LONG,
+        timeout_tier=TimeoutTier.DEBUG,  # 10 min - refactoring is complex
         require_review=True,
         max_retries=2,  # Fewer retries - refactoring is delicate
         run_tests_after=True,  # Always verify refactoring
@@ -134,7 +141,7 @@ DEFAULT_ROUTING_CONFIGS: dict[TaskType, TaskRoutingConfig] = {
     # UI testing - quick timeout, no code review
     TaskType.UI_TEST: TaskRoutingConfig(
         task_type=TaskType.UI_TEST,
-        timeout_tier=TimeoutTier.MEDIUM,
+        timeout_tier=TimeoutTier.CODE,  # 5 min - UI tests may take time
         require_review=False,  # UI tests are self-verifying
         max_retries=2,
         expand_to_phases=False,
@@ -143,7 +150,7 @@ DEFAULT_ROUTING_CONFIGS: dict[TaskType, TaskRoutingConfig] = {
     # API testing - quick timeout, no code review
     TaskType.API_TEST: TaskRoutingConfig(
         task_type=TaskType.API_TEST,
-        timeout_tier=TimeoutTier.SHORT,
+        timeout_tier=TimeoutTier.QUICK,  # 2 min - API tests are fast
         require_review=False,  # API tests are self-verifying
         max_retries=2,
         expand_to_phases=False,
@@ -152,7 +159,7 @@ DEFAULT_ROUTING_CONFIGS: dict[TaskType, TaskRoutingConfig] = {
     # Browser work - medium timeout
     TaskType.BROWSER_WORK: TaskRoutingConfig(
         task_type=TaskType.BROWSER_WORK,
-        timeout_tier=TimeoutTier.MEDIUM,
+        timeout_tier=TimeoutTier.CODE,  # 5 min - browser work is exploratory
         require_review=False,  # Browser work is exploratory
         max_retries=1,
         expand_to_phases=False,
@@ -161,7 +168,7 @@ DEFAULT_ROUTING_CONFIGS: dict[TaskType, TaskRoutingConfig] = {
     # Database - longer timeout, careful review
     TaskType.DATABASE: TaskRoutingConfig(
         task_type=TaskType.DATABASE,
-        timeout_tier=TimeoutTier.MEDIUM,
+        timeout_tier=TimeoutTier.CODE,  # 5 min - DB operations
         require_review=True,  # DB changes are dangerous
         max_retries=1,  # Don't retry DB operations carelessly
         run_tests_after=True,
@@ -171,7 +178,7 @@ DEFAULT_ROUTING_CONFIGS: dict[TaskType, TaskRoutingConfig] = {
     # Docker - longer timeout
     TaskType.DOCKER: TaskRoutingConfig(
         task_type=TaskType.DOCKER,
-        timeout_tier=TimeoutTier.LONG,
+        timeout_tier=TimeoutTier.DEBUG,  # 10 min - Docker operations
         require_review=True,
         max_retries=2,
         expand_to_phases=False,
@@ -180,7 +187,7 @@ DEFAULT_ROUTING_CONFIGS: dict[TaskType, TaskRoutingConfig] = {
     # General - default settings
     TaskType.GENERAL: TaskRoutingConfig(
         task_type=TaskType.GENERAL,
-        timeout_tier=TimeoutTier.MEDIUM,
+        timeout_tier=TimeoutTier.CODE,  # 5 min - balanced default
         require_review=True,
         max_retries=3,
         expand_to_phases=False,

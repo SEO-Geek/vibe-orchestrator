@@ -590,6 +590,76 @@ class PatternLearner:
 
         return "\n".join(parts) if parts else ""
 
+    def get_decomposition_hints(self, request_text: str = "") -> str:
+        """
+        Generate hints for Gemini's task decomposition based on historical patterns.
+
+        This allows Gemini to learn from past successes and failures when
+        breaking down new requests.
+
+        Args:
+            request_text: The user's request (used for keyword-based type guessing)
+
+        Returns:
+            Formatted string with decomposition hints for Gemini
+        """
+        parts = []
+
+        # Get all task type statistics
+        with self._get_connection() as conn:
+            cursor = conn.execute("""
+                SELECT task_type,
+                       SUM(success_count) as successes,
+                       SUM(failure_count) as failures,
+                       AVG(avg_duration_seconds) as avg_duration
+                FROM task_patterns
+                WHERE project = ?
+                GROUP BY task_type
+            """, (self.project,))
+            stats = cursor.fetchall()
+
+        if stats:
+            parts.append("Task type success rates for this project:")
+            for row in stats:
+                task_type = row["task_type"]
+                successes = row["successes"] or 0
+                failures = row["failures"] or 0
+                total = successes + failures
+                if total > 0:
+                    rate = (successes / total) * 100
+                    avg_dur = row["avg_duration"] or 0
+                    status = "✓" if rate >= 75 else "⚠" if rate >= 50 else "✗"
+                    parts.append(
+                        f"- {task_type}: {rate:.0f}% success ({successes}/{total}), "
+                        f"avg {avg_dur:.0f}s {status}"
+                    )
+
+        # Get top failure patterns across all types
+        with self._get_connection() as conn:
+            cursor = conn.execute("""
+                SELECT task_type, error_pattern, failure_count, last_feedback
+                FROM failure_patterns
+                WHERE project = ?
+                ORDER BY failure_count DESC
+                LIMIT 5
+            """, (self.project,))
+            failures = cursor.fetchall()
+
+        if failures:
+            parts.append("\nCommon failure patterns to avoid:")
+            for row in failures:
+                feedback = (row["last_feedback"] or "")[:80]
+                parts.append(f"- {row['task_type']}: {feedback}...")
+
+        # Add specific guidance based on stats
+        if parts:
+            parts.append("\nDecomposition guidance:")
+            parts.append("- Break high-failure task types into smaller steps")
+            parts.append("- Add verification tasks after code changes")
+            parts.append("- For debug tasks: investigate first, then fix in separate task")
+
+        return "\n".join(parts) if parts else "(No historical patterns yet)"
+
     def get_stats(self) -> dict[str, Any]:
         """Get learning statistics for this project."""
         with self._get_connection() as conn:

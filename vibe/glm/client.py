@@ -21,11 +21,15 @@ from openai import AsyncOpenAI, OpenAIError
 from vibe.exceptions import GLMConnectionError, GLMRateLimitError, GLMResponseError
 from vibe.glm.parser import parse_review_result, parse_task_list
 from vibe.glm.prompts import (
+    ANALYZE_REVIEW_PROMPT,
+    CODE_REVIEW_PROMPT,
+    CODE_WRITE_REVIEW_PROMPT,
     DEBUG_REVIEW_PROMPT,
     DEBUG_TASK_PROMPT,
     REVIEWER_SYSTEM_PROMPT,
     SUPERVISOR_SYSTEM_PROMPT,
     TASK_DECOMPOSITION_PROMPT,
+    TEST_REVIEW_PROMPT,
 )
 from vibe.logging import (
     GLMLogEntry,
@@ -541,6 +545,8 @@ class GLMClient:
         task_description: str,
         changes_diff: str,
         claude_summary: str,
+        task_type: str = "code_write",
+        files_changed: str = "",
     ) -> dict[str, Any]:
         """
         Have GLM review Claude's code changes.
@@ -553,6 +559,8 @@ class GLMClient:
             task_description: The original task description
             changes_diff: Git diff or file changes
             claude_summary: Claude's summary of what was done
+            task_type: Type of task (code_write, debug, test, research, refactor)
+            files_changed: List of files that were changed
 
         Returns:
             Review result with approved (bool), issues (list), feedback (str)
@@ -571,26 +579,39 @@ class GLMClient:
                 "Task will be marked as failed (never auto-approve without review)."
             )
 
-        review_prompt = f"""Review this code change:
-
-ORIGINAL TASK:
-{task_description}
-
-CHANGES MADE:
-```diff
-{changes_diff}
-```
-
-CLAUDE'S SUMMARY:
-{claude_summary}
-
-Evaluate:
-1. Does it meet the task requirements?
-2. Is it a sustainable solution (not a bush fix)?
-3. Are there inline comments for complex logic?
-4. Any security/quality issues?
-
-Output JSON: {{"approved": true/false, "issues": [...], "feedback": "..."}}"""
+        # Select task-type-specific prompt for better review accuracy
+        # Different task types have different expectations and rejection criteria
+        task_type_lower = task_type.lower()
+        if task_type_lower in ("test", "ui_test"):
+            review_prompt = TEST_REVIEW_PROMPT.format(
+                task_description=task_description,
+                files_changed=files_changed or "(not specified)",
+                diff_content=changes_diff,
+                claude_summary=claude_summary,
+            )
+        elif task_type_lower in ("research", "analyze"):
+            review_prompt = ANALYZE_REVIEW_PROMPT.format(
+                task_description=task_description,
+                files_changed=files_changed or "(not specified)",
+                diff_content=changes_diff,
+                claude_summary=claude_summary,
+            )
+        elif task_type_lower == "code_write":
+            review_prompt = CODE_WRITE_REVIEW_PROMPT.format(
+                task_description=task_description,
+                files_changed=files_changed or "(not specified)",
+                diff_content=changes_diff,
+                claude_summary=claude_summary,
+            )
+        else:
+            # Default: use general CODE_REVIEW_PROMPT for debug, refactor, etc.
+            review_prompt = CODE_REVIEW_PROMPT.format(
+                task_description=task_description,
+                task_type=task_type,
+                files_changed=files_changed or "(not specified)",
+                diff_content=changes_diff,
+                claude_summary=claude_summary,
+            )
 
         try:
             response = await self.chat(

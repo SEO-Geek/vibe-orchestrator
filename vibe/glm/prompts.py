@@ -69,6 +69,7 @@ RULES:
 CODE_REVIEW_PROMPT = """Review Claude's code changes for this task.
 
 TASK: {task_description}
+TASK TYPE: {task_type}
 
 FILES CHANGED: {files_changed}
 
@@ -79,14 +80,110 @@ DIFF:
 
 CLAUDE'S SUMMARY: {claude_summary}
 
+FEEDBACK REQUIREMENTS (CRITICAL - be specific, not vague):
+- If rejecting for SCOPE: List EXACTLY which file/function is out of scope and WHY
+- If rejecting for NO CHANGES: List EXACTLY which files SHOULD have been modified
+- If rejecting for MISMATCH: Quote the CLAIM vs what DIFF actually shows
+- NEVER use vague feedback like "out of scope" without naming the specific violation
+- ALWAYS include actionable next steps: "DO: modify X" or "DO NOT: create new files"
+
+TASK TYPE EXPECTATIONS:
+- code_write: Expect implementation in existing files, tests if applicable
+- debug: Expect investigation + minimal targeted fix, NOT rewrites
+- test: Expect execution output + report, NOT new code
+- research/analyze: Expect findings report only, NO implementation
+- refactor: Expect equivalent behavior, updated references
+
 Review the changes and respond with JSON only:
 - approved: true if changes are acceptable
 - score: 1-10 quality rating
-- feedback: brief assessment
-- issues: list of problems (empty if none)
+- feedback: SPECIFIC assessment with actionable guidance
+- issues: list of SPECIFIC problems with file:function references
 - suggestions: optional improvements
 
 Be strict about scope, lenient about style."""
+
+# =============================================================================
+# TASK-TYPE SPECIFIC REVIEW PROMPTS
+# =============================================================================
+
+CODE_WRITE_REVIEW_PROMPT = """Review Claude's code implementation.
+
+TASK: {task_description}
+FILES CHANGED: {files_changed}
+
+DIFF:
+```
+{diff_content}
+```
+
+CLAUDE'S SUMMARY: {claude_summary}
+
+EXPECTATIONS FOR CODE_WRITE:
+- Implementation should be in EXISTING files (not new files unless explicitly requested)
+- Changes should be MINIMAL - solve the problem, nothing more
+- No refactoring of unrelated code
+- Tests should pass (if test output provided)
+
+REJECTION TRIGGERS:
+- Created new file when task said "modify existing"
+- Changed files not mentioned in task
+- Added "improvements" beyond task scope
+- Summary claims changes not visible in diff
+
+Respond with JSON only. Be SPECIFIC in feedback - name exact files/functions."""
+
+TEST_REVIEW_PROMPT = """Review Claude's test execution results.
+
+TASK: {task_description}
+FILES CHANGED: {files_changed}
+
+OUTPUT:
+```
+{diff_content}
+```
+
+CLAUDE'S SUMMARY: {claude_summary}
+
+EXPECTATIONS FOR TEST TASKS:
+- Should have EXECUTED tests/code and REPORTED results
+- Should NOT have written new code (unless task explicitly requested)
+- Output should contain actual test results, timings, or findings
+- Summary should include concrete numbers/results
+
+REJECTION TRIGGERS:
+- No evidence tests were actually run
+- Added code instead of reporting results
+- Summary claims execution but output shows no results
+- Modified test files when task was "run tests"
+
+Respond with JSON only. Verify actual execution evidence exists."""
+
+ANALYZE_REVIEW_PROMPT = """Review Claude's analysis/research output.
+
+TASK: {task_description}
+FILES CHANGED: {files_changed}
+
+OUTPUT:
+```
+{diff_content}
+```
+
+CLAUDE'S SUMMARY: {claude_summary}
+
+EXPECTATIONS FOR ANALYZE TASKS:
+- Should have INVESTIGATED and REPORTED findings
+- Should NOT have implemented fixes (unless explicitly requested)
+- Output should contain investigation steps and conclusions
+- No code changes expected (or minimal logging/debugging aids)
+
+REJECTION TRIGGERS:
+- Implemented fixes when task was "analyze" or "investigate"
+- Created new files during analysis
+- Summary lacks concrete findings
+- Changed production code during research task
+
+Respond with JSON only. Analysis tasks should produce FINDINGS, not code."""
 
 # =============================================================================
 # DEBUG REVIEW PROMPTS - GLM validates debug findings

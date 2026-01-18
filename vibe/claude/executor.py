@@ -76,6 +76,26 @@ class TimeoutCheckpoint:
             f"{self.elapsed_seconds:.1f}s elapsed"
         )
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TimeoutCheckpoint":
+        """Create checkpoint from dictionary (for loading from disk)."""
+        tool_calls = [
+            ToolCall(
+                name=tc["name"],
+                input=tc.get("input", {}),
+                timestamp=datetime.fromisoformat(tc["timestamp"]) if "timestamp" in tc else datetime.now(),
+            )
+            for tc in data.get("tool_calls", [])
+        ]
+        return cls(
+            task_description=data.get("task_description", ""),
+            tool_calls=tool_calls,
+            file_changes=data.get("file_changes", []),
+            partial_output=data.get("partial_output", ""),
+            elapsed_seconds=data.get("elapsed_seconds", 0.0),
+            saved_at=datetime.fromisoformat(data["saved_at"]) if "saved_at" in data else datetime.now(),
+        )
+
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +116,9 @@ MAX_OUTPUT_BYTES = 500 * 1024
 
 # Live log file for real-time Claude output (used by split terminal view)
 CLAUDE_LIVE_LOG = os.path.expanduser("~/.config/vibe/claude-live.log")
+
+# Directory for checkpoint persistence (allows recovery after crashes)
+CHECKPOINT_DIR = os.path.expanduser("~/.config/vibe/checkpoints")
 
 
 @dataclass
@@ -193,12 +216,13 @@ class ClaudeExecutor:
         file_changes: list[str],
         partial_output: str,
         elapsed_seconds: float,
+        task_id: str | None = None,
     ) -> TimeoutCheckpoint:
         """
-        Save a checkpoint of partial work.
+        Save a checkpoint of partial work to memory and disk.
 
         Called automatically when timeout is approaching to preserve
-        any work done before the timeout.
+        any work done before the timeout. Persists to disk for recovery.
 
         Args:
             task_description: The task being executed
@@ -206,6 +230,7 @@ class ClaudeExecutor:
             file_changes: Files modified so far
             partial_output: Any output collected so far
             elapsed_seconds: Time elapsed since start
+            task_id: Optional task ID for disk persistence
 
         Returns:
             The saved checkpoint
@@ -219,11 +244,65 @@ class ClaudeExecutor:
         )
         self._last_checkpoint = checkpoint
         logger.info(f"Saved timeout checkpoint: {checkpoint.summary()}")
+
+        # Persist to disk for recovery after crashes
+        if task_id:
+            self._persist_checkpoint_to_disk(checkpoint, task_id)
+
         return checkpoint
+
+    def _persist_checkpoint_to_disk(
+        self, checkpoint: TimeoutCheckpoint, task_id: str
+    ) -> None:
+        """Persist checkpoint to disk for recovery."""
+        try:
+            os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+            checkpoint_file = os.path.join(CHECKPOINT_DIR, f"{task_id}.json")
+            with open(checkpoint_file, "w") as f:
+                json.dump(checkpoint.to_dict(), f, indent=2)
+            logger.debug(f"Persisted checkpoint to {checkpoint_file}")
+        except Exception as e:
+            logger.warning(f"Failed to persist checkpoint to disk: {e}")
+
+    def load_checkpoint_from_disk(self, task_id: str) -> TimeoutCheckpoint | None:
+        """
+        Load a checkpoint from disk by task ID.
+
+        Used for recovery when retrying a task that previously timed out.
+
+        Args:
+            task_id: The task ID to load checkpoint for
+
+        Returns:
+            The checkpoint if found, None otherwise
+        """
+        checkpoint_file = os.path.join(CHECKPOINT_DIR, f"{task_id}.json")
+        if not os.path.exists(checkpoint_file):
+            return None
+
+        try:
+            with open(checkpoint_file) as f:
+                data = json.load(f)
+            checkpoint = TimeoutCheckpoint.from_dict(data)
+            logger.info(f"Loaded checkpoint from disk: {checkpoint.summary()}")
+            return checkpoint
+        except Exception as e:
+            logger.warning(f"Failed to load checkpoint from disk: {e}")
+            return None
+
+    def clear_checkpoint_from_disk(self, task_id: str) -> None:
+        """Remove a checkpoint file from disk after successful completion."""
+        checkpoint_file = os.path.join(CHECKPOINT_DIR, f"{task_id}.json")
+        if os.path.exists(checkpoint_file):
+            try:
+                os.remove(checkpoint_file)
+                logger.debug(f"Cleared checkpoint file: {checkpoint_file}")
+            except Exception as e:
+                logger.warning(f"Failed to clear checkpoint file: {e}")
 
     def get_last_checkpoint(self) -> TimeoutCheckpoint | None:
         """
-        Get the last saved checkpoint.
+        Get the last saved checkpoint from memory.
 
         Returns:
             The last checkpoint, or None if no checkpoint saved
@@ -231,7 +310,7 @@ class ClaudeExecutor:
         return self._last_checkpoint
 
     def clear_checkpoint(self) -> None:
-        """Clear the last saved checkpoint."""
+        """Clear the last saved checkpoint from memory."""
         self._last_checkpoint = None
 
     def close(self) -> None:
@@ -454,6 +533,7 @@ class ClaudeExecutor:
         on_tool_call: Callable[[ToolCall], None] | None = None,
         debug_context: str | None = None,
         timeout_tier: str | None = None,
+        task_id: str | None = None,
     ) -> TaskResult:
         """
         Execute a task via Claude Code.
@@ -466,6 +546,7 @@ class ClaudeExecutor:
             on_tool_call: Callback when a tool is called
             debug_context: Optional debug session context to inject
             timeout_tier: Override timeout tier ('quick', 'code', 'debug', 'research')
+            task_id: Optional task ID for checkpoint persistence
 
         Returns:
             TaskResult with success/failure and details
@@ -641,6 +722,7 @@ class ClaudeExecutor:
                         file_changes=file_changes,
                         partial_output=result_text,
                         elapsed_seconds=elapsed,
+                        task_id=task_id,
                     )
                     logger.warning(
                         f"Timeout checkpoint saved: {len(tool_calls)} tool calls, "

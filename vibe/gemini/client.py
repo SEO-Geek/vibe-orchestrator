@@ -379,6 +379,7 @@ class GeminiClient:
         user_request: str,
         project_context: str = "",
         recent_tasks: list[str] | None = None,
+        pattern_context: str = "",
     ) -> list[dict[str, Any]]:
         """
         Decompose a user request into atomic tasks for Claude.
@@ -390,6 +391,7 @@ class GeminiClient:
             user_request: What the user wants to accomplish
             project_context: STARMAP, CLAUDE.md, and memory context
             recent_tasks: Recently completed tasks for context
+            pattern_context: Historical patterns from previous tasks for adaptive learning
 
         Returns:
             List of task dicts with description, files, constraints, type
@@ -403,6 +405,7 @@ class GeminiClient:
             user_request=user_request,
             project_context=project_context[:50000],  # Cap context size
             recent_context=recent_context,
+            pattern_context=pattern_context,
         )
 
         messages = [
