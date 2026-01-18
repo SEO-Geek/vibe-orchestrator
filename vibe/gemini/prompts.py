@@ -133,3 +133,31 @@ RESPOND WITH:
 - A single clarifying question if truly needed
 
 Keep response under 100 words."""
+
+TASK_VERIFICATION_PROMPT = """Verify this task list before Claude executes it.
+
+TASKS TO VERIFY:
+{tasks_json}
+
+PROJECT CONTEXT:
+{project_context}
+
+CHECK FOR:
+1. DEPENDENCIES: Are tasks in correct order? Does task N depend on task M completing first?
+2. MISSING STEPS: Are there obvious gaps? (e.g., modify file but no file exists)
+3. CONFLICTS: Do tasks contradict each other?
+4. PLATFORM ISSUES: Any tasks that might fail due to environment (Windows vs Linux, etc.)?
+5. SCOPE CREEP: Any tasks that seem unrelated to the original request?
+
+RESPOND WITH JSON:
+{{
+  "approved": true/false,
+  "issues": ["list of issues found"],
+  "reordered_tasks": null or [reordered task list if order needs to change],
+  "warnings": ["non-blocking concerns"]
+}}
+
+If approved is true and no reordering needed, return:
+{{"approved": true, "issues": [], "reordered_tasks": null, "warnings": []}}
+
+Be concise. Only flag real problems."""

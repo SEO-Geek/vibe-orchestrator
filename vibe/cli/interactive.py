@@ -36,7 +36,7 @@ from vibe.claude.executor import ClaudeExecutor
 from vibe.cli import commands
 from vibe.cli.debug import execute_debug_workflow
 from vibe.cli.execution import execute_task_with_claude, review_with_glm, show_task_result
-from vibe.cli.project import load_project_context
+from vibe.cli.project import load_project_context, load_project_context_for_claude
 from vibe.config import Project, VibeConfig
 from vibe.exceptions import ClaudeError
 from vibe.gemini.client import GeminiClient  # Brain/orchestrator
@@ -53,6 +53,109 @@ from vibe.state import SessionContext, SessionState
 
 logger = logging.getLogger(__name__)
 console = Console()
+
+
+def approve_tasks_individually(tasks: list[dict]) -> list[dict]:
+    """
+    Present tasks for individual approval/skip/edit.
+
+    For each task shows:
+    - Task number and description
+    - WHY: Brief rationale (from constraints or inferred)
+    - OUTCOME: Expected result
+
+    User can:
+    - [y] Approve this task
+    - [n] Skip this task
+    - [e] Edit task description
+    - [a] Approve all remaining
+    - [q] Quit (cancel all)
+
+    Args:
+        tasks: List of task dictionaries from Gemini
+
+    Returns:
+        List of approved tasks (may be modified)
+    """
+    approved_tasks = []
+    approve_all = False
+
+    console.print(
+        Panel.fit(
+            "[bold]Task Plan - Individual Approval[/bold]\n"
+            "[dim]y=approve, n=skip, e=edit, a=approve all, q=quit[/dim]",
+            border_style="blue",
+        )
+    )
+
+    for i, task in enumerate(tasks, 1):
+        if approve_all:
+            approved_tasks.append(task)
+            console.print(f"  [green]✓[/green] Task {i}: {task.get('description', '')[:60]}...")
+            continue
+
+        description = task.get("description", "No description")
+        files = task.get("files", [])
+        constraints = task.get("constraints", [])
+
+        # Build rationale from constraints or use generic
+        rationale = constraints[0] if constraints else "Part of the requested changes"
+        # Build expected outcome
+        outcome = f"Modifies: {', '.join(files[:3])}" if files else "Code changes as described"
+
+        console.print()
+        console.print(f"[bold cyan]━━━ Task {i}/{len(tasks)} ━━━[/bold cyan]")
+        console.print(f"[bold]{description}[/bold]")
+        console.print(f"[dim]WHY:[/dim] {rationale[:100]}")
+        console.print(f"[dim]OUTCOME:[/dim] {outcome}")
+        if files:
+            console.print(f"[dim]FILES:[/dim] {', '.join(files)}")
+
+        while True:
+            try:
+                console.print("\n[y/n/e/a/q]: ", end="")
+                sys.stdout.flush()
+                choice = input().strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                choice = "q"
+
+            if choice in ("y", ""):
+                approved_tasks.append(task)
+                console.print(f"  [green]✓ Approved[/green]")
+                break
+            elif choice == "n":
+                console.print(f"  [yellow]⊘ Skipped[/yellow]")
+                break
+            elif choice == "e":
+                console.print("Enter new task description (or press Enter to keep current):")
+                try:
+                    new_desc = input().strip()
+                    if new_desc:
+                        task["description"] = new_desc
+                        console.print(f"  [blue]✎ Updated to: {new_desc}[/blue]")
+                except (EOFError, KeyboardInterrupt):
+                    pass
+                # Loop back to ask y/n/e/a/q again
+            elif choice == "a":
+                approved_tasks.append(task)
+                approve_all = True
+                console.print(f"  [green]✓ Approved (+ all remaining)[/green]")
+                break
+            elif choice == "q":
+                console.print("[yellow]Cancelled all tasks.[/yellow]")
+                return []
+            else:
+                console.print("[dim]Invalid choice. Use y/n/e/a/q[/dim]")
+
+    console.print()
+    if approved_tasks:
+        console.print(
+            f"[bold green]Approved {len(approved_tasks)}/{len(tasks)} tasks[/bold green]"
+        )
+    else:
+        console.print("[yellow]No tasks approved.[/yellow]")
+
+    return approved_tasks
 
 
 class KeyboardMonitor:
@@ -182,6 +285,10 @@ async def execute_tasks(
     all_summaries: list[str] = []
     task_ids: dict[int, str] = {}
 
+    # Load project context for Claude - includes CLAUDE.md, STARMAP.md, platform info
+    # This gives Claude awareness of project conventions and environment
+    claude_project_context = load_project_context_for_claude(project)
+
     # Create combined cancel callback for all clients
     def cancel_all() -> None:
         """Cancel all running operations (Claude, Gemini, GLM)."""
@@ -241,13 +348,14 @@ async def execute_tasks(
                         f"\n  [yellow]Retrying task (attempt {attempt}/{MAX_RETRIES})...[/yellow]"
                     )
 
-                # Execute with Claude
+                # Execute with Claude (with project context for awareness)
                 result, tool_verification = await execute_task_with_claude(
                     executor=executor,
                     task=task_with_feedback,
                     task_num=i,
                     total_tasks=len(tasks),
                     debug_context=debug_ctx,
+                    project_context=claude_project_context,
                 )
 
                 if not result.success:
@@ -667,36 +775,60 @@ async def process_user_request(
             MessageType.DECOMPOSITION,
         )
 
-    # Show task plan
-    console.print(
-        Panel.fit(
-            "[bold]Task Plan[/bold]",
-            border_style="blue",
-        )
-    )
+    # Gemini verification - check dependencies, ordering, platform issues
+    if tasks:
+        console.print()
+        console.print("[dim]Gemini verifying task plan...[/dim]")
+        try:
+            with console.status("[bold blue]Gemini checking dependencies...[/bold blue]"):
+                verification = await gemini_client.verify_tasks(tasks, project_context)
 
-    for i, task in enumerate(tasks, 1):
-        console.print(
-            f"\n  [bold cyan]Task {i}:[/bold cyan] {task.get('description', 'No description')}"
-        )
-        if task.get("files"):
-            console.print(f"    [dim]Files: {', '.join(task['files'])}[/dim]")
-        if task.get("constraints"):
-            console.print(f"    [dim]Constraints: {', '.join(task['constraints'])}[/dim]")
+            # Show warnings if any
+            warnings = verification.get("warnings", [])
+            if warnings:
+                console.print(
+                    Panel(
+                        "\n".join(f"• {w}" for w in warnings),
+                        title="[bold yellow]Warnings[/bold yellow]",
+                        border_style="yellow",
+                    )
+                )
 
-    console.print()
+            # Show issues if not approved
+            if not verification.get("approved", True):
+                issues = verification.get("issues", [])
+                if issues:
+                    console.print(
+                        Panel(
+                            "\n".join(f"• {i}" for i in issues),
+                            title="[bold red]Verification Issues[/bold red]",
+                            border_style="red",
+                        )
+                    )
+                    console.print("[yellow]Gemini found issues with the task plan.[/yellow]")
+                    # Continue anyway - user can approve/reject individual tasks
 
-    # Ask for confirmation
-    try:
-        console.print("[bold]Execute these tasks?[/bold] [dim][y/n] (y):[/dim] ", end="")
-        sys.stdout.flush()
-        confirm = input().strip().lower() or "y"
-    except (EOFError, KeyboardInterrupt):
-        confirm = "n"
+            # Use reordered tasks if Gemini suggests
+            reordered = verification.get("reordered_tasks")
+            if reordered and isinstance(reordered, list) and len(reordered) == len(tasks):
+                console.print("[dim]Tasks reordered by Gemini for better dependency order.[/dim]")
+                tasks = reordered
 
-    if confirm != "y":
-        console.print("[yellow]Cancelled.[/yellow]")
+        except asyncio.CancelledError:
+            console.print("[yellow]Cancelled by user.[/yellow]")
+            return
+        except Exception as e:
+            console.print(f"[dim]Verification skipped: {e}[/dim]")
+
+    # Individual task approval - user can approve, skip, or edit each task
+    approved_tasks = approve_tasks_individually(tasks)
+
+    if not approved_tasks:
+        console.print("[yellow]No tasks to execute.[/yellow]")
         return
+
+    # Use approved tasks for execution
+    tasks = approved_tasks
 
     # Create checkpoint before execution
     if memory:

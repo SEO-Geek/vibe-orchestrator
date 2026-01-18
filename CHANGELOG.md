@@ -29,13 +29,40 @@ New `/gemini` command allows direct conversation with the orchestrator without t
 
 Press ESC during task execution to cancel the current task across all AI clients:
 
-- **Full Cancellation**: Terminates Claude subprocess AND interrupts Gemini/GLM API calls
+- **Full Cancellation**: Uses SIGKILL for immediate termination (cannot be ignored)
 - **Non-Destructive**: Task marked as "skipped", not "failed"
 - **Continues Flow**: Automatically proceeds to next task
 - **Background Monitor**: Uses separate thread for non-blocking key detection
 - **Unix/WSL Support**: Works on Linux/WSL (graceful degradation on Windows)
 
-**Files Changed**: `vibe/cli/interactive.py` (KeyboardMonitor class, cancel_all callback), `vibe/gemini/client.py` (cancel/reset_cancellation methods), `vibe/glm/client.py` (cancel/reset_cancellation methods)
+**Files Changed**: `vibe/cli/interactive.py` (KeyboardMonitor class, cancel_all callback), `vibe/gemini/client.py` (cancel/reset_cancellation methods), `vibe/glm/client.py` (cancel/reset_cancellation methods), `vibe/claude/executor.py` (changed all terminate() to kill())
+
+---
+
+#### Project Awareness for LLMs (2026-01-18)
+
+Both Gemini and Claude now receive comprehensive project context:
+
+- **Enhanced Project Context**: STARMAP.md, CLAUDE.md, CHANGELOG.md (full files up to 8K chars)
+- **Git History**: Recent 10 commits for understanding project evolution
+- **Platform Detection**: OS, Python version, WSL detection for platform-specific code
+- **Claude Context Injection**: Project context prepended to task prompts
+- **Gemini Verification**: Pre-execution check for dependencies, ordering, and platform issues
+
+**Files Changed**: `vibe/cli/project.py` (enhanced load_project_context, new get_git_log and get_platform_info), `vibe/claude/executor.py` (project_context parameter in build_prompt and execute), `vibe/cli/execution.py` (project_context parameter), `vibe/gemini/client.py` (verify_tasks method), `vibe/gemini/prompts.py` (TASK_VERIFICATION_PROMPT)
+
+---
+
+#### Individual Task Approval (2026-01-18)
+
+Tasks are now approved individually instead of all-or-nothing:
+
+- **Per-Task Review**: See description, files, constraints for each task
+- **Approval Options**: [y] Approve, [n] Skip, [e] Edit, [a] Approve all remaining, [q] Quit
+- **Task Editing**: Modify description or constraints before execution
+- **Selective Execution**: Skip tasks 2 and 4 while approving 1, 3, and 5
+
+**Files Changed**: `vibe/cli/interactive.py` (approve_tasks_individually function)
 
 ---
 
