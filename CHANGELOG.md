@@ -27,14 +27,15 @@ New `/gemini` command allows direct conversation with the orchestrator without t
 
 #### ESC Key Task Cancellation (2026-01-18)
 
-Press ESC during task execution to cancel the current Claude task:
+Press ESC during task execution to cancel the current task across all AI clients:
 
+- **Full Cancellation**: Terminates Claude subprocess AND interrupts Gemini/GLM API calls
 - **Non-Destructive**: Task marked as "skipped", not "failed"
 - **Continues Flow**: Automatically proceeds to next task
 - **Background Monitor**: Uses separate thread for non-blocking key detection
 - **Unix/WSL Support**: Works on Linux/WSL (graceful degradation on Windows)
 
-**Files Changed**: `vibe/cli/interactive.py` (KeyboardMonitor class)
+**Files Changed**: `vibe/cli/interactive.py` (KeyboardMonitor class, cancel_all callback), `vibe/gemini/client.py` (cancel/reset_cancellation methods), `vibe/glm/client.py` (cancel/reset_cancellation methods)
 
 ---
 

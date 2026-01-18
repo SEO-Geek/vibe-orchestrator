@@ -182,8 +182,16 @@ async def execute_tasks(
     all_summaries: list[str] = []
     task_ids: dict[int, str] = {}
 
+    # Create combined cancel callback for all clients
+    def cancel_all() -> None:
+        """Cancel all running operations (Claude, Gemini, GLM)."""
+        executor.cancel()
+        glm_client.cancel()
+        if gemini_client:
+            gemini_client.cancel()
+
     # Start keyboard monitor for ESC key cancellation
-    keyboard_monitor = KeyboardMonitor(on_cancel=executor.cancel)
+    keyboard_monitor = KeyboardMonitor(on_cancel=cancel_all)
     keyboard_monitor.start()
     if KEYBOARD_MONITOR_AVAILABLE and sys.stdin.isatty():
         console.print("[dim]Press ESC to cancel current task[/dim]")
@@ -250,7 +258,11 @@ async def execute_tasks(
                         # User pressed ESC - skip this task, don't count as failure
                         console.print("[yellow]Task cancelled - skipping to next task[/yellow]")
                         skipped += 1
-                        executor.reset_cancellation()  # Reset for next task
+                        # Reset cancellation for all clients for next task
+                        executor.reset_cancellation()
+                        glm_client.reset_cancellation()
+                        if gemini_client:
+                            gemini_client.reset_cancellation()
                         break  # Move to next task
                     else:
                         console.print(f"[red]Task failed: {error_msg}[/red]")
@@ -596,6 +608,9 @@ async def process_user_request(
                 user_request, project_context
             )
         console.print("[dim]Gemini responded.[/dim]")
+    except asyncio.CancelledError:
+        console.print("[yellow]Cancelled by user.[/yellow]")
+        return
     except Exception as e:
         console.print(f"[yellow]Gemini clarification check failed: {e}, proceeding[/yellow]")
         clarification_result = {"needs_clarification": False}
@@ -623,6 +638,9 @@ async def process_user_request(
         try:
             tasks = await gemini_client.decompose_task(user_request, project_context)
             console.print(f"[dim]Gemini returned {len(tasks) if tasks else 0} task(s).[/dim]")
+        except asyncio.CancelledError:
+            console.print("[yellow]Cancelled by user.[/yellow]")
+            return
         except Exception as e:
             console.print(f"[red]Error decomposing task: {e}[/red]")
             import traceback

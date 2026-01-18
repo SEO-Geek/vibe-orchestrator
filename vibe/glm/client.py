@@ -156,6 +156,9 @@ class GLMClient:
         self._consecutive_failures = 0
         self._circuit_open_until: datetime | None = None
 
+        # Cancellation state (for ESC key handling)
+        self._cancelled = False
+
     async def _get_client(self) -> AsyncOpenAI:
         """Get or create AsyncOpenAI client, recreating if event loop changed."""
         current_loop = asyncio.get_running_loop()
@@ -186,6 +189,15 @@ class GLMClient:
                 pass  # Ignore errors during cleanup
             self._client = None
             self._client_loop = None
+
+    def cancel(self) -> None:
+        """Cancel any running API calls. Called when user presses ESC."""
+        self._cancelled = True
+        logger.debug("GLMClient: cancellation requested")
+
+    def reset_cancellation(self) -> None:
+        """Reset cancellation flag for new operations."""
+        self._cancelled = False
 
     def _is_circuit_open(self) -> bool:
         """Check if circuit breaker is open (GLM calls should be skipped)."""
@@ -283,6 +295,10 @@ class GLMClient:
         """
         all_messages = [{"role": "system", "content": system_prompt}] + messages
 
+        # Check for cancellation (ESC key)
+        if self._cancelled:
+            raise asyncio.CancelledError("Operation cancelled by user")
+
         # Prepare log entry
         request_id = str(uuid.uuid4())
         start_time = time.monotonic()
@@ -312,6 +328,10 @@ class GLMClient:
             self.request_count += 1
             if response.usage:
                 self.total_tokens_used += response.usage.total_tokens
+
+            # Check for cancellation after API call
+            if self._cancelled:
+                raise asyncio.CancelledError("Operation cancelled by user")
 
             # Validate response structure
             if not response.choices:
