@@ -4,6 +4,107 @@ All notable changes to Vibe Orchestrator will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+#### Direct Gemini Chat Mode (2026-01-18)
+
+New `/gemini` command allows direct conversation with the orchestrator without triggering Claude execution:
+
+- **Strategy Discussions**: Talk to Gemini about task approach and phrasing
+- **Confidence Checks**: Ask Gemini how confident it is about task completion
+- **Prompt Feedback**: Suggest changes to how Gemini prompts Claude
+- **Context Aware**: Includes project context and recent activity
+
+**Usage**: `/gemini <message>`
+```
+/gemini How confident are you that the last task succeeded?
+/gemini Should we try a different approach for the OCR issue?
+```
+
+**Files Changed**: `vibe/cli/commands.py`, `vibe/cli/interactive.py`
+
+---
+
+#### ESC Key Task Cancellation (2026-01-18)
+
+Press ESC during task execution to cancel the current Claude task:
+
+- **Non-Destructive**: Task marked as "skipped", not "failed"
+- **Continues Flow**: Automatically proceeds to next task
+- **Background Monitor**: Uses separate thread for non-blocking key detection
+- **Unix/WSL Support**: Works on Linux/WSL (graceful degradation on Windows)
+
+**Files Changed**: `vibe/cli/interactive.py` (KeyboardMonitor class)
+
+---
+
+#### Comprehensive Gemini Logging (2026-01-18)
+
+Added full logging for Gemini (brain/orchestrator) API interactions:
+
+- **New Log Entry**: `GeminiLogEntry` with method, tokens, latency, task descriptions
+- **New Logger**: `gemini_logger` writes to `~/.vibe/logs/gemini.jsonl`
+- **Task Tracking**: Logs `tasks_generated` and `task_descriptions` for decomposition calls
+
+**Files Changed**: `vibe/logging/entries.py`, `vibe/logging/config.py`, `vibe/logging/__init__.py`, `vibe/gemini/client.py`
+
+---
+
+### Changed
+
+#### Anti-Over-Engineering Prompts (2026-01-18)
+
+Updated Gemini prompts to prevent Claude's tendency to over-engineer:
+
+- **Mandatory Constraints**: "MODIFY existing files, do NOT create new files"
+- **Minimal Changes**: "Make MINIMAL changes to solve the problem"
+- **No Scope Creep**: "Do NOT refactor, reorganize, or 'improve' unrelated code"
+- **Verification Required**: "Show evidence that changes work"
+
+**Files Changed**: `vibe/gemini/prompts.py`
+
+---
+
+#### GLM Claim Verification (2026-01-18)
+
+Enhanced GLM review prompt to detect when Claude claims changes it didn't make:
+
+- **Diff Verification**: Checks Claude's summary against actual git diff
+- **Claim Mismatch Detection**: New `claim_mismatch: true` field in rejection
+- **Specific Feedback**: "VERIFICATION FAILED: Claude's summary does not match actual changes"
+
+**Files Changed**: `vibe/glm/prompts.py`
+
+---
+
+#### Cost Display Shows Gemini/GLM (2026-01-18)
+
+Session completion now shows Gemini and GLM costs instead of Claude (Claude is fixed-price Max plan):
+
+```
+API Usage (Claude excluded - Max plan):
+Gemini: 15,234 tokens (~$0.0038)
+GLM: 8,421 tokens (~$0.0051)
+Total: ~$0.0089
+```
+
+**Files Changed**: `vibe/cli/interactive.py`
+
+---
+
+#### Lazy Client Initialization (2026-01-18)
+
+Fixed "Event loop is closed" errors by implementing lazy initialization for async clients:
+
+- **GeminiClient**: Creates AsyncOpenAI in `_get_client()` when needed
+- **GLMClient**: Same lazy initialization pattern
+- **PerplexityClient**: Same lazy initialization pattern
+- **Event Loop Tracking**: Recreates client if event loop changes
+
+**Files Changed**: `vibe/gemini/client.py`, `vibe/glm/client.py`, `vibe/integrations/research.py`
+
+---
+
 ### Changed
 
 #### Gemini/GLM Architecture Split (2026-01-17)

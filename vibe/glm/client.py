@@ -129,21 +129,20 @@ class GLMClient:
             temperature: Default sampling temperature (0.0-1.0)
             max_tokens: Maximum tokens in response
         """
-        # Don't store api_key as instance variable for security
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
 
-        # Use OpenAI SDK with OpenRouter's API - they expose an OpenAI-compatible endpoint.
-        # The headers are required by OpenRouter for usage tracking and rate limiting.
-        self._client = AsyncOpenAI(
-            api_key=api_key,  # Only passed to client, not stored (security)
-            base_url=OPENROUTER_BASE_URL,
-            default_headers={
-                "HTTP-Referer": "https://github.com/SEO-Geek/vibe-orchestrator",
-                "X-Title": "Vibe Orchestrator",
-            },
-        )
+        # Store config for lazy client creation (fix for "Event loop is closed" errors)
+        self._api_key = api_key
+        self._headers = {
+            "HTTP-Referer": "https://github.com/SEO-Geek/vibe-orchestrator",
+            "X-Title": "Vibe Orchestrator",
+        }
+
+        # Lazy-initialized client (created in async context)
+        self._client: AsyncOpenAI | None = None
+        self._client_loop: asyncio.AbstractEventLoop | None = None
 
         # Track usage for cost monitoring
         self.total_tokens_used = 0
@@ -153,12 +152,36 @@ class GLMClient:
         self._consecutive_failures = 0
         self._circuit_open_until: datetime | None = None
 
+    async def _get_client(self) -> AsyncOpenAI:
+        """Get or create AsyncOpenAI client, recreating if event loop changed."""
+        current_loop = asyncio.get_running_loop()
+
+        # If loop changed, abandon old client (don't try to close - old loop is dead)
+        # This prevents "Event loop is closed" errors when asyncio.run() is called repeatedly
+        if self._client is not None and self._client_loop is not current_loop:
+            self._client = None
+            self._client_loop = None
+
+        # Create client if needed
+        if self._client is None:
+            self._client = AsyncOpenAI(
+                api_key=self._api_key,
+                base_url=OPENROUTER_BASE_URL,
+                default_headers=self._headers,
+            )
+            self._client_loop = current_loop
+
+        return self._client
+
     async def close(self) -> None:
         """Close the client and release resources."""
-        try:
-            await self._client.close()
-        except Exception:
-            pass  # Ignore errors during cleanup
+        if self._client is not None:
+            try:
+                await self._client.close()
+            except Exception:
+                pass  # Ignore errors during cleanup
+            self._client = None
+            self._client_loop = None
 
     def _is_circuit_open(self) -> bool:
         """Check if circuit breaker is open (GLM calls should be skipped)."""
@@ -201,9 +224,10 @@ class GLMClient:
             Tuple of (success, message)
         """
         try:
+            client = await self._get_client()
             # Simple completion request to verify connectivity
             response = await asyncio.wait_for(
-                self._client.chat.completions.create(
+                client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "user", "content": "Hello"}],
                     max_tokens=10,
@@ -273,7 +297,8 @@ class GLMClient:
         )
 
         try:
-            response = await self._client.chat.completions.create(
+            client = await self._get_client()
+            response = await client.chat.completions.create(
                 model=self.model,
                 messages=all_messages,
                 temperature=temperature or self.temperature,
@@ -384,7 +409,8 @@ class GLMClient:
         all_messages = [{"role": "system", "content": system_prompt}] + messages
 
         try:
-            stream = await self._client.chat.completions.create(
+            client = await self._get_client()
+            stream = await client.chat.completions.create(
                 model=self.model,
                 messages=all_messages,
                 temperature=temperature or self.temperature,
@@ -900,14 +926,20 @@ def ping_glm_sync(api_key: str, timeout: float = 10.0) -> tuple[bool, str]:
     Returns:
         Tuple of (success, message)
     """
-    client = GLMClient(api_key)
+    async def _do_ping() -> tuple[bool, str]:
+        """Create client, ping, and close within the same async context."""
+        client = GLMClient(api_key)
+        try:
+            return await client.ping(timeout)
+        finally:
+            await client.close()  # Critical: close before event loop ends
 
     try:
         # Check if there's already a running event loop
         asyncio.get_running_loop()  # Raises RuntimeError if no loop
     except RuntimeError:
         # No running loop - simple case, just use asyncio.run()
-        return asyncio.run(client.ping(timeout))
+        return asyncio.run(_do_ping())
 
     # EDGE CASE: If called from within an async context (e.g., pytest-asyncio),
     # we can't use asyncio.run(). Spawn a thread with its own event loop instead.
@@ -915,5 +947,5 @@ def ping_glm_sync(api_key: str, timeout: float = 10.0) -> tuple[bool, str]:
     import concurrent.futures
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
-        future = executor.submit(asyncio.run, client.ping(timeout))
+        future = executor.submit(asyncio.run, _do_ping())
         return future.result(timeout=timeout + 5)

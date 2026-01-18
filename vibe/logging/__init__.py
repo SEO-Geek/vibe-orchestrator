@@ -32,6 +32,7 @@ from typing import Any
 from .config import LogConfig, get_config, set_config
 from .entries import (
     ClaudeLogEntry,
+    GeminiLogEntry,
     GLMLogEntry,
     SessionLogEntry,
     now_iso,
@@ -64,6 +65,7 @@ def get_project_name() -> str:
 
 # Lazy-initialized loggers to avoid creating files before needed
 _glm_logger: Any = None
+_gemini_logger: Any = None
 _claude_logger: Any = None
 _session_logger: Any = None
 _init_lock = threading.Lock()
@@ -71,7 +73,7 @@ _init_lock = threading.Lock()
 
 def _ensure_loggers() -> None:
     """Initialize loggers on first use."""
-    global _glm_logger, _claude_logger, _session_logger
+    global _glm_logger, _gemini_logger, _claude_logger, _session_logger
 
     if _glm_logger is not None:
         return
@@ -82,6 +84,14 @@ def _ensure_loggers() -> None:
             return
 
         config = get_config()
+
+        _gemini_logger = create_jsonl_logger(
+            "vibe.gemini",
+            config.gemini_log_path,
+            level=config.gemini_level,
+            max_bytes=config.max_file_size_bytes,
+            backup_count=config.backup_count,
+        )
 
         _glm_logger = create_jsonl_logger(
             "vibe.glm",
@@ -116,7 +126,9 @@ class _LazyLogger:
 
     def _get_logger(self) -> Any:
         _ensure_loggers()
-        if self._name == "glm":
+        if self._name == "gemini":
+            return _gemini_logger
+        elif self._name == "glm":
             return _glm_logger
         elif self._name == "claude":
             return _claude_logger
@@ -140,6 +152,7 @@ class _LazyLogger:
 
 
 # Public logger instances
+gemini_logger = _LazyLogger("gemini")
 glm_logger = _LazyLogger("glm")
 claude_logger = _LazyLogger("claude")
 session_logger = _LazyLogger("session")
@@ -147,10 +160,12 @@ session_logger = _LazyLogger("session")
 
 __all__ = [
     # Loggers
+    "gemini_logger",
     "glm_logger",
     "claude_logger",
     "session_logger",
     # Log entries
+    "GeminiLogEntry",
     "GLMLogEntry",
     "ClaudeLogEntry",
     "SessionLogEntry",

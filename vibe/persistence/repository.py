@@ -357,7 +357,7 @@ class VibeRepository:
 
         count = cursor.rowcount
         if count > 0:
-            logger.warning(f"Marked {count} orphaned sessions for project {project_id[:8]}")
+            logger.debug(f"Marked {count} orphaned sessions for project {project_id[:8]}")
 
         return count
 

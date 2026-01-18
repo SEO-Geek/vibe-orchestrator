@@ -7,6 +7,7 @@ Provides research capabilities via Perplexity API for:
 - Problem solving assistance
 """
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
@@ -55,25 +56,47 @@ class PerplexityClient:
             api_key: Perplexity API key (or from PERPLEXITY_API_KEY env)
             model: Model to use for research
         """
-        # Don't store api_key as instance variable for security
-        resolved_key = api_key or os.environ.get("PERPLEXITY_API_KEY", "")
         self.model = model
 
-        if not resolved_key:
+        # Store config for lazy client creation (fix for "Event loop is closed" errors)
+        self._api_key = api_key or os.environ.get("PERPLEXITY_API_KEY", "")
+
+        if not self._api_key:
             logger.warning("PERPLEXITY_API_KEY not set - research will be unavailable")
-            self._client = None
-        else:
-            self._client = AsyncOpenAI(
-                api_key=resolved_key,  # Only passed to client, not stored
-                base_url=PERPLEXITY_BASE_URL,
-            )
+
+        # Lazy-initialized client (created in async context)
+        self._client: AsyncOpenAI | None = None
+        self._client_loop: asyncio.AbstractEventLoop | None = None
 
         self.request_count = 0
 
+    async def _get_client(self) -> AsyncOpenAI | None:
+        """Get or create AsyncOpenAI client, recreating if event loop changed."""
+        if not self._api_key:
+            return None
+
+        current_loop = asyncio.get_running_loop()
+
+        # If loop changed, abandon old client (don't try to close - old loop is dead)
+        # This prevents "Event loop is closed" errors when asyncio.run() is called repeatedly
+        if self._client is not None and self._client_loop is not current_loop:
+            self._client = None
+            self._client_loop = None
+
+        # Create client if needed
+        if self._client is None:
+            self._client = AsyncOpenAI(
+                api_key=self._api_key,
+                base_url=PERPLEXITY_BASE_URL,
+            )
+            self._client_loop = current_loop
+
+        return self._client
+
     @property
     def is_available(self) -> bool:
-        """Check if Perplexity is available."""
-        return self._client is not None
+        """Check if Perplexity is available (API key configured)."""
+        return bool(self._api_key)
 
     async def research(
         self,
@@ -95,7 +118,8 @@ class PerplexityClient:
         Raises:
             ResearchError: If research fails
         """
-        if not self._client:
+        client = await self._get_client()
+        if not client:
             raise ResearchError("Perplexity API key not configured")
 
         # Build the research prompt
@@ -117,7 +141,7 @@ class PerplexityClient:
         )
 
         try:
-            response = await self._client.chat.completions.create(
+            response = await client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 max_tokens=max_tokens,
@@ -243,8 +267,10 @@ Provide current best practices and code examples."""
 
     async def close(self) -> None:
         """Close the client and release resources."""
-        if self._client:
+        if self._client is not None:
             try:
                 await self._client.close()
             except Exception:
                 pass  # Ignore errors during cleanup
+            self._client = None
+            self._client_loop = None

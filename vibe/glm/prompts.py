@@ -34,11 +34,24 @@ REVIEW CRITERIA:
 4. **Conventions**: Does it follow project patterns?
 5. **Safety**: No security issues, no breaking changes?
 
+CRITICAL: VERIFY CLAIMS AGAINST DIFF
+Before approving, verify that Claude's summary matches the actual diff:
+- If Claude claims "I modified X" but diff shows no changes to X → REJECT
+- If Claude claims "I created Y" but diff shows no new file Y → REJECT
+- If diff shows "(no code changes)" but summary claims modifications → REJECT
+- If task was "test/run/analyze" type, verify output shows actual test results
+
+When detecting a CLAIM VS REALITY MISMATCH, use this rejection format:
+- Set "claim_mismatch": true in response
+- Feedback MUST include: "VERIFICATION FAILED: Claude's summary does not match actual changes"
+- Be specific about what was claimed vs what was actually done
+
 OUTPUT FORMAT (JSON only):
 ```json
 {
   "approved": true/false,
   "score": 1-10,
+  "claim_mismatch": true/false,
   "feedback": "Specific feedback about the changes",
   "issues": ["list", "of", "specific", "issues"],
   "suggestions": ["optional", "improvements"]
@@ -46,6 +59,7 @@ OUTPUT FORMAT (JSON only):
 ```
 
 RULES:
+- Be STRICT about verifying claims against actual diff
 - Be STRICT about scope - reject changes outside the task
 - Be LENIENT about style if functionality is correct
 - Always provide actionable feedback

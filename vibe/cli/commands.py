@@ -39,11 +39,14 @@ def handle_help() -> None:
     console.print("  /debug      - Debug session tracking")
     console.print("  /rollback   - Rollback to debug checkpoint")
     console.print("  /research   - Research a topic via Perplexity")
+    console.print("  /gemini     - [cyan]Chat directly with Gemini[/cyan] (no Claude execution)")
     console.print("  /github     - Show GitHub repo info")
     console.print("  /issues     - List GitHub issues")
     console.print("  /prs        - List GitHub pull requests")
     console.print("  /project    - Switch project")
     console.print("  /help       - Show this help")
+    console.print()
+    console.print("[dim]Tip: Use /gemini to discuss strategy without triggering tasks[/dim]")
     console.print()
 
 
@@ -650,3 +653,108 @@ async def handle_research_async(
                         console.print(f"  [dim]• {citation}[/dim]")
             except ResearchError as e:
                 console.print(f"[red]Research failed: {e}[/red]")
+
+
+# =============================================================================
+# GEMINI DIRECT CHAT
+# =============================================================================
+
+GEMINI_CHAT_SYSTEM_PROMPT = """You are Gemini, the intelligent orchestrator in the Vibe system.
+
+The user is chatting with you directly (not asking you to decompose tasks).
+You are having a conversation about:
+- How you're orchestrating Claude's work
+- Your confidence levels on task completion
+- How to better phrase tasks for Claude
+- Strategy discussions about the current project
+- Reviewing what's been done and planning next steps
+
+PROJECT CONTEXT:
+{project_context}
+
+RECENT ACTIVITY:
+{recent_activity}
+
+When the user asks about task execution, explain your approach.
+When they ask about confidence, be honest about uncertainties.
+When they suggest changes to how you prompt Claude, acknowledge and remember.
+
+Respond conversationally - do NOT output JSON task arrays.
+This is a discussion, not task decomposition."""
+
+
+async def handle_gemini_chat(
+    user_input: str,
+    gemini_client: GeminiClient,
+    project: Project,
+    context: SessionContext,
+    memory: VibeMemory | None = None,
+) -> None:
+    """
+    Handle direct chat with Gemini (the orchestrator/brain).
+
+    This allows the user to discuss strategy, task phrasing, confidence levels,
+    and other orchestration concerns without triggering Claude execution.
+
+    Usage: /gemini <message>
+    """
+    # Remove "/gemini " prefix
+    message = user_input[8:].strip() if user_input.startswith("/gemini ") else user_input.strip()
+
+    if not message:
+        console.print("\n[bold]Gemini Chat Mode[/bold]")
+        console.print("Talk directly to Gemini (the orchestrator) without executing tasks.")
+        console.print("\n[dim]Usage: /gemini <your message>[/dim]")
+        console.print("[dim]Example: /gemini How confident are you that the last task succeeded?[/dim]")
+        console.print("[dim]Example: /gemini Should we try a different approach for the OCR issue?[/dim]")
+        return
+
+    # Build context for Gemini
+    project_context = load_project_context(project) if project else "No project loaded"
+
+    # Get recent activity from memory
+    recent_activity = "No recent activity tracked"
+    if memory:
+        try:
+            recent_items = memory.search(query="", limit=5)
+            if recent_items:
+                recent_activity = "\n".join(
+                    f"- {item.get('key', 'item')}: {item.get('value', '')[:100]}"
+                    for item in recent_items
+                )
+        except Exception:
+            pass
+
+    # Build the system prompt
+    system_prompt = GEMINI_CHAT_SYSTEM_PROMPT.format(
+        project_context=project_context[:2000] if project_context else "None",
+        recent_activity=recent_activity,
+    )
+
+    # Chat with Gemini
+    with console.status("[bold cyan]Gemini thinking...[/bold cyan]"):
+        try:
+            response = await gemini_client.chat(
+                system_prompt=system_prompt,
+                messages=[{"role": "user", "content": message}],
+                temperature=0.7,  # More conversational
+                max_tokens=2048,
+                method="direct_chat",
+            )
+
+            # Display response
+            console.print()
+            console.print(
+                Panel(
+                    Markdown(response.content),
+                    title="[bold cyan]Gemini[/bold cyan]",
+                    border_style="cyan",
+                )
+            )
+
+            # Track the conversation in context
+            context.add_glm_message("user", f"[direct chat] {message}")
+            context.add_glm_message("assistant", response.content[:500])
+
+        except Exception as e:
+            console.print(f"[red]Gemini chat error: {e}[/red]")

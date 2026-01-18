@@ -21,6 +21,7 @@ class LogConfig:
     backup_count: int = 5
 
     # Log levels: DEBUG, INFO, WARNING, ERROR
+    gemini_level: str = "INFO"  # Brain/orchestrator logging
     glm_level: str = "INFO"
     claude_level: str = "INFO"
     session_level: str = "INFO"
@@ -39,6 +40,7 @@ class LogConfig:
 
         # Override log level from environment
         if level := os.environ.get("VIBE_LOG_LEVEL"):
+            config.gemini_level = level
             config.glm_level = level
             config.claude_level = level
             config.session_level = level
@@ -59,6 +61,11 @@ class LogConfig:
     def ensure_log_dir(self) -> None:
         """Create log directory if it doesn't exist."""
         self.log_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def gemini_log_path(self) -> Path:
+        """Path to Gemini (brain/orchestrator) interaction log."""
+        return self.log_dir / "gemini.jsonl"
 
     @property
     def glm_log_path(self) -> Path:

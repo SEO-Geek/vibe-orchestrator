@@ -102,7 +102,7 @@ User → Gemini (brain/orchestrator) → Claude (worker)
 │   ├── logging/           # Structured logging system
 │   │   ├── __init__.py
 │   │   ├── config.py      # LogConfig with env overrides
-│   │   ├── entries.py     # Log entry types (GLM, Claude, session)
+│   │   ├── entries.py     # Log entry types (Gemini, GLM, Claude, session)
 │   │   ├── handlers.py    # File handlers with rotation
 │   │   └── viewer.py      # Log viewing and analysis
 │   │
@@ -260,12 +260,14 @@ Injection rules auto-add tasks:
 | `/usage` | Show Gemini/GLM token usage |
 | `/memory` | Show memory statistics |
 | `/research <query>` | Research via Perplexity |
+| `/gemini <message>` | Direct chat with Gemini (no task execution) |
 | `/github` | Show GitHub repo info |
 | `/issues` | List open issues |
 | `/prs` | List open pull requests |
 | `/convention` | Manage global conventions |
 | `/debug start` | Start debug session |
 | `/quit` | Exit gracefully |
+| `ESC` | Cancel running task (keeps session alive) |
 
 ### Subcommands
 | Command | Description |
@@ -299,6 +301,14 @@ Projects are registered in `~/.config/vibe/projects.json`:
 
 ## Recent Changes
 
+- **2026-01-18**: Direct Gemini Chat, ESC Cancellation & Claim Verification
+  - Added `/gemini <msg>` command for direct orchestrator conversation (strategy, clarification)
+  - Added ESC key support to cancel running tasks without killing session
+  - Implemented KeyboardMonitor class with Unix termios/tty support
+  - GLM prompts now include claim verification (detects Claude lying about changes)
+  - Gemini prompts enhanced with anti-over-engineering rules
+  - Cost display shows Gemini/GLM usage (Claude is fixed price)
+  - Comprehensive logging with GeminiLogEntry for orchestrator tracking
 - **2026-01-17**: Task-Type Routing, Kanban Board & Pattern Learning
   - Added `task_routing.py`: Intelligent per-task-type configuration (timeout tiers, review skipping, retries)
   - Added `task_board.py`: Kanban-style task tracking (BACKLOG → IN_PROGRESS → REVIEW → DONE)

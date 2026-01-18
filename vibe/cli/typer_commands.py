@@ -9,6 +9,7 @@ Architecture:
                   GLM (code review/verification)
 """
 
+import asyncio
 import atexit
 import logging
 import os
@@ -20,16 +21,26 @@ from typing import NoReturn
 import typer
 
 
-# Suppress any remaining httpx/asyncio cleanup errors on exit
-# The main cleanup happens in _start_orchestrator's finally block,
-# but this catches any stragglers from other async clients
-@atexit.register
-def _cleanup_suppress_errors():
-    """Suppress asyncio cleanup errors by redirecting stderr at exit."""
-    try:
-        sys.stderr = open(os.devnull, 'w')
-    except Exception:
-        pass
+# Suppress httpx/asyncio "Event loop is closed" errors globally
+# These occur because AsyncOpenAI clients are created in sync context
+# but their internal httpx connections get orphaned when asyncio.run() finishes
+def _httpx_exception_handler(loop, context):
+    """Custom exception handler that suppresses httpx cleanup errors."""
+    exception = context.get("exception")
+    if exception and isinstance(exception, RuntimeError):
+        if "Event loop is closed" in str(exception):
+            return  # Silently ignore these harmless cleanup errors
+    # For all other exceptions, use default handler
+    loop.default_exception_handler(context)
+
+
+# Install the handler on any new event loop
+_original_new_event_loop = asyncio.new_event_loop
+def _patched_new_event_loop():
+    loop = _original_new_event_loop()
+    loop.set_exception_handler(_httpx_exception_handler)
+    return loop
+asyncio.new_event_loop = _patched_new_event_loop
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -209,24 +220,13 @@ def _start_orchestrator(
             description=project.description or "",
         )
 
-        # Check for orphaned sessions
-        orphans = _repository.get_orphaned_sessions()
-        if orphans:
-            orphan_msg = (
-                f"[yellow]Found {len(orphans)} orphaned session(s) "
-                "from previous crash(es)[/yellow]"
-            )
-            console.print(orphan_msg)
-            for orphan in orphans[:3]:
-                oid = orphan.get('id', orphan.get('session_id', ''))[:8]
-                started = orphan.get('started_at', 'unknown')
-                console.print(f"  [dim]- Session {oid}... started {started}[/dim]")
+        # Check for orphaned sessions (silently mark them)
+        _repository.get_orphaned_sessions()
 
         # Start new session
         repo_session = _repository.start_session(repo_project.id)
         repo_session_id = repo_session.id
         _current_repo_session_id = repo_session_id
-        console.print(f"  [dim]Persistence: session {repo_session_id[:8]}...[/dim]")
 
     except Exception as e:
         logger.error(f"Failed to initialize persistence: {e}")
@@ -254,9 +254,6 @@ def _start_orchestrator(
         memory_items = len(context_items)
 
         TaskHistory.load_from_memory(_memory)
-        stats = TaskHistory.get_stats()
-        if stats["total_tasks"] > 0:
-            console.print(f"  [dim]TaskHistory: {stats['total_tasks']} tasks loaded[/dim]")
     except Exception as e:
         console.print(f"[yellow]Warning: Old memory not available: {e}[/yellow]")
         _memory = None

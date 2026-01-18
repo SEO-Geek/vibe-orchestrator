@@ -162,6 +162,74 @@ class SessionLogEntry:
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 
+@dataclass
+class GeminiLogEntry:
+    """Log entry for Gemini (brain/orchestrator) API interactions."""
+
+    # Identity
+    timestamp: str  # ISO 8601
+    request_id: str  # UUID for correlating request/response
+    session_id: str  # Vibe session ID
+
+    # Method info
+    method: str  # "chat", "decompose_task", "check_clarification", etc.
+
+    # Request
+    system_prompt: str = ""
+    user_prompt: str = ""
+    temperature: float = 0.0
+    max_tokens: int = 0
+
+    # Response
+    response_content: str = ""
+    model: str = ""
+    finish_reason: str = ""
+
+    # Parsed output (for decompose_task)
+    tasks_generated: int = 0
+    task_descriptions: list[str] = field(default_factory=list)
+
+    # Metrics
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    latency_ms: int = 0
+
+    # Context
+    project_name: str = ""
+    user_request: str = ""  # Original user request (for debugging prompt quality)
+
+    # Error (if any)
+    error: str | None = None
+    error_type: str | None = None
+
+    # Cost estimation
+    cost_usd: float = 0.0
+
+    def estimate_cost(self) -> float:
+        """
+        Estimate cost based on token counts.
+        Gemini 2.0 Flash pricing (approximate): $0.0001/1K input, $0.0004/1K output
+        """
+        input_cost = (self.prompt_tokens / 1000) * 0.0001
+        output_cost = (self.completion_tokens / 1000) * 0.0004
+        self.cost_usd = round(input_cost + output_cost, 6)
+        return self.cost_usd
+
+    def to_json(self) -> str:
+        """Serialize to JSON string."""
+        return json.dumps(asdict(self), default=str)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "GeminiLogEntry":
+        """Create from dictionary."""
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
 def now_iso() -> str:
     """Get current time as ISO 8601 string."""
     return datetime.now().isoformat()

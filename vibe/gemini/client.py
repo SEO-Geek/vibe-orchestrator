@@ -17,6 +17,7 @@ import asyncio
 import logging
 import re
 import time
+import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -33,6 +34,13 @@ from vibe.gemini.prompts import (
     CLARIFICATION_PROMPT,
     ORCHESTRATOR_SYSTEM_PROMPT,
     TASK_DECOMPOSITION_PROMPT,
+)
+from vibe.logging import (
+    GeminiLogEntry,
+    gemini_logger,
+    get_project_name,
+    get_session_id,
+    now_iso,
 )
 
 logger = logging.getLogger(__name__)
@@ -121,15 +129,16 @@ class GeminiClient:
         self.temperature = temperature
         self.max_tokens = max_tokens
 
-        # OpenAI-compatible client for OpenRouter
-        self._client = AsyncOpenAI(
-            api_key=api_key,
-            base_url=OPENROUTER_BASE_URL,
-            default_headers={
-                "HTTP-Referer": "https://github.com/SEO-Geek/vibe-orchestrator",
-                "X-Title": "Vibe Orchestrator",
-            },
-        )
+        # Store config for lazy client creation (fix for "Event loop is closed" errors)
+        self._api_key = api_key
+        self._headers = {
+            "HTTP-Referer": "https://github.com/SEO-Geek/vibe-orchestrator",
+            "X-Title": "Vibe Orchestrator",
+        }
+
+        # Lazy-initialized client (created in async context)
+        self._client: AsyncOpenAI | None = None
+        self._client_loop: asyncio.AbstractEventLoop | None = None
 
         # Usage tracking
         self.total_tokens_used = 0
@@ -142,12 +151,36 @@ class GeminiClient:
         self._consecutive_failures = 0
         self._circuit_open_until: float | None = None
 
+    async def _get_client(self) -> AsyncOpenAI:
+        """Get or create AsyncOpenAI client, recreating if event loop changed."""
+        current_loop = asyncio.get_running_loop()
+
+        # If loop changed, abandon old client (don't try to close - old loop is dead)
+        # This prevents "Event loop is closed" errors when asyncio.run() is called repeatedly
+        if self._client is not None and self._client_loop is not current_loop:
+            self._client = None
+            self._client_loop = None
+
+        # Create client if needed
+        if self._client is None:
+            self._client = AsyncOpenAI(
+                api_key=self._api_key,
+                base_url=OPENROUTER_BASE_URL,
+                default_headers=self._headers,
+            )
+            self._client_loop = current_loop
+
+        return self._client
+
     async def close(self) -> None:
         """Close the client and release resources."""
-        try:
-            await self._client.close()
-        except Exception:
-            pass  # Ignore errors during cleanup
+        if self._client is not None:
+            try:
+                await self._client.close()
+            except Exception:
+                pass
+            self._client = None
+            self._client_loop = None
 
     def _is_circuit_open(self) -> bool:
         """Check if circuit breaker is open."""
@@ -187,7 +220,8 @@ class GeminiClient:
             GeminiConnectionError: If connection fails
         """
         try:
-            response = await self._client.chat.completions.create(
+            client = await self._get_client()
+            response = await client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": "ping"}],
                 max_tokens=10,
@@ -203,6 +237,8 @@ class GeminiClient:
         messages: list[dict[str, str]],
         temperature: float | None = None,
         max_tokens: int | None = None,
+        method: str = "chat",  # For logging which method called this
+        user_request: str = "",  # Original user request for debugging
     ) -> GeminiResponse:
         """
         Send a chat request to Gemini.
@@ -211,6 +247,8 @@ class GeminiClient:
             messages: List of message dicts with 'role' and 'content'
             temperature: Override default temperature
             max_tokens: Override default max_tokens
+            method: Method name for logging (internal use)
+            user_request: Original user request for debugging prompt quality
 
         Returns:
             GeminiResponse with content and metadata
@@ -223,9 +261,36 @@ class GeminiClient:
         if self._is_circuit_open():
             raise GeminiConnectionError("Gemini circuit breaker is open")
 
+        # Prepare log entry for comprehensive debugging
+        request_id = str(uuid.uuid4())
+        start_time = time.monotonic()
+
+        # Extract system and user prompts for logging
+        system_prompt = ""
+        user_prompt = ""
+        for msg in messages:
+            if msg.get("role") == "system":
+                system_prompt = msg.get("content", "")[:2000]
+            elif msg.get("role") == "user":
+                user_prompt = msg.get("content", "")[:5000]
+
+        log_entry = GeminiLogEntry(
+            timestamp=now_iso(),
+            request_id=request_id,
+            session_id=get_session_id(),
+            method=method,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=temperature or self.temperature,
+            max_tokens=max_tokens or self.max_tokens,
+            project_name=get_project_name(),
+            user_request=user_request[:500] if user_request else "",
+        )
+
         try:
+            client = await self._get_client()
             response = await asyncio.wait_for(
-                self._client.chat.completions.create(
+                client.chat.completions.create(
                     model=self.model,
                     messages=messages,
                     temperature=temperature or self.temperature,
@@ -241,6 +306,8 @@ class GeminiClient:
             if not choice.message:
                 raise GeminiResponseError("No message in Gemini response")
 
+            content = choice.message.content or ""
+
             # Track usage
             if response.usage:
                 self.total_tokens_used += response.usage.total_tokens
@@ -248,8 +315,21 @@ class GeminiClient:
 
             self._record_success()
 
+            # Update log entry with response data
+            log_entry.response_content = content[:10000]  # Truncate for log size
+            log_entry.model = response.model or self.model
+            log_entry.finish_reason = choice.finish_reason or ""
+            log_entry.prompt_tokens = response.usage.prompt_tokens if response.usage else 0
+            log_entry.completion_tokens = response.usage.completion_tokens if response.usage else 0
+            log_entry.total_tokens = response.usage.total_tokens if response.usage else 0
+            log_entry.latency_ms = int((time.monotonic() - start_time) * 1000)
+            log_entry.estimate_cost()
+
+            # Log successful call
+            gemini_logger.info(log_entry.to_json())
+
             return GeminiResponse(
-                content=choice.message.content or "",
+                content=content,
                 model=response.model,
                 usage={
                     "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
@@ -261,10 +341,18 @@ class GeminiClient:
 
         except asyncio.TimeoutError:
             self._record_failure()
+            log_entry.error = f"Timeout after {DEFAULT_TIMEOUT}s"
+            log_entry.error_type = "TimeoutError"
+            log_entry.latency_ms = int((time.monotonic() - start_time) * 1000)
+            gemini_logger.error(log_entry.to_json())
             raise GeminiConnectionError(f"Gemini timed out after {DEFAULT_TIMEOUT}s")
         except OpenAIError as e:
             self._record_failure()
             error_msg = str(e)
+            log_entry.error = error_msg[:500]
+            log_entry.error_type = type(e).__name__
+            log_entry.latency_ms = int((time.monotonic() - start_time) * 1000)
+            gemini_logger.error(log_entry.to_json())
             if "rate" in error_msg.lower():
                 raise GeminiRateLimitError(f"Rate limited: {error_msg}")
             elif "auth" in error_msg.lower():
@@ -273,9 +361,17 @@ class GeminiClient:
                 raise GeminiConnectionError(f"API error: {error_msg}")
         except GeminiResponseError:
             self._record_failure()
+            log_entry.error = "Invalid response structure"
+            log_entry.error_type = "GeminiResponseError"
+            log_entry.latency_ms = int((time.monotonic() - start_time) * 1000)
+            gemini_logger.error(log_entry.to_json())
             raise
         except Exception as e:
             self._record_failure()
+            log_entry.error = str(e)[:500]
+            log_entry.error_type = type(e).__name__
+            log_entry.latency_ms = int((time.monotonic() - start_time) * 1000)
+            gemini_logger.error(log_entry.to_json())
             raise GeminiConnectionError(f"Unexpected error: {e}")
 
     async def decompose_task(
@@ -315,7 +411,11 @@ class GeminiClient:
         ]
 
         try:
-            response = await self.chat(messages)
+            response = await self.chat(
+                messages,
+                method="decompose_task",
+                user_request=user_request,
+            )
             content = response.content
 
             # Extract JSON from response
@@ -326,7 +426,10 @@ class GeminiClient:
             if json_match:
                 tasks = json.loads(json_match.group())
                 if tasks:
+                    # Log task descriptions for debugging prompt quality
+                    task_descriptions = [t.get("description", "")[:100] for t in tasks]
                     logger.info(f"Gemini decomposed request into {len(tasks)} tasks")
+                    logger.debug(f"Task descriptions: {task_descriptions}")
                     return tasks
 
             # Fallback: create single task
@@ -378,18 +481,25 @@ class GeminiClient:
         ]
 
         try:
-            response = await self.chat(messages, max_tokens=500)
+            response = await self.chat(
+                messages,
+                max_tokens=500,
+                method="check_clarification",
+                user_request=user_request,
+            )
             content = response.content.strip().lower()
 
             # Check if Gemini wants to ask a question
             if "?" in response.content and len(response.content) < 500:
                 # Gemini is asking a clarifying question
+                logger.info(f"Gemini requesting clarification: {response.content[:100]}")
                 return {
                     "needs_clarification": True,
                     "question": response.content,
                 }
 
             # No clarification needed
+            logger.debug("Gemini: No clarification needed")
             return {"needs_clarification": False}
 
         except Exception as e:
@@ -415,7 +525,8 @@ class GeminiClient:
             raise GeminiConnectionError("Gemini circuit breaker is open")
 
         try:
-            stream = await self._client.chat.completions.create(
+            client = await self._get_client()
+            stream = await client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=temperature or self.temperature,
@@ -467,9 +578,12 @@ def ping_gemini_sync(api_key: str, timeout: float = 30.0) -> str:
     import concurrent.futures
 
     async def _do_ping() -> str:
-        """Create client and ping within the same async context."""
+        """Create client, ping, and close within the same async context."""
         client = GeminiClient(api_key)
-        return await client.ping()
+        try:
+            return await client.ping()
+        finally:
+            await client.close()  # Critical: close before event loop ends
 
     try:
         # Check if there's already a running event loop

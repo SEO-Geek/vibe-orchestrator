@@ -33,6 +33,21 @@ RULES:
 4. Include specific files and constraints for each task
 5. Think step-by-step before decomposing
 
+ANTI-OVER-ENGINEERING RULES (CRITICAL):
+- Claude tends to CREATE NEW FILES instead of MODIFYING EXISTING ones
+- Claude tends to REWRITE systems instead of FIXING specific issues
+- Claude tends to BUILD FRAMEWORKS instead of SOLVING problems
+- Always add constraint: "MODIFY existing files, do NOT create new files unless absolutely necessary"
+- Always add constraint: "Make MINIMAL changes to solve the problem"
+- Always add constraint: "Do NOT refactor, reorganize, or 'improve' unrelated code"
+- For debug tasks: "DEBUG existing code, do NOT rewrite it"
+
+VERIFICATION REQUIREMENTS:
+When a task involves code changes, ALWAYS add these constraints:
+- "After making changes, run relevant tests to verify"
+- "Provide specific evidence that changes work (test output, actual results)"
+- "If creating new functionality, demonstrate it works with a concrete example"
+
 OUTPUT FORMAT:
 Always respond with a JSON array of tasks:
 ```json
@@ -40,7 +55,7 @@ Always respond with a JSON array of tasks:
   {
     "description": "Clear, actionable task description",
     "files": ["file1.py", "file2.py"],
-    "constraints": ["Keep existing tests passing", "Follow project conventions"],
+    "constraints": ["MODIFY existing files only", "Make MINIMAL changes", "Verify changes work"],
     "type": "code_write|debug|refactor|research|ui_test"
   }
 ]
@@ -63,11 +78,29 @@ INSTRUCTIONS:
 4. Include specific files to modify
 5. Add constraints to prevent scope creep
 
+MANDATORY CONSTRAINTS FOR EVERY TASK:
+- "MODIFY existing files, do NOT create new files unless explicitly requested"
+- "Make MINIMAL changes - solve the problem, nothing more"
+- "Do NOT refactor, reorganize, or 'improve' unrelated code"
+
+FOR CODE-CHANGE TASKS, ADD:
+- "After changes, show evidence they work (test output, example usage)"
+- "List exactly which files were modified and what changed"
+
+FOR DEBUG/FIX TASKS, ADD:
+- "DEBUG and FIX the existing code, do NOT rewrite or replace it"
+- "Show the fix works by running relevant tests or demonstrating the behavior"
+
+FOR TEST/ANALYSIS TASKS, ADD:
+- "ACTUALLY RUN the tests/analysis and report specific results"
+- "Include concrete numbers, outputs, or evidence in summary"
+
 CRITICAL:
 - Each task must be self-contained
 - Include "research" tasks if Claude needs to explore first
 - Include "verify" tasks after significant changes
 - Never combine unrelated changes in one task
+- Claude often claims to make changes without actually doing so - demand verification
 
 Respond with ONLY a JSON array of tasks, no explanation."""
 

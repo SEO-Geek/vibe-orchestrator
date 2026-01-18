@@ -15,7 +15,19 @@ import json as json_module
 import logging
 import subprocess
 import sys
+import threading
 from datetime import datetime
+from typing import Callable
+
+# Unix-specific imports for keyboard monitoring (not available on Windows)
+try:
+    import select
+    import termios
+    import tty
+
+    KEYBOARD_MONITOR_AVAILABLE = True
+except ImportError:
+    KEYBOARD_MONITOR_AVAILABLE = False
 
 from rich.console import Console
 from rich.panel import Panel
@@ -41,6 +53,86 @@ from vibe.state import SessionContext, SessionState
 
 logger = logging.getLogger(__name__)
 console = Console()
+
+
+class KeyboardMonitor:
+    """
+    Monitor keyboard for ESC key to cancel running tasks.
+
+    Runs in a background thread, calls the cancel callback when ESC is pressed.
+    Works on Unix/Linux (including WSL). Uses non-blocking stdin read.
+
+    On Windows or when terminal control is unavailable, this is a no-op.
+
+    Usage:
+        monitor = KeyboardMonitor(on_cancel=executor.cancel)
+        monitor.start()
+        # ... run tasks ...
+        monitor.stop()
+    """
+
+    ESC_KEY = "\x1b"  # ASCII escape character
+
+    def __init__(self, on_cancel: Callable[[], None]) -> None:
+        self._on_cancel = on_cancel
+        self._running = False
+        self._thread: threading.Thread | None = None
+        self._old_settings: list | None = None
+        self._enabled = KEYBOARD_MONITOR_AVAILABLE
+
+    def start(self) -> None:
+        """Start monitoring for ESC key in background thread."""
+        if self._running or not self._enabled:
+            return
+
+        # Only works if stdin is a terminal
+        if not sys.stdin.isatty():
+            logger.debug("stdin not a tty, keyboard monitor disabled")
+            return
+
+        self._running = True
+        self._thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Stop monitoring and restore terminal settings."""
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=0.5)
+            self._thread = None
+
+    def _monitor_loop(self) -> None:
+        """Background thread that monitors for ESC key."""
+        if not self._enabled:
+            return
+
+        fd = None
+        try:
+            # Save terminal settings
+            fd = sys.stdin.fileno()
+            self._old_settings = termios.tcgetattr(fd)
+
+            # Set terminal to raw mode (no buffering, no echo)
+            tty.setcbreak(fd)
+
+            while self._running:
+                # Use select for non-blocking read with timeout
+                readable, _, _ = select.select([sys.stdin], [], [], 0.1)
+                if readable:
+                    char = sys.stdin.read(1)
+                    if char == self.ESC_KEY:
+                        console.print("\n[yellow]ESC pressed - cancelling current task...[/yellow]")
+                        self._on_cancel()
+                        # Don't stop monitoring - user might want to cancel again
+        except Exception as e:
+            logger.debug(f"Keyboard monitor error: {e}")
+        finally:
+            # Restore terminal settings
+            if self._old_settings and fd is not None:
+                try:
+                    termios.tcsetattr(fd, termios.TCSADRAIN, self._old_settings)
+                except Exception:
+                    pass
 
 
 def persist_message(
@@ -72,19 +164,29 @@ async def execute_tasks(
     user_request: str,
     repository: VibeRepository | None = None,
     debug_session: DebugSession | None = None,
+    gemini_client: GeminiClient | None = None,
 ) -> None:
     """
     Execute a list of tasks with Claude and GLM review.
 
     This is the core task execution loop used by both process_user_request
     and /redo command.
+
+    Press ESC during execution to cancel the current task and skip to the next.
     """
     MAX_RETRIES = 3  # noqa: N806 (constant in function)
     completed = 0
     failed = 0
+    skipped = 0  # Track tasks skipped due to ESC
     all_file_changes: list[str] = []
     all_summaries: list[str] = []
     task_ids: dict[int, str] = {}
+
+    # Start keyboard monitor for ESC key cancellation
+    keyboard_monitor = KeyboardMonitor(on_cancel=executor.cancel)
+    keyboard_monitor.start()
+    if KEYBOARD_MONITOR_AVAILABLE and sys.stdin.isatty():
+        console.print("[dim]Press ESC to cancel current task[/dim]")
 
     # Create tasks in persistence before execution
     if repository and context.repo_session_id:
@@ -141,21 +243,31 @@ async def execute_tasks(
                 )
 
                 if not result.success:
-                    console.print(f"[red]Task failed: {result.error}[/red]")
-                    failed += 1
-                    context.add_error(result.error or "Unknown error")
-                    add_task(
-                        task.get("description", ""),
-                        success=False,
-                        summary=result.error or "Unknown error",
-                    )
-                    if memory:
-                        memory.save_task_result(
-                            task_description=task.get("description", ""),
+                    error_msg = result.error or "Unknown error"
+                    is_cancelled = "cancelled" in error_msg.lower()
+
+                    if is_cancelled:
+                        # User pressed ESC - skip this task, don't count as failure
+                        console.print("[yellow]Task cancelled - skipping to next task[/yellow]")
+                        skipped += 1
+                        executor.reset_cancellation()  # Reset for next task
+                        break  # Move to next task
+                    else:
+                        console.print(f"[red]Task failed: {error_msg}[/red]")
+                        failed += 1
+                        context.add_error(error_msg)
+                        add_task(
+                            task.get("description", ""),
                             success=False,
-                            summary=result.error or "Unknown error",
+                            summary=error_msg,
                         )
-                    break  # Don't retry on execution failure
+                        if memory:
+                            memory.save_task_result(
+                                task_description=task.get("description", ""),
+                                success=False,
+                                summary=error_msg,
+                            )
+                        break  # Don't retry on execution failure
 
                 # Check tool verification
                 if not tool_verification["passed"] and tool_verification.get("missing_required"):
@@ -341,24 +453,42 @@ async def execute_tasks(
 
     # Final summary
     context.transition_to(SessionState.IDLE)
+    # Get usage stats for GLM and Gemini (paid APIs - not Claude which is fixed price)
     glm_stats = glm_client.get_usage_stats()
     glm_tokens = glm_stats.get("total_tokens", 0)
-    glm_cost = glm_tokens * 0.0000006
+    glm_cost = glm_tokens * 0.0000006  # GLM-4.7 pricing estimate
+
+    gemini_tokens = 0
+    gemini_cost = 0.0
+    if gemini_client:
+        gemini_stats = gemini_client.get_usage_stats()
+        gemini_tokens = gemini_stats.get("total_tokens", 0)
+        # Gemini 2.0 Flash pricing: $0.0001/1K input, $0.0004/1K output (estimate avg)
+        gemini_cost = gemini_tokens * 0.00000025
+
+    total_cost = glm_cost + gemini_cost
 
     console.print()
+    skipped_line = f"  Skipped: [yellow]{skipped}[/yellow]\n" if skipped > 0 else ""
     console.print(
         Panel(
             f"[bold]Session Complete[/bold]\n\n"
             f"  Completed: [green]{completed}[/green]\n"
             f"  Failed: [red]{failed}[/red]\n"
-            f"  Total: {len(tasks)}\n"
-            f"  GLM tokens: {glm_tokens:,} (~${glm_cost:.4f})",
+            f"{skipped_line}"
+            f"  Total: {len(tasks)}\n\n"
+            f"  [dim]API Usage (Claude excluded - Max plan):[/dim]\n"
+            f"  Gemini: {gemini_tokens:,} tokens (~${gemini_cost:.4f})\n"
+            f"  GLM: {glm_tokens:,} tokens (~${glm_cost:.4f})\n"
+            f"  [bold]Total: ~${total_cost:.4f}[/bold]",
             border_style="blue",
         )
     )
 
     # Record in context and memory
     summary = f"Executed {completed}/{len(tasks)} tasks successfully"
+    if skipped > 0:
+        summary += f" ({skipped} skipped)"
     context.add_glm_message("assistant", summary)
 
     if memory:
@@ -390,6 +520,9 @@ async def execute_tasks(
                 console.print("  [dim]Updated CHANGELOG.md[/dim]")
         except Exception as e:
             console.print(f"  [dim]Warning: Project update failed: {e}[/dim]")
+
+    # Stop keyboard monitor
+    keyboard_monitor.stop()
 
 
 async def process_user_request(
@@ -592,6 +725,7 @@ async def process_user_request(
         user_request=user_request,
         repository=repository,
         debug_session=debug_session,
+        gemini_client=gemini_client,
     )
 
 
@@ -619,6 +753,24 @@ def conversation_loop(
     NOTE: This function is SYNC. Async operations use asyncio.run() with fresh
     event loops. Clients are passed in but recreated inside async contexts as needed.
     """
+
+    def cleanup_clients() -> None:
+        """Close async clients before exit to prevent 'Event loop is closed' errors."""
+        async def _close_all():
+            import asyncio
+            closers = []
+            if gemini_client:
+                closers.append(gemini_client.close())
+            if glm_client:
+                closers.append(glm_client.close())
+            if perplexity:
+                closers.append(perplexity.close())
+            if closers:
+                await asyncio.gather(*closers, return_exceptions=True)
+        try:
+            asyncio.run(_close_all())
+        except Exception:
+            pass  # Ignore cleanup errors
     # Check if running in interactive terminal
     if not sys.stdin.isatty():
         console.print("[red]Error: Vibe requires an interactive terminal.[/red]")
@@ -681,6 +833,7 @@ def conversation_loop(
                     except Exception:
                         pass
                 console.print("[yellow]Goodbye![/yellow]")
+                cleanup_clients()
                 break
 
             # Handle commands
@@ -701,6 +854,7 @@ def conversation_loop(
                         except Exception:
                             pass
                     console.print("[yellow]Goodbye![/yellow]")
+                    cleanup_clients()
                     break
                 elif cmd == "/help":
                     commands.handle_help()
@@ -736,6 +890,13 @@ def conversation_loop(
                     )
                 elif cmd.startswith("/rollback"):
                     commands.handle_rollback(user_input, debug_session)
+                elif cmd.startswith("/gemini"):
+                    # Direct chat with Gemini - no task execution
+                    asyncio.run(
+                        commands.handle_gemini_chat(
+                            user_input, gemini_client, project, context, memory
+                        )
+                    )
                 else:
                     console.print(f"[red]Unknown command: {user_input}[/red]")
                 continue
@@ -779,4 +940,5 @@ def conversation_loop(
         except KeyboardInterrupt:
             console.print("\n[yellow]Use /quit to exit[/yellow]")
         except EOFError:
+            cleanup_clients()
             break
