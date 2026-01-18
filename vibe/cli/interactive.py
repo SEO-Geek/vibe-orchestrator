@@ -77,8 +77,6 @@ def approve_tasks_individually(tasks: list[dict]) -> list[dict]:
     Returns:
         List of approved tasks (may be modified)
     """
-    from rich.prompt import Prompt
-
     approved_tasks = []
     approve_all = False
 
@@ -115,15 +113,16 @@ def approve_tasks_individually(tasks: list[dict]) -> list[dict]:
 
         while True:
             try:
-                choice = Prompt.ask(
-                    "\n[y/n/e/a/q]",
-                    default="y",
-                    console=console,
-                ).strip().lower()
+                # Print prompt and flush, then read input
+                console.print("\n[bold][y/n/e/a/q][/bold] (y): ", end="")
+                sys.stdout.flush()
+                choice = sys.stdin.readline().strip().lower()
+                if not choice:
+                    choice = "y"
             except (EOFError, KeyboardInterrupt):
                 choice = "q"
 
-            if choice in ("y", ""):
+            if choice == "y":
                 approved_tasks.append(task)
                 console.print(f"  [green]✓ Approved[/green]")
                 break
@@ -132,11 +131,9 @@ def approve_tasks_individually(tasks: list[dict]) -> list[dict]:
                 break
             elif choice == "e":
                 try:
-                    new_desc = Prompt.ask(
-                        "New description (Enter to keep current)",
-                        default="",
-                        console=console,
-                    ).strip()
+                    console.print("New description (Enter to keep): ", end="")
+                    sys.stdout.flush()
+                    new_desc = sys.stdin.readline().strip()
                     if new_desc:
                         task["description"] = new_desc
                         console.print(f"  [blue]✎ Updated to: {new_desc}[/blue]")
