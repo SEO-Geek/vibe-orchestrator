@@ -248,7 +248,8 @@ class TaskBoard:
                 # This can happen if a task is re-queued or tests reuse IDs
                 conn.execute("""
                     INSERT OR REPLACE INTO board_tasks
-                    (id, description, column, project, session_id, created_at, updated_at, metadata, attempts, last_feedback, files_changed)
+                    (id, description, column, project, session_id, created_at, updated_at,
+                     metadata, attempts, last_feedback, files_changed)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, '', '[]')
                 """, (
                     task.id,

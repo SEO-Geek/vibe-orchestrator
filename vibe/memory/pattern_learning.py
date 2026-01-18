@@ -406,7 +406,10 @@ class PatternLearner:
                             project=self.project,
                             task_type=task_type.value,
                             description_template=template,
-                            tools_used=json.loads(success_pattern["tools_used"]) if success_pattern["tools_used"] else [],
+                            tools_used=(
+                                json.loads(success_pattern["tools_used"])
+                                if success_pattern["tools_used"] else []
+                            ),
                             success_count=success_pattern["success_count"],
                             failure_count=success_pattern["failure_count"] + 1,
                             avg_duration_seconds=success_pattern["avg_duration_seconds"],

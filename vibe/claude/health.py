@@ -8,7 +8,7 @@ Ensures GLM always has control over Claude execution state.
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum, auto
 from typing import TYPE_CHECKING
@@ -96,7 +96,7 @@ class ClaudeHealthMonitor:
         self._last_output_time: float | None = None
         self._restart_count = 0
         self._last_restart_time: float | None = None
-        self._executor: "ClaudeExecutor | None" = None
+        self._executor: ClaudeExecutor | None = None
 
     def attach_executor(self, executor: "ClaudeExecutor") -> None:
         """Attach an executor to monitor."""

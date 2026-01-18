@@ -16,8 +16,8 @@ import logging
 import subprocess
 import sys
 import threading
+from collections.abc import Callable
 from datetime import datetime
-from typing import Callable
 
 # Unix-specific imports for keyboard monitoring (not available on Windows)
 try:

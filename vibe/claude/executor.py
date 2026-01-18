@@ -637,7 +637,7 @@ class ClaudeExecutor:
                         """
                         output = b""
                         buffer = b""
-                        CHUNK_SIZE = 1024 * 1024  # 1MB chunks
+                        chunk_size = 1024 * 1024  # 1MB chunks
 
                         while True:
                             if process.stdout is None:
@@ -645,7 +645,7 @@ class ClaudeExecutor:
 
                             # Read in chunks - avoids 64KB line limit issue
                             try:
-                                chunk = await process.stdout.read(CHUNK_SIZE)
+                                chunk = await process.stdout.read(chunk_size)
                             except Exception as e:
                                 logger.warning(f"Read error: {e}")
                                 break
@@ -1019,7 +1019,7 @@ class ClaudeExecutor:
             # Uses chunked reads to avoid 64KB readline buffer limit.
             start_time = asyncio.get_running_loop().time()
             buffer = b""
-            CHUNK_SIZE = 64 * 1024  # 64KB chunks for responsive streaming
+            chunk_size = 64 * 1024  # 64KB chunks for responsive streaming
 
             while True:
                 # Check cancellation first - user can abort via TUI
@@ -1043,7 +1043,7 @@ class ClaudeExecutor:
                 # frequently while still waiting for data efficiently.
                 try:
                     chunk = await asyncio.wait_for(
-                        process.stdout.read(CHUNK_SIZE),
+                        process.stdout.read(chunk_size),
                         timeout=1.0,
                     )
                 except TimeoutError:

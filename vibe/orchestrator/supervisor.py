@@ -36,8 +36,8 @@ from vibe.exceptions import (
 )
 from vibe.glm.client import GLMClient
 from vibe.memory.keeper import VibeMemory
-from vibe.memory.pattern_learning import PatternLearner, get_pattern_learner
-from vibe.orchestrator.task_board import TaskBoard, get_task_board
+from vibe.memory.pattern_learning import get_pattern_learner
+from vibe.orchestrator.task_board import get_task_board
 from vibe.orchestrator.task_routing import TaskRouter, get_task_router
 from vibe.state import SessionContext, SessionState, Task
 
@@ -220,7 +220,7 @@ class Supervisor:
 
     def __init__(
         self,
-        gemini_client: "GeminiClient",
+        gemini_client: GeminiClient,
         glm_client: GLMClient,
         project: Project,
         memory: VibeMemory | None = None,
@@ -784,7 +784,9 @@ class Supervisor:
                         # Gemini needs more info - return early.
                         # This is success=True because the system worked correctly;
                         # we just need user input before proceeding.
-                        result.clarification_asked = clarification_result.get("question", "Please clarify your request.")
+                        result.clarification_asked = clarification_result.get(
+                            "question", "Please clarify your request."
+                        )
                         result.success = True
                         self.context.transition_to(SessionState.IDLE)
                         return result
@@ -1293,7 +1295,7 @@ class Supervisor:
 
         # Inject learned patterns and warnings from previous tasks
         # This helps Claude avoid repeating past mistakes and use proven approaches
-        from vibe.orchestrator.task_enforcer import TaskType, get_smart_detector
+        from vibe.orchestrator.task_enforcer import get_smart_detector
 
         try:
             detector = get_smart_detector()

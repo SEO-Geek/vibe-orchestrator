@@ -233,7 +233,7 @@ class GeminiClient:
         """
         try:
             client = await self._get_client()
-            response = await client.chat.completions.create(
+            await client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": "ping"}],
                 max_tokens=10,
@@ -359,7 +359,7 @@ class GeminiClient:
                 finish_reason=choice.finish_reason or "",
             )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._record_failure()
             log_entry.error = f"Timeout after {DEFAULT_TIMEOUT}s"
             log_entry.error_type = "TimeoutError"
@@ -510,7 +510,6 @@ class GeminiClient:
                 method="check_clarification",
                 user_request=user_request,
             )
-            content = response.content.strip().lower()
 
             # Check if Gemini wants to ask a question
             if "?" in response.content and len(response.content) < 500:

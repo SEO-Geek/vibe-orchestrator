@@ -48,11 +48,15 @@ vibe = "vibe.cli.typer_commands:run"
 packages = ["vibe"]
 
 [tool.ruff]
-line-length = 100
+line-length = 120
 target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# typer_commands.py has intentional asyncio patching before imports
+"vibe/cli/typer_commands.py" = ["E402"]
 
 [tool.mypy]
 python_version = "3.11"

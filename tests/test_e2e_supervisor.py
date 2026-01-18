@@ -18,7 +18,7 @@ import pytest
 
 from vibe.claude.executor import TaskResult
 from vibe.config import Project
-from vibe.exceptions import GeminiError, GLMError
+from vibe.exceptions import GeminiError
 from vibe.orchestrator.supervisor import Supervisor, SupervisorCallbacks
 from vibe.state import SessionState
 
