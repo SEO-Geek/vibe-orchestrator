@@ -35,10 +35,14 @@ def _httpx_exception_handler(loop, context):
 
 # Install the handler on any new event loop
 _original_new_event_loop = asyncio.new_event_loop
+
+
 def _patched_new_event_loop():
     loop = _original_new_event_loop()
     loop.set_exception_handler(_httpx_exception_handler)
     return loop
+
+
 asyncio.new_event_loop = _patched_new_event_loop
 from rich.console import Console
 from rich.panel import Panel
@@ -346,9 +350,7 @@ def list_projects() -> None:
 @app.command()
 def restore(
     session_id: str = typer.Argument(None, help="Session ID to restore (or 'list' to see all)"),
-    show_messages: bool = typer.Option(
-        False, "--messages", "-m", help="Show conversation messages"
-    ),
+    show_messages: bool = typer.Option(False, "--messages", "-m", help="Show conversation messages"),
     show_tasks: bool = typer.Option(False, "--tasks", "-t", help="Show task details"),
 ) -> None:
     """Recover from a crashed session."""
@@ -382,9 +384,7 @@ def restore(
             session_short = orphan.get("id", orphan.get("session_id", ""))[:12]
             project = orphan.get("project_name", "unknown")
             started = orphan.get("started_at", "")[:16] if orphan.get("started_at") else "-"
-            heartbeat = (
-                orphan.get("last_heartbeat_at", "")[:16] if orphan.get("last_heartbeat_at") else "-"
-            )
+            heartbeat = orphan.get("last_heartbeat_at", "")[:16] if orphan.get("last_heartbeat_at") else "-"
             tasks_completed = orphan.get("total_tasks_completed", orphan.get("tasks_completed", 0))
             tasks_failed = orphan.get("total_tasks_failed", orphan.get("tasks_failed", 0))
             task_info = f"{tasks_completed} done, {tasks_failed} failed"
@@ -428,14 +428,8 @@ def restore(
     tasks_info = context["tasks"]
 
     # Display session summary
-    messages_line = (
-        f"[bold]Messages:[/bold] {summary['total_messages']} "
-        f"({summary['user_messages']} from user)"
-    )
-    tasks_line = (
-        f"[bold]Tasks:[/bold] {summary['pending_tasks']} pending, "
-        f"{summary['completed_tasks']} completed"
-    )
+    messages_line = f"[bold]Messages:[/bold] {summary['total_messages']} ({summary['user_messages']} from user)"
+    tasks_line = f"[bold]Tasks:[/bold] {summary['pending_tasks']} pending, {summary['completed_tasks']} completed"
     console.print(
         Panel(
             f"[bold]Session:[/bold] {session.id[:12]}...\n"
@@ -454,8 +448,7 @@ def restore(
     if context["last_request"]:
         console.print(
             Panel(
-                context["last_request"][:500]
-                + ("..." if len(context["last_request"]) > 500 else ""),
+                context["last_request"][:500] + ("..." if len(context["last_request"]) > 500 else ""),
                 title="[bold yellow]Last User Request[/bold yellow]",
                 border_style="yellow",
             )
@@ -465,10 +458,7 @@ def restore(
         console.print("\n[bold red]Pending/In-Progress Tasks:[/bold red]")
         for i, task in enumerate(tasks_info["pending"], 1):
             status_color = "yellow" if task.status == TaskStatus.PENDING else "blue"
-            task_line = (
-                f"  [{status_color}]{i}. [{task.status.value}][/{status_color}] "
-                f"{task.description[:80]}"
-            )
+            task_line = f"  [{status_color}]{i}. [{task.status.value}][/{status_color}] {task.description[:80]}"
             console.print(task_line)
 
     if show_messages:
@@ -476,13 +466,9 @@ def restore(
         if messages:
             console.print("\n[bold]Conversation History:[/bold]")
             for msg in messages[-20:]:
-                role_color = {"user": "green", "glm": "cyan", "system": "dim"}.get(
-                    msg.role.value, "white"
-                )
+                role_color = {"user": "green", "glm": "cyan", "system": "dim"}.get(msg.role.value, "white")
                 content_preview = msg.content[:100].replace("\n", " ")
-                console.print(
-                    f"  [{role_color}][{msg.role.value}][/{role_color}] {content_preview}..."
-                )
+                console.print(f"  [{role_color}][{msg.role.value}][/{role_color}] {content_preview}...")
 
     if show_tasks:
         all_tasks = tasks_info["pending"] + tasks_info["completed"] + tasks_info["failed"]
@@ -512,9 +498,7 @@ def restore(
             console.print(table)
 
     console.print("\n[bold]Recovery Options:[/bold]")
-    console.print(
-        f"  1. Start vibe with this project: [cyan]vibe {project.name if project else ''}[/cyan]"
-    )
+    console.print(f"  1. Start vibe with this project: [cyan]vibe {project.name if project else ''}[/cyan]")
     console.print("  2. The pending tasks above can be re-requested in the new session")
 
 
@@ -556,9 +540,7 @@ def ping() -> None:
 @app.command()
 def logs(
     log_type: str = typer.Option("all", "--type", "-t", help="Log type: glm, claude, session, all"),
-    since: str = typer.Option(
-        None, "--since", "-s", help="Time filter (ISO or relative: 1h, 30m, 2d)"
-    ),
+    since: str = typer.Option(None, "--since", "-s", help="Time filter (ISO or relative: 1h, 30m, 2d)"),
     session: str = typer.Option(None, "--session", help="Filter by session ID"),
     tail: int = typer.Option(20, "--tail", "-n", help="Show last N entries"),
     stats: bool = typer.Option(False, "--stats", help="Show statistics instead of entries"),

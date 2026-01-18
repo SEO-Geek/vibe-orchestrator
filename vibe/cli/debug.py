@@ -57,9 +57,7 @@ async def execute_debug_workflow(
 
     console.print(
         Panel(
-            f"[bold]Debug Workflow Started[/bold]\n\n"
-            f"Problem: {problem}\n"
-            f"Max iterations: {MAX_ITERATIONS}",
+            f"[bold]Debug Workflow Started[/bold]\n\nProblem: {problem}\nMax iterations: {MAX_ITERATIONS}",
             border_style="cyan",
         )
     )
@@ -74,9 +72,7 @@ async def execute_debug_workflow(
     current_task = task_info.get("task", f"Investigate: {problem}")
 
     for iteration_num in range(1, MAX_ITERATIONS + 1):
-        console.print(
-            f"\n[bold cyan]═══ Debug Iteration {iteration_num}/{MAX_ITERATIONS} ═══[/bold cyan]"
-        )
+        console.print(f"\n[bold cyan]═══ Debug Iteration {iteration_num}/{MAX_ITERATIONS} ═══[/bold cyan]")
         console.print(f"[bold]Task:[/bold] {current_task}")
 
         # Build prompt with FULL context for Claude
@@ -153,8 +149,7 @@ async def execute_debug_workflow(
             next_task = review.get("next_task", "Continue")
             console.print(
                 Panel(
-                    f"[bold yellow]ITERATION APPROVED[/bold yellow]\n\n{feedback}\n\n"
-                    f"[bold]Next:[/bold] {next_task}",
+                    f"[bold yellow]ITERATION APPROVED[/bold yellow]\n\n{feedback}\n\n[bold]Next:[/bold] {next_task}",
                     border_style="yellow",
                 )
             )
@@ -183,9 +178,7 @@ async def execute_debug_workflow(
 
     # End of loop
     if not context.is_complete:
-        console.print(
-            f"\n[yellow]Max iterations ({MAX_ITERATIONS}) reached without solving problem.[/yellow]"
-        )
+        console.print(f"\n[yellow]Max iterations ({MAX_ITERATIONS}) reached without solving problem.[/yellow]")
 
     # Show summary
     glm_stats = glm_client.get_usage_stats()

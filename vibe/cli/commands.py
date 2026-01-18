@@ -226,9 +226,7 @@ def handle_research(
     if query:
         with console.status("[bold blue]Researching...[/bold blue]"):
             try:
-                result = asyncio.run(
-                    perplexity.research(query, context=load_project_context(project))
-                )
+                result = asyncio.run(perplexity.research(query, context=load_project_context(project)))
                 console.print(
                     Panel(
                         Markdown(result.answer),
@@ -257,17 +255,11 @@ def handle_github(github: GitHubOps | None) -> None:
             console.print("\n[bold]GitHub Repository:[/bold]")
             console.print(f"  Name: {repo_info.get('name', 'Unknown')}")
             owner = repo_info.get("owner", {})
-            console.print(
-                f"  Owner: {owner.get('login', 'Unknown') if isinstance(owner, dict) else owner}"
-            )
+            console.print(f"  Owner: {owner.get('login', 'Unknown') if isinstance(owner, dict) else owner}")
             console.print(f"  URL: {repo_info.get('url', 'Unknown')}")
             console.print(f"  Private: {'Yes' if repo_info.get('isPrivate') else 'No'}")
             default_branch = repo_info.get("defaultBranchRef", {})
-            branch_name = (
-                default_branch.get("name", "Unknown")
-                if isinstance(default_branch, dict)
-                else "main"
-            )
+            branch_name = default_branch.get("name", "Unknown") if isinstance(default_branch, dict) else "main"
             console.print(f"  Default branch: {branch_name}")
             console.print()
         else:
@@ -543,9 +535,7 @@ def handle_rollback(
             if debug_session.rollback_to_attempt(attempt_id):
                 console.print(f"[green]Rolled back to before attempt #{attempt_id}[/green]")
             else:
-                console.print(
-                    f"[red]Rollback failed - attempt #{attempt_id} not found or no checkpoint[/red]"
-                )
+                console.print(f"[red]Rollback failed - attempt #{attempt_id} not found or no checkpoint[/red]")
         except ValueError:
             if parts[1] == "start":
                 if debug_session.rollback_to_start():
@@ -719,8 +709,7 @@ async def handle_gemini_chat(
             recent_items = memory.search(query="", limit=5)
             if recent_items:
                 recent_activity = "\n".join(
-                    f"- {item.get('key', 'item')}: {item.get('value', '')[:100]}"
-                    for item in recent_items
+                    f"- {item.get('key', 'item')}: {item.get('value', '')[:100]}" for item in recent_items
                 )
         except Exception:
             pass

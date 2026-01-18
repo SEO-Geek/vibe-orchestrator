@@ -445,7 +445,7 @@ class GeminiClient:
             import json
 
             # Try to find JSON array in response
-            json_match = re.search(r'\[[\s\S]*\]', content)
+            json_match = re.search(r"\[[\s\S]*\]", content)
             if json_match:
                 tasks = json.loads(json_match.group())
                 if tasks:
@@ -457,22 +457,26 @@ class GeminiClient:
 
             # Fallback: create single task
             logger.warning("Gemini returned no tasks, creating fallback")
-            return [{
-                "description": user_request,
-                "files": [],
-                "constraints": [],
-                "type": "code",
-            }]
+            return [
+                {
+                    "description": user_request,
+                    "files": [],
+                    "constraints": [],
+                    "type": "code",
+                }
+            ]
 
         except Exception as e:
             logger.error(f"Gemini decomposition failed: {e}")
             # Never block on Gemini failure - fallback to single task
-            return [{
-                "description": f"Handle request (Gemini unavailable): {user_request[:200]}",
-                "files": [],
-                "constraints": ["Gemini unavailable - proceed with caution"],
-                "type": "code",
-            }]
+            return [
+                {
+                    "description": f"Handle request (Gemini unavailable): {user_request[:200]}",
+                    "files": [],
+                    "constraints": ["Gemini unavailable - proceed with caution"],
+                    "type": "code",
+                }
+            ]
 
     async def check_clarification(
         self,

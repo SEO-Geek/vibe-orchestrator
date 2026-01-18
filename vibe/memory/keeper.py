@@ -1182,9 +1182,7 @@ class VibeMemory:
                     compressed_diff,  # BLOB - may be gzip compressed
                     details.diff_chars,
                     1 if details.diff_was_truncated else 0,
-                    1
-                    if details.review_approved
-                    else (0 if details.review_approved is False else None),
+                    1 if details.review_approved else (0 if details.review_approved is False else None),
                     json.dumps(details.review_issues),
                     details.review_feedback,
                     details.cost_usd,
@@ -1314,9 +1312,7 @@ class VibeMemory:
                     """,
                     (cutoff_date,),
                 )
-                logger.info(
-                    f"Cleaned up {count} execution details older than {retention_days} days"
-                )
+                logger.info(f"Cleaned up {count} execution details older than {retention_days} days")
 
         return count
 

@@ -22,11 +22,11 @@ logger = logging.getLogger(__name__)
 class ClaudeStatus(Enum):
     """Claude subprocess health status."""
 
-    IDLE = auto()         # No active task
-    RUNNING = auto()      # Task in progress
-    HUNG = auto()         # No output for too long
-    FAILED = auto()       # Execution failed
-    RESTARTING = auto()   # Being restarted
+    IDLE = auto()  # No active task
+    RUNNING = auto()  # Task in progress
+    HUNG = auto()  # No output for too long
+    FAILED = auto()  # Execution failed
+    RESTARTING = auto()  # Being restarted
 
 
 @dataclass
@@ -76,8 +76,8 @@ class ClaudeHealthMonitor:
     def __init__(
         self,
         hang_timeout: float = 120.0,  # 2 minutes without output = hung
-        max_restarts: int = 3,         # Max restarts before giving up
-        restart_cooldown: float = 10.0, # Wait between restarts
+        max_restarts: int = 3,  # Max restarts before giving up
+        restart_cooldown: float = 10.0,  # Wait between restarts
     ):
         """
         Initialize health monitor.
@@ -155,9 +155,7 @@ class ClaudeHealthMonitor:
             if seconds_since_activity > self.hang_timeout:
                 self._status = ClaudeStatus.HUNG
                 self._stats.hung_detections += 1
-                logger.warning(
-                    f"Claude appears hung - no output for {seconds_since_activity:.1f}s"
-                )
+                logger.warning(f"Claude appears hung - no output for {seconds_since_activity:.1f}s")
 
         # Determine if healthy
         healthy = self._status in (ClaudeStatus.IDLE, ClaudeStatus.RUNNING)

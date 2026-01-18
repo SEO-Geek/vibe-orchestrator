@@ -126,7 +126,7 @@ def validate_startup(ping_api: bool = True) -> dict[str, tuple[bool, str]]:
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = [
             executor.submit(_check_gemini, ping_api),  # Brain/orchestrator
-            executor.submit(_check_glm, ping_api),     # Code reviewer
+            executor.submit(_check_glm, ping_api),  # Code reviewer
             executor.submit(_check_claude_cli),
             executor.submit(_check_memory_keeper),
             executor.submit(_check_github_cli),

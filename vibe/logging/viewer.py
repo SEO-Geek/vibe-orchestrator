@@ -52,9 +52,7 @@ def parse_since(since: str) -> datetime:
     raise ValueError(f"Invalid time format: {since}. Use ISO format or relative (1h, 30m, 2d)")
 
 
-def read_jsonl(
-    filepath: Path, limit: int | None = None, since: datetime | None = None
-) -> Iterator[dict[str, Any]]:
+def read_jsonl(filepath: Path, limit: int | None = None, since: datetime | None = None) -> Iterator[dict[str, Any]]:
     """
     Read entries from a JSONL file.
 
@@ -469,9 +467,7 @@ def get_session_summary(session_id: str) -> dict[str, Any]:
 
     # Get user requests from session events
     requests = [
-        e.get("user_request", "")
-        for e in session_entries
-        if e.get("event_type") == "request" and e.get("user_request")
+        e.get("user_request", "") for e in session_entries if e.get("event_type") == "request" and e.get("user_request")
     ]
 
     return {

@@ -119,9 +119,7 @@ class WorkflowEngine:
         # Check for simple task patterns
         for pattern in self._simple_patterns:
             if pattern.match(task_description):
-                logger.debug(
-                    f"Task matches simple pattern, skipping workflow: {task_description[:50]}"
-                )
+                logger.debug(f"Task matches simple pattern, skipping workflow: {task_description[:50]}")
                 return False
 
         return True
@@ -164,9 +162,7 @@ class WorkflowEngine:
 
         # Get workflow template
         template = get_workflow_template(task_type)
-        logger.info(
-            f"Expanding task to '{template.name}' workflow with {len(template.phases)} phases"
-        )
+        logger.info(f"Expanding task to '{template.name}' workflow with {len(template.phases)} phases")
 
         # Create expanded tasks for each phase
         expanded = []

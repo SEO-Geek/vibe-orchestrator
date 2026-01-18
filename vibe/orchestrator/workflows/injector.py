@@ -271,10 +271,7 @@ class SubTaskInjector:
                 }
             )
 
-        logger.info(
-            f"Injected {len(before_tasks)} before + {len(after_tasks)} after tasks "
-            f"for '{description[:50]}...'"
-        )
+        logger.info(f"Injected {len(before_tasks)} before + {len(after_tasks)} after tasks for '{description[:50]}...'")
         return result
 
     def process_task_list(

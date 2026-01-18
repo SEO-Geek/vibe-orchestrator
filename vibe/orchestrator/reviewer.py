@@ -201,10 +201,7 @@ class Reviewer:
         if review_result.approved:
             logger.info(f"Task '{task.id}' APPROVED on attempt {attempt}")
         else:
-            logger.warning(
-                f"Task '{task.id}' REJECTED on attempt {attempt}: "
-                f"{len(review_result.issues)} issues"
-            )
+            logger.warning(f"Task '{task.id}' REJECTED on attempt {attempt}: {len(review_result.issues)} issues")
             for issue in review_result.issues:
                 logger.warning(f"  - {issue}")
 

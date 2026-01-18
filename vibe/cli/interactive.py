@@ -237,9 +237,7 @@ async def execute_tasks(
                         "Address the feedback above before proceeding.",
                     ]
                     task_with_feedback["constraints"] = existing_constraints + retry_constraints
-                    console.print(
-                        f"\n  [yellow]Retrying task (attempt {attempt}/{MAX_RETRIES})...[/yellow]"
-                    )
+                    console.print(f"\n  [yellow]Retrying task (attempt {attempt}/{MAX_RETRIES})...[/yellow]")
 
                 # Execute with Claude
                 result, tool_verification = await execute_task_with_claude(
@@ -283,9 +281,7 @@ async def execute_tasks(
 
                 # Check tool verification
                 if not tool_verification["passed"] and tool_verification.get("missing_required"):
-                    console.print(
-                        "[yellow]Warning: Task may be incomplete - missing required tools[/yellow]"
-                    )
+                    console.print("[yellow]Warning: Task may be incomplete - missing required tools[/yellow]")
 
                 # Review with GLM
                 context.transition_to(SessionState.REVIEWING)
@@ -298,18 +294,12 @@ async def execute_tasks(
                     )
                 except Exception as review_error:
                     # Review crashed - FAIL the task (never auto-approve unreviewed code)
-                    err_msg = (
-                        f"[red]Review failed ({review_error}) - "
-                        "rejecting to ensure code quality[/red]"
-                    )
+                    err_msg = f"[red]Review failed ({review_error}) - rejecting to ensure code quality[/red]"
                     console.print(err_msg)
                     review = {
                         "approved": False,
                         "issues": [f"Review system error: {str(review_error)[:100]}"],
-                        "feedback": (
-                            "Task rejected due to review error. "
-                            "Code changes preserved but not approved."
-                        ),
+                        "feedback": ("Task rejected due to review error. Code changes preserved but not approved."),
                     }
 
                 # Persist GLM review response
@@ -386,24 +376,17 @@ async def execute_tasks(
                                 capture_output=True,
                                 timeout=30,
                             )
-                            console.print(
-                                f"  [dim]Git: committed {len(result.file_changes)} file(s)[/dim]"
-                            )
+                            console.print(f"  [dim]Git: committed {len(result.file_changes)} file(s)[/dim]")
                         except Exception as git_err:
                             console.print(f"  [yellow]Git commit skipped: {git_err}[/yellow]")
                 else:
                     # Task rejected - prepare for retry
                     feedback_text = review.get("feedback", "")
                     issues_text = "; ".join(review.get("issues", []))
-                    previous_feedback = (
-                        feedback_text or issues_text or "Task did not meet quality standards."
-                    )
+                    previous_feedback = feedback_text or issues_text or "Task did not meet quality standards."
 
                     if memory:
-                        rejection_value = (
-                            f"Task: {task.get('description', '')}\n"
-                            f"Feedback: {previous_feedback}"
-                        )
+                        rejection_value = f"Task: {task.get('description', '')}\nFeedback: {previous_feedback}"
                         memory.save(
                             key=f"rejection-{task.get('id', i)}-{attempt}",
                             value=rejection_value,
@@ -414,20 +397,14 @@ async def execute_tasks(
                     if attempt >= MAX_RETRIES:
                         failed += 1
                         console.print(f"\n  [red]Task failed after {MAX_RETRIES} attempts[/red]")
-                        fail_summary = (
-                            f"Rejected after {MAX_RETRIES} attempts: "
-                            f"{previous_feedback[:100]}"
-                        )
+                        fail_summary = f"Rejected after {MAX_RETRIES} attempts: {previous_feedback[:100]}"
                         add_task(
                             task.get("description", ""),
                             success=False,
                             summary=fail_summary,
                         )
                         if memory:
-                            full_fail_summary = (
-                                f"Rejected after {MAX_RETRIES} attempts: "
-                                f"{previous_feedback}"
-                            )
+                            full_fail_summary = f"Rejected after {MAX_RETRIES} attempts: {previous_feedback}"
                             memory.save_task_result(
                                 task_description=task.get("description", ""),
                                 success=False,
@@ -604,9 +581,7 @@ async def process_user_request(
     console.print("[dim]Gemini analyzing request...[/dim]")
     try:
         with console.status("[bold blue]Gemini checking clarification...[/bold blue]"):
-            clarification_result = await gemini_client.check_clarification(
-                user_request, project_context
-            )
+            clarification_result = await gemini_client.check_clarification(user_request, project_context)
         console.print("[dim]Gemini responded.[/dim]")
     except asyncio.CancelledError:
         console.print("[yellow]Cancelled by user.[/yellow]")
@@ -644,6 +619,7 @@ async def process_user_request(
         except Exception as e:
             console.print(f"[red]Error decomposing task: {e}[/red]")
             import traceback
+
             console.print(f"[dim]{traceback.format_exc()}[/dim]")
             return
 
@@ -676,9 +652,7 @@ async def process_user_request(
     )
 
     for i, task in enumerate(tasks, 1):
-        console.print(
-            f"\n  [bold cyan]Task {i}:[/bold cyan] {task.get('description', 'No description')}"
-        )
+        console.print(f"\n  [bold cyan]Task {i}:[/bold cyan] {task.get('description', 'No description')}")
         if task.get("files"):
             console.print(f"    [dim]Files: {', '.join(task['files'])}[/dim]")
         if task.get("constraints"):
@@ -774,8 +748,10 @@ def conversation_loop(
 
     def cleanup_clients() -> None:
         """Close async clients before exit to prevent 'Event loop is closed' errors."""
+
         async def _close_all():
             import asyncio
+
             closers = []
             if gemini_client:
                 closers.append(gemini_client.close())
@@ -785,10 +761,12 @@ def conversation_loop(
                 closers.append(perplexity.close())
             if closers:
                 await asyncio.gather(*closers, return_exceptions=True)
+
         try:
             asyncio.run(_close_all())
         except Exception:
             pass  # Ignore cleanup errors
+
     # Check if running in interactive terminal
     if not sys.stdin.isatty():
         console.print("[red]Error: Vibe requires an interactive terminal.[/red]")
@@ -843,10 +821,7 @@ def conversation_loop(
                 if repository and context.repo_session_id:
                     try:
                         stats = context.get_stats()
-                        summary = (
-                            f"Completed {stats['completed_tasks']} tasks, "
-                            f"{stats['error_count']} errors"
-                        )
+                        summary = f"Completed {stats['completed_tasks']} tasks, {stats['error_count']} errors"
                         repository.end_session(context.repo_session_id, summary=summary)
                     except Exception:
                         pass
@@ -864,10 +839,7 @@ def conversation_loop(
                     if repository and context.repo_session_id:
                         try:
                             stats = context.get_stats()
-                            summary = (
-                                f"Completed {stats['completed_tasks']} tasks, "
-                                f"{stats['error_count']} errors"
-                            )
+                            summary = f"Completed {stats['completed_tasks']} tasks, {stats['error_count']} errors"
                             repository.end_session(context.repo_session_id, summary=summary)
                         except Exception:
                             pass
@@ -903,18 +875,12 @@ def conversation_loop(
                 elif cmd == "/prs":
                     commands.handle_prs(github)
                 elif cmd.startswith("/debug"):
-                    debug_session = commands.handle_debug(
-                        user_input, project, memory, debug_session
-                    )
+                    debug_session = commands.handle_debug(user_input, project, memory, debug_session)
                 elif cmd.startswith("/rollback"):
                     commands.handle_rollback(user_input, debug_session)
                 elif cmd.startswith("/gemini"):
                     # Direct chat with Gemini - no task execution
-                    asyncio.run(
-                        commands.handle_gemini_chat(
-                            user_input, gemini_client, project, context, memory
-                        )
-                    )
+                    asyncio.run(commands.handle_gemini_chat(user_input, gemini_client, project, context, memory))
                 else:
                     console.print(f"[red]Unknown command: {user_input}[/red]")
                 continue
@@ -922,17 +888,12 @@ def conversation_loop(
             # Input size validation
             MAX_INPUT_SIZE = 50000  # noqa: N806 (constant in function)
             if len(user_input) > MAX_INPUT_SIZE:
-                warn_msg = (
-                    f"[yellow]Warning: Input is very large "
-                    f"({len(user_input):,} chars). Truncating.[/yellow]"
-                )
+                warn_msg = f"[yellow]Warning: Input is very large ({len(user_input):,} chars). Truncating.[/yellow]"
                 console.print(warn_msg)
                 user_input = user_input[:MAX_INPUT_SIZE] + "\n\n[... truncated ...]"
 
             # Persist user message
-            persist_message(
-                repository, context.repo_session_id, MessageRole.USER, user_input, MessageType.CHAT
-            )
+            persist_message(repository, context.repo_session_id, MessageRole.USER, user_input, MessageType.CHAT)
 
             # Update heartbeat
             if repository and context.repo_session_id:
@@ -952,6 +913,7 @@ def conversation_loop(
             except Exception as e:
                 console.print(f"[bold red]ERROR: {type(e).__name__}: {e}[/bold red]")
                 import traceback
+
                 console.print(f"[dim]{traceback.format_exc()}[/dim]")
                 logger.exception(f"Error processing request: {e}")
 

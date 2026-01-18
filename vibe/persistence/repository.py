@@ -276,9 +276,7 @@ class VibeRepository:
         if include_inactive:
             cursor.execute("SELECT * FROM projects ORDER BY last_accessed_at DESC")
         else:
-            cursor.execute(
-                "SELECT * FROM projects WHERE is_active = 1 ORDER BY last_accessed_at DESC"
-            )
+            cursor.execute("SELECT * FROM projects WHERE is_active = 1 ORDER BY last_accessed_at DESC")
         return [Project.from_row(row) for row in cursor.fetchall()]
 
     # =========================================================================
@@ -364,9 +362,7 @@ class VibeRepository:
     def update_heartbeat(self, session_id: str) -> None:
         """Update session heartbeat timestamp."""
         cursor = self.conn.cursor()
-        cursor.execute(
-            "UPDATE sessions SET last_heartbeat_at = ? WHERE id = ?", (now_iso(), session_id)
-        )
+        cursor.execute("UPDATE sessions SET last_heartbeat_at = ? WHERE id = ?", (now_iso(), session_id))
 
     def end_session(
         self,
@@ -451,11 +447,7 @@ class VibeRepository:
         tasks = [Task.from_row(row) for row in cursor.fetchall()]
 
         # Get pending tasks specifically
-        pending_tasks = [
-            t
-            for t in tasks
-            if t.status in (TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.EXECUTING)
-        ]
+        pending_tasks = [t for t in tasks if t.status in (TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.EXECUTING)]
         completed_tasks = [t for t in tasks if t.status == TaskStatus.COMPLETED]
         failed_tasks = [t for t in tasks if t.status == TaskStatus.FAILED]
 
@@ -891,9 +883,7 @@ class VibeRepository:
     def get_task_attempts(self, task_id: str) -> list[TaskAttempt]:
         """Get all attempts for a task."""
         cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT * FROM task_attempts WHERE task_id = ? ORDER BY attempt_num ASC", (task_id,)
-        )
+        cursor.execute("SELECT * FROM task_attempts WHERE task_id = ? ORDER BY attempt_num ASC", (task_id,))
         return [TaskAttempt.from_row(row) for row in cursor.fetchall()]
 
     # =========================================================================
@@ -937,9 +927,7 @@ class VibeRepository:
     def get_file_changes(self, attempt_id: str) -> list[FileChange]:
         """Get file changes for an attempt."""
         cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT * FROM file_changes WHERE attempt_id = ? ORDER BY created_at ASC", (attempt_id,)
-        )
+        cursor.execute("SELECT * FROM file_changes WHERE attempt_id = ? ORDER BY created_at ASC", (attempt_id,))
         return [FileChange.from_row(row) for row in cursor.fetchall()]
 
     # =========================================================================
@@ -1174,9 +1162,7 @@ class VibeRepository:
         cursor = self.conn.cursor()
 
         # Check if exists
-        cursor.execute(
-            "SELECT id FROM context_items WHERE project_id = ? AND key = ?", (project_id, key)
-        )
+        cursor.execute("SELECT id FROM context_items WHERE project_id = ? AND key = ?", (project_id, key))
         existing = cursor.fetchone()
 
         item = ContextItem(
@@ -1210,9 +1196,7 @@ class VibeRepository:
     def get_context(self, project_id: str, key: str) -> ContextItem | None:
         """Get a context item by key."""
         cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT * FROM context_items WHERE project_id = ? AND key = ?", (project_id, key)
-        )
+        cursor.execute("SELECT * FROM context_items WHERE project_id = ? AND key = ?", (project_id, key))
         row = cursor.fetchone()
         return ContextItem.from_row(row) if row else None
 
@@ -1335,9 +1319,7 @@ class VibeRepository:
     def list_checkpoints(self, session_id: str) -> list[Checkpoint]:
         """List checkpoints for a session."""
         cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT * FROM checkpoints WHERE session_id = ? ORDER BY created_at DESC", (session_id,)
-        )
+        cursor.execute("SELECT * FROM checkpoints WHERE session_id = ? ORDER BY created_at DESC", (session_id,))
         return [Checkpoint.from_row(row) for row in cursor.fetchall()]
 
     # =========================================================================

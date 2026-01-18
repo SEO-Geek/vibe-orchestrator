@@ -221,9 +221,7 @@ class GLMClient:
         if self._consecutive_failures >= CIRCUIT_BREAKER_THRESHOLD:
             from datetime import timedelta
 
-            self._circuit_open_until = datetime.now() + timedelta(
-                seconds=CIRCUIT_BREAKER_RESET_TIME
-            )
+            self._circuit_open_until = datetime.now() + timedelta(seconds=CIRCUIT_BREAKER_RESET_TIME)
             logger.warning(
                 f"Circuit breaker OPEN after {self._consecutive_failures} failures. "
                 f"Skipping GLM for {CIRCUIT_BREAKER_RESET_TIME}s"
@@ -339,9 +337,7 @@ class GLMClient:
 
             choice = response.choices[0]
             if not choice.message:
-                raise GLMResponseError(
-                    "No message in GLM response", {"finish_reason": choice.finish_reason}
-                )
+                raise GLMResponseError("No message in GLM response", {"finish_reason": choice.finish_reason})
 
             content = choice.message.content or ""
             finish_reason = choice.finish_reason or ""
@@ -352,9 +348,7 @@ class GLMClient:
             # Cap at 16K to prevent runaway costs - if GLM needs more than 16K, something is wrong.
             if finish_reason == "length" and current_max < 16384:
                 new_max = min(current_max * 2, 16384)
-                logger.warning(
-                    f"Response truncated at {current_max} tokens, retrying with {new_max}"
-                )
+                logger.warning(f"Response truncated at {current_max} tokens, retrying with {new_max}")
                 return await self.chat(
                     system_prompt=system_prompt,
                     messages=messages,
@@ -552,8 +546,7 @@ class GLMClient:
             self._record_failure()
             logger.error(f"GLM timeout after {DEFAULT_TIMEOUT}s in decompose_task")
             raise GLMConnectionError(
-                f"GLM timed out after {DEFAULT_TIMEOUT}s - "
-                "try a shorter request or check API status"
+                f"GLM timed out after {DEFAULT_TIMEOUT}s - try a shorter request or check API status"
             )
         except Exception as e:
             self._record_failure()
@@ -774,9 +767,7 @@ If you MUST ask (see rules above), ask ONE brief question about a DECISION the u
                 return None
 
             except TimeoutError:
-                logger.warning(
-                    f"GLM timeout (attempt {attempt + 1}/{MAX_RETRIES + 1}), will delegate"
-                )
+                logger.warning(f"GLM timeout (attempt {attempt + 1}/{MAX_RETRIES + 1}), will delegate")
                 last_error = "timeout"
             except (GLMConnectionError, GLMRateLimitError, OpenAIError) as e:
                 logger.warning(f"GLM error (attempt {attempt + 1}): {e}")
@@ -826,9 +817,7 @@ If you MUST ask (see rules above), ask ONE brief question about a DECISION the u
         )
 
         try:
-            debug_system_prompt = (
-                "You are GLM generating debugging tasks. Output ONLY the JSON object."
-            )
+            debug_system_prompt = "You are GLM generating debugging tasks. Output ONLY the JSON object."
             response = await self.chat(
                 system_prompt=debug_system_prompt,
                 messages=[{"role": "user", "content": prompt}],
@@ -852,8 +841,7 @@ If you MUST ask (see rules above), ask ONE brief question about a DECISION the u
             # that allows Claude to investigate the problem independently.
             logger.warning(f"Failed to generate debug task: {e}")
             fallback_task = (
-                f"Investigate: {problem}. Explore the codebase, "
-                "find relevant files, and identify the root cause."
+                f"Investigate: {problem}. Explore the codebase, find relevant files, and identify the root cause."
             )
             return {
                 "task": fallback_task,
@@ -890,9 +878,7 @@ If you MUST ask (see rules above), ask ONE brief question about a DECISION the u
             task=task,
             output=output[:5000],  # Truncate very long outputs
             files_changed=", ".join(files_changed) if files_changed else "None",
-            must_preserve="\n".join(f"- {f}" for f in must_preserve)
-            if must_preserve
-            else "None specified",
+            must_preserve="\n".join(f"- {f}" for f in must_preserve) if must_preserve else "None specified",
             previous_iterations=previous_iterations or "This is the first iteration.",
         )
 
@@ -924,18 +910,13 @@ If you MUST ask (see rules above), ask ONE brief question about a DECISION the u
             result.setdefault("feedback", "No feedback provided")
             result.setdefault("next_task", None)
 
-            logger.debug(
-                f"Debug review: approved={result['approved']}, solved={result['is_problem_solved']}"
-            )
+            logger.debug(f"Debug review: approved={result['approved']}, solved={result['is_problem_solved']}")
             return result
 
         except Exception as e:
             logger.warning(f"Failed to review debug iteration: {e}")
             # Fallback: request more information
-            feedback_msg = (
-                f"GLM review failed ({e}). "
-                "Please provide more details about what you found."
-            )
+            feedback_msg = f"GLM review failed ({e}). Please provide more details about what you found."
             return {
                 "approved": False,
                 "is_problem_solved": False,
@@ -967,6 +948,7 @@ def ping_glm_sync(api_key: str, timeout: float = 10.0) -> tuple[bool, str]:
     Returns:
         Tuple of (success, message)
     """
+
     async def _do_ping() -> tuple[bool, str]:
         """Create client, ping, and close within the same async context."""
         client = GLMClient(api_key)

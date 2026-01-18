@@ -44,9 +44,7 @@ class ContextSettings:
 
     # Git diff settings
     max_diff_chars: int = 100_000  # Max chars for git diff (was 50K)
-    diff_exclude_patterns: list[str] = field(
-        default_factory=lambda: DEFAULT_DIFF_EXCLUDE_PATTERNS.copy()
-    )
+    diff_exclude_patterns: list[str] = field(default_factory=lambda: DEFAULT_DIFF_EXCLUDE_PATTERNS.copy())
 
     # Memory loading settings
     max_memory_items: int = 25  # Items to load for context (was 10)
@@ -70,9 +68,7 @@ class ContextSettings:
             return cls()
         return cls(
             max_diff_chars=data.get("max_diff_chars", 100_000),
-            diff_exclude_patterns=data.get(
-                "diff_exclude_patterns", DEFAULT_DIFF_EXCLUDE_PATTERNS.copy()
-            ),
+            diff_exclude_patterns=data.get("diff_exclude_patterns", DEFAULT_DIFF_EXCLUDE_PATTERNS.copy()),
             max_memory_items=data.get("max_memory_items", 25),
             save_execution_details=data.get("save_execution_details", True),
         )

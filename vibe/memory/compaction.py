@@ -102,9 +102,7 @@ async def compact_context(
                 old_items.append(item)
 
         if len(old_items) < DEFAULT_ITEMS_PER_SUMMARY:
-            result["reason"] = (
-                f"Not enough old items ({len(old_items)} < {DEFAULT_ITEMS_PER_SUMMARY})"
-            )
+            result["reason"] = f"Not enough old items ({len(old_items)} < {DEFAULT_ITEMS_PER_SUMMARY})"
             logger.info(f"Compaction skipped: {result['reason']}")
             return result
 

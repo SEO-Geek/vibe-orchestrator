@@ -246,21 +246,24 @@ class TaskBoard:
             with self._get_connection() as conn:
                 # Use INSERT OR REPLACE to handle duplicate task IDs gracefully
                 # This can happen if a task is re-queued or tests reuse IDs
-                conn.execute("""
+                conn.execute(
+                    """
                     INSERT OR REPLACE INTO board_tasks
                     (id, description, column, project, session_id, created_at, updated_at,
                      metadata, attempts, last_feedback, files_changed)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, '', '[]')
-                """, (
-                    task.id,
-                    task.description,
-                    task.column.value,
-                    task.project,
-                    task.session_id,
-                    task.created_at.isoformat(),
-                    task.updated_at.isoformat(),
-                    json.dumps(task.metadata),
-                ))
+                """,
+                    (
+                        task.id,
+                        task.description,
+                        task.column.value,
+                        task.project,
+                        task.session_id,
+                        task.created_at.isoformat(),
+                        task.updated_at.isoformat(),
+                        json.dumps(task.metadata),
+                    ),
+                )
 
                 self._record_transition(conn, task.id, None, TaskColumn.BACKLOG, "Task created")
                 conn.commit()
@@ -296,9 +299,7 @@ class TaskBoard:
             # Check WIP limit for target column
             current_count = self._get_column_count(column)
             if current_count >= self.wip_limits[column]:
-                raise ValueError(
-                    f"{column.value} WIP limit ({self.wip_limits[column]}) exceeded"
-                )
+                raise ValueError(f"{column.value} WIP limit ({self.wip_limits[column]}) exceeded")
 
             with self._get_connection() as conn:
                 cursor = conn.execute(
@@ -495,13 +496,16 @@ class TaskBoard:
             stats.failed_today = cursor.fetchone()[0]
 
             # Average completion time
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
                 SELECT AVG(
                     (julianday(completed_at) - julianday(started_at)) * 86400
                 ) as avg_time
                 FROM board_tasks
                 WHERE project = ? AND completed_at IS NOT NULL AND started_at IS NOT NULL
-            """, (self.project,))
+            """,
+                (self.project,),
+            )
             row = cursor.fetchone()
             stats.avg_completion_time_seconds = row[0] or 0.0
 
@@ -525,16 +529,19 @@ class TaskBoard:
         reason: str,
     ) -> None:
         """Record a task state transition in history."""
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO task_history (task_id, from_column, to_column, timestamp, reason)
             VALUES (?, ?, ?, ?, ?)
-        """, (
-            task_id,
-            from_column.value if from_column else None,
-            to_column.value,
-            datetime.now().isoformat(),
-            reason,
-        ))
+        """,
+            (
+                task_id,
+                from_column.value if from_column else None,
+                to_column.value,
+                datetime.now().isoformat(),
+                reason,
+            ),
+        )
 
     def get_task_history(self, task_id: str) -> list[dict[str, Any]]:
         """Get transition history for a task."""
@@ -569,17 +576,20 @@ class TaskBoard:
 
         with self._lock:
             with self._get_connection() as conn:
-                cursor = conn.execute("""
+                cursor = conn.execute(
+                    """
                     DELETE FROM board_tasks
                     WHERE project = ?
                       AND column IN (?, ?)
                       AND completed_at < ?
-                """, (
-                    self.project,
-                    TaskColumn.DONE.value,
-                    TaskColumn.REJECTED.value,
-                    cutoff,
-                ))
+                """,
+                    (
+                        self.project,
+                        TaskColumn.DONE.value,
+                        TaskColumn.REJECTED.value,
+                        cutoff,
+                    ),
+                )
                 deleted = cursor.rowcount
                 conn.commit()
 

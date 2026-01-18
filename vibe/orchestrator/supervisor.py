@@ -65,10 +65,7 @@ MCP_ROUTING_TABLE: dict[str, dict[str, list[str]]] = {
             "mcp__chrome-devtools__list_network_requests",
             "mcp__sequential-thinking__sequentialthinking",
         ],
-        "hint": (
-            "Use Chrome DevTools for browser debugging, "
-            "sequential-thinking for complex analysis"
-        ),
+        "hint": ("Use Chrome DevTools for browser debugging, sequential-thinking for complex analysis"),
     },
     "code_write": {
         "recommended": [
@@ -264,9 +261,7 @@ class Supervisor:
         self.pattern_learner = get_pattern_learner(project.name)
 
         # Workflow engine setting - default from project config
-        self.use_workflow_engine = (
-            use_workflow_engine if use_workflow_engine is not None else project.use_workflows
-        )
+        self.use_workflow_engine = use_workflow_engine if use_workflow_engine is not None else project.use_workflows
 
         # Initialize session context
         self.context = SessionContext(
@@ -495,10 +490,7 @@ class Supervisor:
             expanded_dicts = [t.to_dict() for t in expanded]
 
             if len(expanded_dicts) != len(task_dicts):
-                self._emit_progress(
-                    f"WorkflowEngine expanded {len(task_dicts)} tasks "
-                    f"to {len(expanded_dicts)} phases"
-                )
+                self._emit_progress(f"WorkflowEngine expanded {len(task_dicts)} tasks to {len(expanded_dicts)} phases")
 
             return expanded_dicts
 
@@ -573,17 +565,13 @@ class Supervisor:
 
                 if proc.returncode != 0:
                     error_output = (
-                        stderr.decode("utf-8", errors="replace")
-                        if stderr
-                        else stdout.decode("utf-8", errors="replace")
+                        stderr.decode("utf-8", errors="replace") if stderr else stdout.decode("utf-8", errors="replace")
                     )
                     self._emit_error(f"{phase} hook failed: {hook}\n{error_output[:200]}")
                     return False
 
                 if stdout:
-                    self._emit_progress(
-                        f"Hook output: {stdout.decode('utf-8', errors='replace')[:100]}"
-                    )
+                    self._emit_progress(f"Hook output: {stdout.decode('utf-8', errors='replace')[:100]}")
 
             except TimeoutError:
                 self._emit_error(f"{phase} hook timed out: {hook}")
@@ -644,19 +632,14 @@ class Supervisor:
                 recent_items = self.memory.load_project_context(limit=10)
                 if recent_items:
                     memory_context = "\n".join(
-                        f"- [{item.category}] {item.key}: {item.value[:200]}"
-                        for item in recent_items
+                        f"- [{item.category}] {item.key}: {item.value[:200]}" for item in recent_items
                     )
                     add_context("RECENT CONTEXT", memory_context, 3000)
             except Exception as e:
                 logger.warning(f"Could not load memory context: {e}")
 
         # Add project metadata
-        metadata = (
-            f"PROJECT: {self.project.name}\n"
-            f"PATH: {self.project.path}\n"
-            f"TEST COMMAND: {self.project.test_command}"
-        )
+        metadata = f"PROJECT: {self.project.name}\nPATH: {self.project.path}\nTEST COMMAND: {self.project.test_command}"
         context_parts.append(metadata)
         total_chars += len(metadata)
 
@@ -767,9 +750,7 @@ class Supervisor:
             # - skip_clarification=True (CLI flag) -> skip
             # - Investigation task (questions, research) -> skip (no ambiguity)
             # - Everything else -> ask GEMINI if request is ambiguous
-            should_ask_clarification = not skip_clarification and not self._is_investigation_task(
-                request
-            )
+            should_ask_clarification = not skip_clarification and not self._is_investigation_task(request)
 
             if should_ask_clarification:
                 self._emit_status("Checking if clarification needed...")
@@ -959,9 +940,7 @@ class Supervisor:
                 f"Task '{task.description[:60]}...' may produce large changes. "
                 f"Consider splitting into smaller tasks to ensure thorough review."
             )
-            self._emit_progress(
-                "Note: Large-scope task detected. Review may be partial if diff exceeds limit."
-            )
+            self._emit_progress("Note: Large-scope task detected. Review may be partial if diff exceeds limit.")
 
         # Run pre-task hooks before any attempts
         if not await self._run_hooks(self.project.pre_task_hooks, "pre-task"):
@@ -1053,7 +1032,7 @@ class Supervisor:
                     self.pattern_learner.record_success(
                         task_description=task.description,
                         task_type=routing_config.task_type,
-                        tools_used=execution_result.tool_calls if hasattr(execution_result, 'tool_calls') else [],
+                        tools_used=execution_result.tool_calls if hasattr(execution_result, "tool_calls") else [],
                         duration_seconds=0,  # Not tracked for auto-approved
                         cost_usd=execution_result.cost_usd,
                     )
@@ -1084,9 +1063,7 @@ class Supervisor:
             # Review the task with GLM
             # Pass task_type for task-type-specific review criteria
             try:
-                review_result = await self.review_task(
-                    task, execution_result, task_type=routing_config.task_type.value
-                )
+                review_result = await self.review_task(task, execution_result, task_type=routing_config.task_type.value)
                 result.review_approved = review_result.get("approved", False)
                 result.review_feedback = review_result.get("feedback", "")
 
@@ -1125,7 +1102,7 @@ class Supervisor:
                         self.pattern_learner.record_success(
                             task_description=task.description,
                             task_type=routing_config.task_type,
-                            tools_used=execution_result.tool_calls if hasattr(execution_result, 'tool_calls') else [],
+                            tools_used=execution_result.tool_calls if hasattr(execution_result, "tool_calls") else [],
                             duration_seconds=0,  # Could track if needed
                             cost_usd=execution_result.cost_usd,
                         )
@@ -1156,17 +1133,13 @@ class Supervisor:
 
                     previous_feedback = f"Previous attempt was rejected. {combined_feedback}"
 
-                    self._emit_progress(
-                        f"Task rejected: {result.review_feedback[:100]}... Retrying."
-                    )
+                    self._emit_progress(f"Task rejected: {result.review_feedback[:100]}... Retrying.")
 
                     # Save rejection to memory for learning
                     if self.memory:
                         try:
                             rejection_value = (
-                                f"Task: {task.description}\n"
-                                f"Issues: {issues}\n"
-                                f"Feedback: {result.review_feedback}"
+                                f"Task: {task.description}\nIssues: {issues}\nFeedback: {result.review_feedback}"
                             )
                             self.memory.save(
                                 key=f"rejection-{task.id}-{attempt}",
@@ -1205,10 +1178,7 @@ class Supervisor:
 
         # If we exhausted retries without success
         if not result.success and result.attempts >= task_max_retries:
-            result.error = (
-                f"Task failed after {task_max_retries} attempts. "
-                f"Last feedback: {result.review_feedback}"
-            )
+            result.error = f"Task failed after {task_max_retries} attempts. Last feedback: {result.review_feedback}"
 
             # Move task to REJECTED column on kanban board
             try:

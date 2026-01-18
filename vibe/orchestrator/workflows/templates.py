@@ -73,8 +73,7 @@ PHASE_ANALYZE_CONTEXT = WorkflowPhase(
     timeout_tier="code",
     can_skip=False,
     prompt_guidance=(
-        "Read relevant files and understand existing patterns first. "
-        "Identify dependencies and potential impact areas."
+        "Read relevant files and understand existing patterns first. Identify dependencies and potential impact areas."
     ),
 )
 
@@ -86,10 +85,7 @@ PHASE_ANALYZE_DEPENDENCIES = WorkflowPhase(
     success_criteria="Listed all import references and dependent files",
     timeout_tier="quick",
     can_skip=True,
-    prompt_guidance=(
-        "Search for all imports and usages of the code being modified. "
-        "List files that may need updates."
-    ),
+    prompt_guidance=("Search for all imports and usages of the code being modified. List files that may need updates."),
 )
 
 PHASE_REPRODUCE_BUG = WorkflowPhase(
@@ -100,10 +96,7 @@ PHASE_REPRODUCE_BUG = WorkflowPhase(
     success_criteria="Bug reproduced and behavior documented",
     timeout_tier="debug",
     can_skip=False,
-    prompt_guidance=(
-        "First, understand and reproduce the bug. "
-        "Document the exact steps and observed behavior."
-    ),
+    prompt_guidance=("First, understand and reproduce the bug. Document the exact steps and observed behavior."),
 )
 
 PHASE_INVESTIGATE = WorkflowPhase(
@@ -115,8 +108,7 @@ PHASE_INVESTIGATE = WorkflowPhase(
     timeout_tier="debug",
     can_skip=False,
     prompt_guidance=(
-        "Trace through the code to find the root cause. "
-        "Look for stack traces, error messages, and code paths."
+        "Trace through the code to find the root cause. Look for stack traces, error messages, and code paths."
     ),
 )
 
@@ -140,10 +132,7 @@ PHASE_FIX_BUG = WorkflowPhase(
     success_criteria="Fix applied to address root cause",
     timeout_tier="code",
     can_skip=False,
-    prompt_guidance=(
-        "Apply the fix based on the root cause analysis. "
-        "Ensure the fix is minimal and targeted."
-    ),
+    prompt_guidance=("Apply the fix based on the root cause analysis. Ensure the fix is minimal and targeted."),
 )
 
 PHASE_REFACTOR = WorkflowPhase(
@@ -154,10 +143,7 @@ PHASE_REFACTOR = WorkflowPhase(
     success_criteria="Refactoring complete, all references updated",
     timeout_tier="code",
     can_skip=False,
-    prompt_guidance=(
-        "Perform the refactoring. Update all references and imports. "
-        "Preserve existing behavior."
-    ),
+    prompt_guidance=("Perform the refactoring. Update all references and imports. Preserve existing behavior."),
 )
 
 # Documentation phases - make code maintainable
@@ -169,10 +155,7 @@ PHASE_ADD_COMMENTS = WorkflowPhase(
     success_criteria="Complex logic documented with comments",
     timeout_tier="quick",
     can_skip=True,
-    prompt_guidance=(
-        "Add inline comments for any complex or non-obvious logic. "
-        "Focus on 'why' not 'what'."
-    ),
+    prompt_guidance=("Add inline comments for any complex or non-obvious logic. Focus on 'why' not 'what'."),
 )
 
 PHASE_UPDATE_DOCS = WorkflowPhase(
@@ -196,8 +179,7 @@ PHASE_VERIFY = WorkflowPhase(
     timeout_tier="code",
     can_skip=False,
     prompt_guidance=(
-        "Run the project's test suite to verify no regressions. "
-        "Check that existing functionality still works."
+        "Run the project's test suite to verify no regressions. Check that existing functionality still works."
     ),
 )
 
@@ -209,10 +191,7 @@ PHASE_VERIFY_FIX = WorkflowPhase(
     success_criteria="Bug no longer reproducible",
     timeout_tier="debug",
     can_skip=False,
-    prompt_guidance=(
-        "Verify that the fix resolves the original bug. "
-        "Try to reproduce the issue again."
-    ),
+    prompt_guidance=("Verify that the fix resolves the original bug. Try to reproduce the issue again."),
 )
 
 PHASE_VERIFY_BEHAVIOR = WorkflowPhase(
@@ -223,10 +202,7 @@ PHASE_VERIFY_BEHAVIOR = WorkflowPhase(
     success_criteria="Behavior unchanged, tests pass",
     timeout_tier="code",
     can_skip=False,
-    prompt_guidance=(
-        "Run tests to verify the refactoring didn't change behavior. "
-        "Check all use cases still work."
-    ),
+    prompt_guidance=("Run tests to verify the refactoring didn't change behavior. Check all use cases still work."),
 )
 
 PHASE_ADD_TEST = WorkflowPhase(
@@ -249,10 +225,7 @@ PHASE_GATHER_INFO = WorkflowPhase(
     success_criteria="Relevant information gathered from documentation",
     timeout_tier="research",
     can_skip=False,
-    prompt_guidance=(
-        "Research the topic using available docs and web resources. "
-        "Gather relevant examples."
-    ),
+    prompt_guidance=("Research the topic using available docs and web resources. Gather relevant examples."),
 )
 
 PHASE_SUMMARIZE = WorkflowPhase(
@@ -262,10 +235,7 @@ PHASE_SUMMARIZE = WorkflowPhase(
     success_criteria="Clear, concise summary provided",
     timeout_tier="quick",
     can_skip=False,
-    prompt_guidance=(
-        "Provide a clear summary of findings. "
-        "Include key takeaways and actionable recommendations."
-    ),
+    prompt_guidance=("Provide a clear summary of findings. Include key takeaways and actionable recommendations."),
 )
 
 

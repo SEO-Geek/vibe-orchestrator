@@ -265,20 +265,15 @@ class PatternLearner:
                         new_count = old_count + 1
 
                         # Running average for duration and cost
-                        new_avg_duration = (
-                            (existing["avg_duration_seconds"] * old_count + duration_seconds)
-                            / new_count
-                        )
-                        new_avg_cost = (
-                            (existing["avg_cost_usd"] * old_count + cost_usd)
-                            / new_count
-                        )
+                        new_avg_duration = (existing["avg_duration_seconds"] * old_count + duration_seconds) / new_count
+                        new_avg_cost = (existing["avg_cost_usd"] * old_count + cost_usd) / new_count
 
                         # Merge tools
                         old_tools = json.loads(existing["tools_used"]) if existing["tools_used"] else []
                         merged_tools = list(set(old_tools + tools_used))
 
-                        conn.execute("""
+                        conn.execute(
+                            """
                             UPDATE task_patterns SET
                                 success_count = ?,
                                 tools_used = ?,
@@ -286,14 +281,16 @@ class PatternLearner:
                                 avg_cost_usd = ?,
                                 last_used = ?
                             WHERE id = ?
-                        """, (
-                            new_count,
-                            json.dumps(merged_tools),
-                            new_avg_duration,
-                            new_avg_cost,
-                            now.isoformat(),
-                            pattern_id,
-                        ))
+                        """,
+                            (
+                                new_count,
+                                json.dumps(merged_tools),
+                                new_avg_duration,
+                                new_avg_cost,
+                                now.isoformat(),
+                                pattern_id,
+                            ),
+                        )
                         conn.commit()
 
                         return TaskPattern(
@@ -312,25 +309,29 @@ class PatternLearner:
 
                     else:
                         # Create new pattern
-                        conn.execute("""
+                        conn.execute(
+                            """
                             INSERT INTO task_patterns
                             (id, project, task_type, description_template, tools_used,
                              success_count, failure_count, avg_duration_seconds, avg_cost_usd,
                              last_used, created_at, metadata)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (
-                            pattern_id,
-                            self.project,
-                            task_type.value,
-                            template,
-                            json.dumps(tools_used),
-                            1, 0,
-                            duration_seconds,
-                            cost_usd,
-                            now.isoformat(),
-                            now.isoformat(),
-                            json.dumps(metadata or {}),
-                        ))
+                        """,
+                            (
+                                pattern_id,
+                                self.project,
+                                task_type.value,
+                                template,
+                                json.dumps(tools_used),
+                                1,
+                                0,
+                                duration_seconds,
+                                cost_usd,
+                                now.isoformat(),
+                                now.isoformat(),
+                                json.dumps(metadata or {}),
+                            ),
+                        )
                         conn.commit()
 
                         logger.info(f"PatternLearner: Created new pattern for {task_type.value}")
@@ -395,10 +396,13 @@ class PatternLearner:
 
                     if success_pattern:
                         # Increment failure count on existing success pattern
-                        conn.execute("""
+                        conn.execute(
+                            """
                             UPDATE task_patterns SET failure_count = failure_count + 1
                             WHERE id = ?
-                        """, (pattern_id,))
+                        """,
+                            (pattern_id,),
+                        )
                         conn.commit()
 
                         return TaskPattern(
@@ -407,8 +411,7 @@ class PatternLearner:
                             task_type=task_type.value,
                             description_template=template,
                             tools_used=(
-                                json.loads(success_pattern["tools_used"])
-                                if success_pattern["tools_used"] else []
+                                json.loads(success_pattern["tools_used"]) if success_pattern["tools_used"] else []
                             ),
                             success_count=success_pattern["success_count"],
                             failure_count=success_pattern["failure_count"] + 1,
@@ -426,12 +429,15 @@ class PatternLearner:
                     now = datetime.now()
 
                     if existing_failure:
-                        conn.execute("""
+                        conn.execute(
+                            """
                             UPDATE failure_patterns SET
                                 failure_count = failure_count + 1,
                                 last_feedback = ?
                             WHERE id = ?
-                        """, (feedback_stored, failure_id))
+                        """,
+                            (feedback_stored, failure_id),
+                        )
                         conn.commit()
 
                         return FailurePattern(
@@ -444,19 +450,22 @@ class PatternLearner:
                         )
 
                     # Create new failure pattern
-                    conn.execute("""
+                    conn.execute(
+                        """
                         INSERT INTO failure_patterns
                         (id, project, task_type, error_pattern, failure_count, last_feedback, created_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        failure_id,
-                        self.project,
-                        task_type.value,
-                        template,
-                        1,
-                        feedback_stored,
-                        now.isoformat(),
-                    ))
+                    """,
+                        (
+                            failure_id,
+                            self.project,
+                            task_type.value,
+                            template,
+                            1,
+                            feedback_stored,
+                            now.isoformat(),
+                        ),
+                    )
                     conn.commit()
 
                     logger.info(f"PatternLearner: Recorded failure pattern for {task_type.value}")
@@ -492,29 +501,34 @@ class PatternLearner:
             List of reliable TaskPatterns
         """
         with self._get_connection() as conn:
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
                 SELECT * FROM task_patterns
                 WHERE project = ? AND task_type = ?
                   AND (success_count * 1.0 / (success_count + failure_count + 0.001)) > 0.75
                 ORDER BY success_count DESC
                 LIMIT ?
-            """, (self.project, task_type.value, limit))
+            """,
+                (self.project, task_type.value, limit),
+            )
 
             patterns = []
             for row in cursor.fetchall():
-                patterns.append(TaskPattern(
-                    id=row["id"],
-                    project=row["project"],
-                    task_type=row["task_type"],
-                    description_template=row["description_template"],
-                    tools_used=json.loads(row["tools_used"]) if row["tools_used"] else [],
-                    success_count=row["success_count"],
-                    failure_count=row["failure_count"],
-                    avg_duration_seconds=row["avg_duration_seconds"] or 0,
-                    avg_cost_usd=row["avg_cost_usd"] or 0,
-                    last_used=datetime.fromisoformat(row["last_used"]) if row["last_used"] else datetime.now(),
-                    created_at=datetime.fromisoformat(row["created_at"]),
-                ))
+                patterns.append(
+                    TaskPattern(
+                        id=row["id"],
+                        project=row["project"],
+                        task_type=row["task_type"],
+                        description_template=row["description_template"],
+                        tools_used=json.loads(row["tools_used"]) if row["tools_used"] else [],
+                        success_count=row["success_count"],
+                        failure_count=row["failure_count"],
+                        avg_duration_seconds=row["avg_duration_seconds"] or 0,
+                        avg_cost_usd=row["avg_cost_usd"] or 0,
+                        last_used=datetime.fromisoformat(row["last_used"]) if row["last_used"] else datetime.now(),
+                        created_at=datetime.fromisoformat(row["created_at"]),
+                    )
+                )
 
             return patterns
 
@@ -536,25 +550,30 @@ class PatternLearner:
             List of FailurePatterns to avoid
         """
         with self._get_connection() as conn:
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
                 SELECT * FROM failure_patterns
                 WHERE project = ? AND task_type = ?
                   AND failure_count >= 2
                 ORDER BY failure_count DESC
                 LIMIT ?
-            """, (self.project, task_type.value, limit))
+            """,
+                (self.project, task_type.value, limit),
+            )
 
             failures = []
             for row in cursor.fetchall():
-                failures.append(FailurePattern(
-                    id=row["id"],
-                    project=row["project"],
-                    task_type=row["task_type"],
-                    error_pattern=row["error_pattern"],
-                    failure_count=row["failure_count"],
-                    last_feedback=row["last_feedback"] or "",
-                    created_at=datetime.fromisoformat(row["created_at"]),
-                ))
+                failures.append(
+                    FailurePattern(
+                        id=row["id"],
+                        project=row["project"],
+                        task_type=row["task_type"],
+                        error_pattern=row["error_pattern"],
+                        failure_count=row["failure_count"],
+                        last_feedback=row["last_feedback"] or "",
+                        created_at=datetime.fromisoformat(row["created_at"]),
+                    )
+                )
 
             return failures
 
@@ -612,7 +631,8 @@ class PatternLearner:
 
         # Get all task type statistics
         with self._get_connection() as conn:
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
                 SELECT task_type,
                        SUM(success_count) as successes,
                        SUM(failure_count) as failures,
@@ -620,7 +640,9 @@ class PatternLearner:
                 FROM task_patterns
                 WHERE project = ?
                 GROUP BY task_type
-            """, (self.project,))
+            """,
+                (self.project,),
+            )
             stats = cursor.fetchall()
 
         if stats:
@@ -635,19 +657,21 @@ class PatternLearner:
                     avg_dur = row["avg_duration"] or 0
                     status = "✓" if rate >= 75 else "⚠" if rate >= 50 else "✗"
                     parts.append(
-                        f"- {task_type}: {rate:.0f}% success ({successes}/{total}), "
-                        f"avg {avg_dur:.0f}s {status}"
+                        f"- {task_type}: {rate:.0f}% success ({successes}/{total}), avg {avg_dur:.0f}s {status}"
                     )
 
         # Get top failure patterns across all types
         with self._get_connection() as conn:
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
                 SELECT task_type, error_pattern, failure_count, last_feedback
                 FROM failure_patterns
                 WHERE project = ?
                 ORDER BY failure_count DESC
                 LIMIT 5
-            """, (self.project,))
+            """,
+                (self.project,),
+            )
             failures = cursor.fetchall()
 
         if failures:
@@ -680,11 +704,14 @@ class PatternLearner:
             )
             failure_count = cursor.fetchone()[0]
 
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
                 SELECT task_type, SUM(success_count) as successes, SUM(failure_count) as failures
                 FROM task_patterns WHERE project = ?
                 GROUP BY task_type
-            """, (self.project,))
+            """,
+                (self.project,),
+            )
 
             by_type = {}
             for row in cursor.fetchall():

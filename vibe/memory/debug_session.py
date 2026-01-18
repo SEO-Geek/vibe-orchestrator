@@ -197,9 +197,7 @@ class DebugSession:
         # Create checkpoint before attempt
         rollback_commit = ""
         if create_checkpoint:
-            rollback_commit = self._create_checkpoint(
-                f"Before attempt #{attempt_id}: {description[:50]}"
-            )
+            rollback_commit = self._create_checkpoint(f"Before attempt #{attempt_id}: {description[:50]}")
 
         attempt = DebugAttempt(
             id=attempt_id,
@@ -268,9 +266,7 @@ class DebugSession:
 
     def get_failed_attempts(self) -> list[DebugAttempt]:
         """Get all failed attempts."""
-        return [
-            a for a in self.attempts if a.result in (AttemptResult.FAILED, AttemptResult.MADE_WORSE)
-        ]
+        return [a for a in self.attempts if a.result in (AttemptResult.FAILED, AttemptResult.MADE_WORSE)]
 
     def get_successful_attempts(self) -> list[DebugAttempt]:
         """Get all successful attempts."""
@@ -285,10 +281,7 @@ class DebugSession:
         desc_lower = description.lower()
         for attempt in self.attempts:
             # Simple similarity check - could be enhanced with embeddings
-            if (
-                desc_lower in attempt.description.lower()
-                or attempt.description.lower() in desc_lower
-            ):
+            if desc_lower in attempt.description.lower() or attempt.description.lower() in desc_lower:
                 return attempt
         return None
 

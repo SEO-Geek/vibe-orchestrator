@@ -364,9 +364,7 @@ class TestReviewerReview:
 
         # Check that GLM was called with truncation warning
         call_args = mock_glm_client.review_changes.call_args
-        diff_arg = call_args.kwargs.get(
-            "changes_diff", call_args.args[1] if len(call_args.args) > 1 else ""
-        )
+        diff_arg = call_args.kwargs.get("changes_diff", call_args.args[1] if len(call_args.args) > 1 else "")
         assert "TRUNCATED" in diff_arg or "⚠️" in diff_arg
 
     @pytest.mark.asyncio

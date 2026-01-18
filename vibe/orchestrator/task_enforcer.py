@@ -606,9 +606,7 @@ class TaskEnforcer:
                     if re.search(pattern, command):
                         pattern_violations.append(f"Used forbidden pattern in Bash: {pattern}")
 
-        passed = (
-            len(missing_required) == 0 and len(forbidden_used) == 0 and len(pattern_violations) == 0
-        )
+        passed = len(missing_required) == 0 and len(forbidden_used) == 0 and len(pattern_violations) == 0
 
         return {
             "passed": passed,
@@ -617,9 +615,7 @@ class TaskEnforcer:
             "forbidden_used": forbidden_used,
             "pattern_violations": pattern_violations,
             "tools_used": list(tools_used),
-            "feedback": self._generate_feedback(
-                missing_required, forbidden_used, pattern_violations
-            ),
+            "feedback": self._generate_feedback(missing_required, forbidden_used, pattern_violations),
         }
 
     def _generate_feedback(
@@ -842,9 +838,7 @@ class SmartTaskDetector:
                     # Keep highest confidence match
                     if best_match is None or current.confidence > best_match.confidence:
                         best_match = current
-                        logger.debug(
-                            f"Intent pattern match: {task_type.value} (confidence={confidence:.2f})"
-                        )
+                        logger.debug(f"Intent pattern match: {task_type.value} (confidence={confidence:.2f})")
 
         if best_match is not None:
             return best_match

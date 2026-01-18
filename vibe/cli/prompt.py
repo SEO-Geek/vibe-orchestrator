@@ -125,8 +125,7 @@ class VibeCompleter(Completer):
                     d
                     for d in dirs
                     if not d.startswith(".")
-                    and d
-                    not in ("node_modules", "__pycache__", ".venv", "venv", ".git", "dist", "build")
+                    and d not in ("node_modules", "__pycache__", ".venv", "venv", ".git", "dist", "build")
                 ]
 
                 # Calculate relative depth

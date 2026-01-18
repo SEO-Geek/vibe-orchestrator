@@ -261,9 +261,7 @@ class TaskHistory:
 
 
 # Convenience functions for easy access
-def add_task(
-    description: str, success: bool, summary: str = "", files_changed: list[str] | None = None
-) -> None:
+def add_task(description: str, success: bool, summary: str = "", files_changed: list[str] | None = None) -> None:
     """Record a completed task."""
     TaskHistory.add_task(description, success, summary, files_changed)
 

@@ -59,8 +59,7 @@ class TimeoutCheckpoint:
         return {
             "task_description": self.task_description,
             "tool_calls": [
-                {"name": tc.name, "input": tc.input, "timestamp": tc.timestamp.isoformat()}
-                for tc in self.tool_calls
+                {"name": tc.name, "input": tc.input, "timestamp": tc.timestamp.isoformat()} for tc in self.tool_calls
             ],
             "file_changes": self.file_changes,
             "partial_output": self.partial_output,
@@ -251,9 +250,7 @@ class ClaudeExecutor:
 
         return checkpoint
 
-    def _persist_checkpoint_to_disk(
-        self, checkpoint: TimeoutCheckpoint, task_id: str
-    ) -> None:
+    def _persist_checkpoint_to_disk(self, checkpoint: TimeoutCheckpoint, task_id: str) -> None:
         """Persist checkpoint to disk for recovery."""
         try:
             os.makedirs(CHECKPOINT_DIR, exist_ok=True)
@@ -624,9 +621,9 @@ class ClaudeExecutor:
                 with open(CLAUDE_LIVE_LOG, "a") as live_log:
                     timestamp = datetime.now().isoformat()
                     task_short = task_description[:80]
-                    live_log.write(f"\n{'='*60}\n")
+                    live_log.write(f"\n{'=' * 60}\n")
                     live_log.write(f"[{timestamp}] Task: {task_short}\n")
-                    live_log.write(f"{'='*60}\n")
+                    live_log.write(f"{'=' * 60}\n")
                     live_log.flush()
 
                     async def read_with_timeout() -> bytes:
@@ -656,9 +653,9 @@ class ClaudeExecutor:
                             buffer += chunk
 
                             # Process complete lines from buffer
-                            while b'\n' in buffer:
-                                line, buffer = buffer.split(b'\n', 1)
-                                line_with_newline = line + b'\n'
+                            while b"\n" in buffer:
+                                line, buffer = buffer.split(b"\n", 1)
+                                line_with_newline = line + b"\n"
                                 output += line_with_newline
                                 stdout_lines.append(line_with_newline)
 
@@ -679,7 +676,7 @@ class ClaudeExecutor:
                                                         tool_name = block.get("name", "")
                                                         live_log.write(f"[TOOL] {tool_name}\n")
                                             elif msg_type == "result":
-                                                cost = data.get('total_cost_usd', 0)
+                                                cost = data.get("total_cost_usd", 0)
                                                 live_log.write(f"\n[DONE] Cost: ${cost:.4f}\n")
                                         except json.JSONDecodeError:
                                             live_log.write(f"{decoded}\n")
@@ -689,9 +686,7 @@ class ClaudeExecutor:
 
                             # Check output size limit
                             if len(output) > MAX_OUTPUT_BYTES:
-                                logger.warning(
-                                    f"Output truncated: {len(output)} -> {MAX_OUTPUT_BYTES}B"
-                                )
+                                logger.warning(f"Output truncated: {len(output)} -> {MAX_OUTPUT_BYTES}B")
                                 break
 
                         # Handle any remaining data in buffer (last line without newline)
@@ -724,8 +719,7 @@ class ClaudeExecutor:
                         task_id=task_id,
                     )
                     logger.warning(
-                        f"Timeout checkpoint saved: {len(tool_calls)} tool calls, "
-                        f"{len(file_changes)} files modified"
+                        f"Timeout checkpoint saved: {len(tool_calls)} tool calls, {len(file_changes)} files modified"
                     )
 
                 # kill() not terminate() here - we already timed out, so graceful
@@ -738,16 +732,13 @@ class ClaudeExecutor:
                 checkpoint_msg = ""
                 if tool_calls or file_changes:
                     checkpoint_msg = (
-                        f" | Partial work: {len(tool_calls)} tool calls, "
-                        f"{len(file_changes)} files modified"
+                        f" | Partial work: {len(tool_calls)} tool calls, {len(file_changes)} files modified"
                     )
 
                 raise ClaudeTimeoutError(
                     f"Task timed out after {self.timeout}s{checkpoint_msg}",
                     timeout_seconds=self.timeout,
-                    checkpoint_summary=self._last_checkpoint.summary()
-                    if self._last_checkpoint
-                    else None,
+                    checkpoint_summary=self._last_checkpoint.summary() if self._last_checkpoint else None,
                     files_modified=file_changes,
                     tool_calls_count=len(tool_calls),
                 )
@@ -785,9 +776,7 @@ class ClaudeExecutor:
                             # Track file modifications separately for diff generation.
                             # Edit and Write are the only tools that modify files.
                             if tool_call.name in ("Edit", "Write"):
-                                file_path = tool_call.input.get("file_path") or tool_call.input.get(
-                                    "path"
-                                )
+                                file_path = tool_call.input.get("file_path") or tool_call.input.get("path")
                                 if file_path and file_path not in file_changes:
                                     file_changes.append(file_path)
 
@@ -830,8 +819,7 @@ class ClaudeExecutor:
             log_entry.success = not is_error
             log_entry.error = error_message if is_error else None
             log_entry.tool_calls = [
-                {"name": tc.name, "input": tc.input, "timestamp": tc.timestamp.isoformat()}
-                for tc in tool_calls
+                {"name": tc.name, "input": tc.input, "timestamp": tc.timestamp.isoformat()} for tc in tool_calls
             ]
             log_entry.file_changes = file_changes
             log_entry.duration_ms = duration_ms
@@ -1059,8 +1047,8 @@ class ClaudeExecutor:
                 buffer += chunk
 
                 # Process complete lines from buffer
-                while b'\n' in buffer:
-                    line, buffer = buffer.split(b'\n', 1)
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
                     line_str = line.decode().strip()
                     if not line_str:
                         continue
@@ -1090,9 +1078,7 @@ class ClaudeExecutor:
 
                                 # Track file modifications
                                 if tool_call.name in ("Edit", "Write"):
-                                    file_path = tool_call.input.get("file_path") or tool_call.input.get(
-                                        "path"
-                                    )
+                                    file_path = tool_call.input.get("file_path") or tool_call.input.get("path")
                                     if file_path and file_path not in file_changes:
                                         file_changes.append(file_path)
 

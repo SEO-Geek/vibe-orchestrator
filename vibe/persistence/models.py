@@ -219,12 +219,8 @@ class Project:
             self.claude_md,
             self.test_command,
             self.description,
-            self.created_at.isoformat()
-            if isinstance(self.created_at, datetime)
-            else self.created_at,
-            self.updated_at.isoformat()
-            if isinstance(self.updated_at, datetime)
-            else self.updated_at,
+            self.created_at.isoformat() if isinstance(self.created_at, datetime) else self.created_at,
+            self.updated_at.isoformat() if isinstance(self.updated_at, datetime) else self.updated_at,
             self.last_accessed_at.isoformat() if self.last_accessed_at else None,
             1 if self.is_active else 0,
         )
@@ -280,9 +276,7 @@ class Session:
             self.status.value,
             self.pid,
             self.hostname,
-            self.started_at.isoformat()
-            if isinstance(self.started_at, datetime)
-            else self.started_at,
+            self.started_at.isoformat() if isinstance(self.started_at, datetime) else self.started_at,
             self.ended_at.isoformat() if self.ended_at else None,
             self.last_heartbeat_at.isoformat() if self.last_heartbeat_at else None,
             self.summary,
@@ -366,9 +360,7 @@ class Message:
             self.content,
             self.message_type.value if self.message_type else None,
             self.parent_message_id,
-            self.created_at.isoformat()
-            if isinstance(self.created_at, datetime)
-            else self.created_at,
+            self.created_at.isoformat() if isinstance(self.created_at, datetime) else self.created_at,
             self.tokens_used,
             self.cost_usd,
             to_json(self.metadata) if self.metadata else None,
@@ -434,9 +426,7 @@ class Task:
             self.success_criteria,
             self.status.value,
             self.priority,
-            self.created_at.isoformat()
-            if isinstance(self.created_at, datetime)
-            else self.created_at,
+            self.created_at.isoformat() if isinstance(self.created_at, datetime) else self.created_at,
             self.started_at.isoformat() if self.started_at else None,
             self.completed_at.isoformat() if self.completed_at else None,
             self.created_by,
@@ -507,9 +497,7 @@ class TaskStatusTransition:
             self.from_status.value if self.from_status else None,
             self.to_status.value,
             self.reason,
-            self.transitioned_at.isoformat()
-            if isinstance(self.transitioned_at, datetime)
-            else self.transitioned_at,
+            self.transitioned_at.isoformat() if isinstance(self.transitioned_at, datetime) else self.transitioned_at,
             self.triggered_by,
         )
 
@@ -587,9 +575,7 @@ class TaskAttempt:
             self.response_text,
             self.error_message,
             self.summary,
-            self.started_at.isoformat()
-            if isinstance(self.started_at, datetime)
-            else self.started_at,
+            self.started_at.isoformat() if isinstance(self.started_at, datetime) else self.started_at,
             self.completed_at.isoformat() if self.completed_at else None,
             self.duration_ms,
             self.cost_usd,
@@ -599,9 +585,7 @@ class TaskAttempt:
             to_json(self.tool_calls),
         )
 
-    def complete_success(
-        self, response: str, summary: str | None = None, duration_ms: int = 0
-    ) -> None:
+    def complete_success(self, response: str, summary: str | None = None, duration_ms: int = 0) -> None:
         """Mark attempt as successful."""
         self.result = AttemptResult.SUCCESS
         self.response_text = response
@@ -672,9 +656,7 @@ class FileChange:
             self.diff_content,
             self.lines_added,
             self.lines_removed,
-            self.created_at.isoformat()
-            if isinstance(self.created_at, datetime)
-            else self.created_at,
+            self.created_at.isoformat() if isinstance(self.created_at, datetime) else self.created_at,
         )
 
 
@@ -720,9 +702,7 @@ class Review:
             to_json(self.issues),
             self.feedback,
             to_json(self.suggested_next_steps),
-            self.reviewed_at.isoformat()
-            if isinstance(self.reviewed_at, datetime)
-            else self.reviewed_at,
+            self.reviewed_at.isoformat() if isinstance(self.reviewed_at, datetime) else self.reviewed_at,
             self.review_duration_ms,
             self.tokens_used,
         )
@@ -782,12 +762,8 @@ class DebugSession:
             1 if self.is_active else 0,
             1 if self.is_solved else 0,
             self.initial_git_commit,
-            self.created_at.isoformat()
-            if isinstance(self.created_at, datetime)
-            else self.created_at,
-            self.updated_at.isoformat()
-            if isinstance(self.updated_at, datetime)
-            else self.updated_at,
+            self.created_at.isoformat() if isinstance(self.created_at, datetime) else self.created_at,
+            self.updated_at.isoformat() if isinstance(self.updated_at, datetime) else self.updated_at,
             self.resolved_at.isoformat() if self.resolved_at else None,
         )
 
@@ -886,9 +862,7 @@ class DebugIteration:
             1 if self.review_is_solved else 0 if self.review_is_solved is not None else None,
             self.review_feedback,
             self.review_next_task,
-            self.started_at.isoformat()
-            if isinstance(self.started_at, datetime)
-            else self.started_at,
+            self.started_at.isoformat() if isinstance(self.started_at, datetime) else self.started_at,
             self.completed_at.isoformat() if self.completed_at else None,
             self.duration_ms,
             self.git_checkpoint,
@@ -897,11 +871,7 @@ class DebugIteration:
     def format_summary(self) -> str:
         """Format iteration for history display."""
         files_str = ", ".join(self.files_changed) if self.files_changed else "none"
-        output_preview = (
-            self.output[:500] + "..."
-            if self.output and len(self.output) > 500
-            else (self.output or "")
-        )
+        output_preview = self.output[:500] + "..." if self.output and len(self.output) > 500 else (self.output or "")
         return (
             f"### Iteration {self.iteration_num}\n"
             f"**Task:** {self.task_description}\n"
@@ -961,12 +931,8 @@ class ContextItem:
             self.value,
             self.category.value,
             self.priority.value,
-            self.created_at.isoformat()
-            if isinstance(self.created_at, datetime)
-            else self.created_at,
-            self.updated_at.isoformat()
-            if isinstance(self.updated_at, datetime)
-            else self.updated_at,
+            self.created_at.isoformat() if isinstance(self.created_at, datetime) else self.created_at,
+            self.updated_at.isoformat() if isinstance(self.updated_at, datetime) else self.updated_at,
             self.expires_at.isoformat() if self.expires_at else None,
         )
 
@@ -1010,12 +976,8 @@ class Convention:
             self.convention,
             self.applies_to,
             self.created_by_project,
-            self.created_at.isoformat()
-            if isinstance(self.created_at, datetime)
-            else self.created_at,
-            self.updated_at.isoformat()
-            if isinstance(self.updated_at, datetime)
-            else self.updated_at,
+            self.created_at.isoformat() if isinstance(self.created_at, datetime) else self.created_at,
+            self.updated_at.isoformat() if isinstance(self.updated_at, datetime) else self.updated_at,
             1 if self.is_active else 0,
         )
 
@@ -1061,9 +1023,7 @@ class Checkpoint:
             self.git_branch,
             self.git_commit,
             self.git_status,
-            self.created_at.isoformat()
-            if isinstance(self.created_at, datetime)
-            else self.created_at,
+            self.created_at.isoformat() if isinstance(self.created_at, datetime) else self.created_at,
         )
 
 
@@ -1161,9 +1121,7 @@ class Request:
             self.result_summary,
             self.tasks_created,
             self.status,
-            self.created_at.isoformat()
-            if isinstance(self.created_at, datetime)
-            else self.created_at,
+            self.created_at.isoformat() if isinstance(self.created_at, datetime) else self.created_at,
             self.completed_at.isoformat() if self.completed_at else None,
         )
 
@@ -1299,20 +1257,12 @@ class ExecutionDetails:
             self.cost_usd,
             self.duration_ms,
             self.attempt_number,
-            self.created_at.isoformat()
-            if isinstance(self.created_at, datetime)
-            else self.created_at,
+            self.created_at.isoformat() if isinstance(self.created_at, datetime) else self.created_at,
         )
 
     def summary(self) -> str:
         """Generate a brief summary of this execution."""
-        status = (
-            "approved"
-            if self.review_approved
-            else "rejected"
-            if self.review_approved is False
-            else "pending"
-        )
+        status = "approved" if self.review_approved else "rejected" if self.review_approved is False else "pending"
         files_str = ", ".join(self.files_changed[:3])
         if len(self.files_changed) > 3:
             files_str += f" (+{len(self.files_changed) - 3} more)"

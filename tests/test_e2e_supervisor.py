@@ -219,9 +219,7 @@ class TestSupervisorE2E:
 
         with patch("vibe.claude.executor.ClaudeExecutor", return_value=mock_executor):
             # Run investigation query (starts with "What")
-            result = await supervisor.process_user_request(
-                "What TODO comments exist in the codebase?"
-            )
+            result = await supervisor.process_user_request("What TODO comments exist in the codebase?")
 
         # Verify investigation detection worked
         assert result.success is True
@@ -413,9 +411,7 @@ class TestSupervisorE2E:
                 pass
 
         with patch("vibe.claude.executor.ClaudeExecutor", CountingMockExecutor):
-            result = await supervisor.process_user_request(
-                "Set up a basic Python project structure"
-            )
+            result = await supervisor.process_user_request("Set up a basic Python project structure")
 
         # Verify all tasks completed
         assert result.success is True
@@ -553,10 +549,7 @@ class TestSupervisorEdgeCases:
         """Test handling when Gemini requests clarification."""
         mock_gemini = MagicMock()
         mock_gemini.check_clarification = AsyncMock(
-            return_value={
-                "needs_clarification": True,
-                "question": "Do you want to use Python or JavaScript?"
-            }
+            return_value={"needs_clarification": True, "question": "Do you want to use Python or JavaScript?"}
         )
         mock_gemini.get_usage_stats = MagicMock(return_value={"total_tokens": 0})
 
