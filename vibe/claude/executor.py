@@ -356,10 +356,10 @@ class ClaudeExecutor:
         self.close()
 
     def cancel(self) -> None:
-        """Cancel the current execution."""
+        """Cancel the current execution - uses SIGKILL for immediate termination."""
         self._cancelled = True
         if self._current_process and self._current_process.returncode is None:
-            self._current_process.terminate()
+            self._current_process.kill()  # SIGKILL - cannot be ignored
 
     def reset_cancellation(self) -> None:
         """Reset cancellation flag for new execution."""
