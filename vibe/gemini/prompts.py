@@ -32,6 +32,7 @@ RULES:
 3. Each task should be completable in under 5 minutes
 4. Include specific files and constraints for each task
 5. Think step-by-step before decomposing
+6. SIMPLE REQUESTS = ONE TASK. "Run the tests" = 1 task. "Check OCR" = 1 task. Don't over-decompose.
 
 ANTI-OVER-ENGINEERING RULES (CRITICAL):
 - Claude tends to CREATE NEW FILES instead of MODIFYING EXISTING ones
@@ -107,10 +108,17 @@ FOR TEST/ANALYSIS TASKS, ADD:
 
 CRITICAL:
 - Each task must be self-contained
-- Include "research" tasks if Claude needs to explore first
+- Include "research" tasks ONLY if the user request is ambiguous and needs exploration
 - Include "verify" tasks after significant changes
 - Never combine unrelated changes in one task
 - Claude often claims to make changes without actually doing so - demand verification
+
+SIMPLE REQUESTS (run, test, execute, check, try):
+- If user says "run tests" or "run the OCR" → ONE task: run it, show results
+- If user says "check if X works" → ONE task: run X, report what happened
+- Do NOT add research tasks for simple execution requests
+- Do NOT over-decompose - "run live OCR test" is ONE task, not three
+- When in doubt, FEWER tasks is better than more
 
 Respond with ONLY a JSON array of tasks, no explanation."""
 
