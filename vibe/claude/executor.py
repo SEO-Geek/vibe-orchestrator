@@ -320,14 +320,13 @@ class ClaudeExecutor:
         Should be called when done with the executor to prevent resource leaks.
         Safe to call multiple times.
         """
-        # Terminate any running subprocess. We use terminate() not kill() to allow
-        # graceful shutdown. Can't await here since this is sync, but terminate
-        # sends SIGTERM which is sufficient for cleanup.
+        # Kill any running subprocess immediately. We use kill() (SIGKILL) to ensure
+        # the process stops - terminate() (SIGTERM) can be ignored by Claude.
         if self._current_process and self._current_process.returncode is None:
             try:
-                self._current_process.terminate()
+                self._current_process.kill()
             except Exception as e:
-                logger.debug(f"Error terminating subprocess: {e}")
+                logger.debug(f"Error killing subprocess: {e}")
             finally:
                 self._current_process = None
 
@@ -1026,7 +1025,7 @@ class ClaudeExecutor:
                 # Check cancellation first - user can abort via TUI
                 if self._cancelled:
                     if process.returncode is None:
-                        process.terminate()
+                        process.kill()  # SIGKILL - cannot be ignored
                         await process.wait()
                     yield ("cancelled", "Operation cancelled by user")
                     return
@@ -1143,7 +1142,7 @@ class ClaudeExecutor:
 
         except asyncio.CancelledError:
             if self._current_process and self._current_process.returncode is None:
-                self._current_process.terminate()
+                self._current_process.kill()  # SIGKILL - cannot be ignored
             yield ("cancelled", "Operation cancelled")
         except Exception as e:
             if self._current_process and self._current_process.returncode is None:
