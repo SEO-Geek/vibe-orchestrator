@@ -20,7 +20,6 @@ async def execute_task_with_claude(
     task_num: int,
     total_tasks: int,
     debug_context: str | None = None,
-    project_context: str | None = None,
 ) -> tuple[TaskResult, dict]:
     """
     Execute a single task with Claude, showing progress.
@@ -31,7 +30,6 @@ async def execute_task_with_claude(
         task_num: Current task number (1-based)
         total_tasks: Total number of tasks
         debug_context: Optional debug session context to inject
-        project_context: Project overview for Claude (CLAUDE.md, STARMAP.md, platform)
 
     Returns:
         Tuple of (TaskResult, tool_verification_result)
@@ -71,7 +69,6 @@ async def execute_task_with_claude(
             on_tool_call=on_tool_call,
             debug_context=debug_context,
             timeout_tier=timeout_tier,
-            project_context=project_context,
         )
 
     # Verify tool usage

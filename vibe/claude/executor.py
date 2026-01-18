@@ -371,7 +371,6 @@ class ClaudeExecutor:
         constraints: list[str] | None = None,
         enforce_tools: bool = True,
         debug_context: str | None = None,
-        project_context: str | None = None,
     ) -> str:
         """
         Build the prompt for Claude.
@@ -382,24 +381,13 @@ class ClaudeExecutor:
             constraints: Constraints to follow
             enforce_tools: Whether to include tool enforcement section
             debug_context: Optional debug session context to inject
-            project_context: Project overview (CLAUDE.md, STARMAP.md, platform info)
 
         Returns:
             Formatted prompt string
         """
         parts = []
 
-        # Project context FIRST - Claude needs to understand the project before the task
-        # This includes platform info (WSL/Windows/Linux), conventions, and architecture
-        if project_context:
-            parts.append("=" * 60)
-            parts.append("PROJECT CONTEXT - READ THIS FIRST")
-            parts.append("=" * 60)
-            parts.append(project_context)
-            parts.append("=" * 60)
-            parts.append("")
-
-        # Debug context (error traces, previous attempts) goes early because Claude
+        # Debug context (error traces, previous attempts) goes FIRST because Claude
         # processes prompts sequentially - early context has stronger influence on
         # the response. This ensures debug info shapes the entire approach.
         if debug_context:
@@ -545,7 +533,6 @@ class ClaudeExecutor:
         debug_context: str | None = None,
         timeout_tier: str | None = None,
         task_id: str | None = None,
-        project_context: str | None = None,
     ) -> TaskResult:
         """
         Execute a task via Claude Code.
@@ -559,7 +546,6 @@ class ClaudeExecutor:
             debug_context: Optional debug session context to inject
             timeout_tier: Override timeout tier ('quick', 'code', 'debug', 'research')
             task_id: Optional task ID for checkpoint persistence
-            project_context: Project overview (CLAUDE.md, STARMAP.md, platform info)
 
         Returns:
             TaskResult with success/failure and details
@@ -576,12 +562,7 @@ class ClaudeExecutor:
             self.timeout = TIMEOUT_TIERS[timeout_tier]
             logger.info(f"Using timeout tier '{timeout_tier}': {self.timeout}s")
         prompt = self.build_prompt(
-            task_description,
-            files,
-            constraints,
-            enforce_tools=True,
-            debug_context=debug_context,
-            project_context=project_context,
+            task_description, files, constraints, enforce_tools=True, debug_context=debug_context
         )
         cmd = self._build_command(prompt)
         env = self._clean_environment()

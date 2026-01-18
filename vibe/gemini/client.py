@@ -34,7 +34,6 @@ from vibe.gemini.prompts import (
     CLARIFICATION_PROMPT,
     ORCHESTRATOR_SYSTEM_PROMPT,
     TASK_DECOMPOSITION_PROMPT,
-    TASK_VERIFICATION_PROMPT,
 )
 from vibe.logging import (
     GeminiLogEntry,
@@ -574,71 +573,6 @@ class GeminiClient:
             "request_count": self.request_count,
             "model": self.model,
         }
-
-    async def verify_tasks(
-        self,
-        tasks: list[dict[str, Any]],
-        project_context: str = "",
-    ) -> dict[str, Any]:
-        """
-        Verify task list before execution - check dependencies and issues.
-
-        This is Gemini's pre-execution verification step:
-        - Check task ordering and dependencies
-        - Flag missing steps or conflicts
-        - Warn about platform-specific issues
-        - Reorder tasks if needed
-
-        Args:
-            tasks: List of task dicts to verify
-            project_context: Project context for awareness
-
-        Returns:
-            Dict with approved, issues, reordered_tasks, warnings
-        """
-        import json
-
-        tasks_json = json.dumps(tasks, indent=2)
-        prompt = TASK_VERIFICATION_PROMPT.format(
-            tasks_json=tasks_json,
-            project_context=project_context[:20000],
-        )
-
-        messages = [
-            {"role": "system", "content": ORCHESTRATOR_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ]
-
-        try:
-            response = await self.chat(
-                messages,
-                method="verify_tasks",
-            )
-            content = response.content
-
-            # Extract JSON from response
-            json_match = re.search(r'\{[\s\S]*\}', content)
-            if json_match:
-                result = json.loads(json_match.group())
-                return {
-                    "approved": result.get("approved", True),
-                    "issues": result.get("issues", []),
-                    "reordered_tasks": result.get("reordered_tasks"),
-                    "warnings": result.get("warnings", []),
-                }
-
-            # Fallback: approve if no JSON found
-            logger.warning("Gemini verification returned no JSON, auto-approving")
-            return {"approved": True, "issues": [], "reordered_tasks": None, "warnings": []}
-
-        except Exception as e:
-            logger.warning(f"Gemini verification failed: {e}, auto-approving")
-            return {
-                "approved": True,
-                "issues": [],
-                "reordered_tasks": None,
-                "warnings": [f"Verification skipped: {str(e)[:50]}"],
-            }
 
     def clear_conversation(self) -> None:
         """Clear conversation history."""
