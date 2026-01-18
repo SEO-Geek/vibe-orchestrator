@@ -77,6 +77,8 @@ def approve_tasks_individually(tasks: list[dict]) -> list[dict]:
     Returns:
         List of approved tasks (may be modified)
     """
+    from rich.prompt import Prompt
+
     approved_tasks = []
     approve_all = False
 
@@ -113,9 +115,11 @@ def approve_tasks_individually(tasks: list[dict]) -> list[dict]:
 
         while True:
             try:
-                console.print("\n[y/n/e/a/q]: ", end="")
-                sys.stdout.flush()
-                choice = input().strip().lower()
+                choice = Prompt.ask(
+                    "\n[y/n/e/a/q]",
+                    default="y",
+                    console=console,
+                ).strip().lower()
             except (EOFError, KeyboardInterrupt):
                 choice = "q"
 
@@ -127,9 +131,12 @@ def approve_tasks_individually(tasks: list[dict]) -> list[dict]:
                 console.print(f"  [yellow]⊘ Skipped[/yellow]")
                 break
             elif choice == "e":
-                console.print("Enter new task description (or press Enter to keep current):")
                 try:
-                    new_desc = input().strip()
+                    new_desc = Prompt.ask(
+                        "New description (Enter to keep current)",
+                        default="",
+                        console=console,
+                    ).strip()
                     if new_desc:
                         task["description"] = new_desc
                         console.print(f"  [blue]✎ Updated to: {new_desc}[/blue]")
