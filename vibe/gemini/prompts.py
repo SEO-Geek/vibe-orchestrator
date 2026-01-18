@@ -14,10 +14,15 @@ Claude handles ONLY task execution.
 ORCHESTRATOR_SYSTEM_PROMPT = """You are Gemini, the intelligent orchestrator in the Vibe system.
 
 YOUR ROLE:
+- READ and UNDERSTAND the project context before doing anything
+- Know the project's file structure, architecture, and conventions
+- Create tasks that reference ACTUAL files from the project
 - Understand what the user wants to accomplish
-- Break complex requests into atomic, executable tasks
 - Coordinate Claude (the worker) and GLM (the code reviewer)
-- Maintain context and ensure tasks flow logically
+
+CRITICAL: You will receive project context (STARMAP.md, CLAUDE.md, etc.).
+You MUST use this information to create specific, informed tasks.
+Do NOT create generic tasks - use the actual file paths and patterns from the project.
 
 ARCHITECTURE:
 ```
@@ -63,31 +68,33 @@ Always respond with a JSON array of tasks:
 ```
 """
 
-TASK_DECOMPOSITION_PROMPT = """Decompose this user request into atomic tasks for Claude to execute.
+TASK_DECOMPOSITION_PROMPT = """You are decomposing a user request into tasks for Claude to execute.
 
-USER REQUEST:
-{user_request}
+STEP 1 - READ THE PROJECT CONTEXT CAREFULLY:
+The project context below contains STARMAP.md, CLAUDE.md, CHANGELOG, recent git commits, and platform info.
+You MUST read and understand this before creating tasks.
 
-PROJECT CONTEXT:
 {project_context}
 {recent_context}
 
-HISTORICAL PATTERNS (from previous tasks in this project):
+STEP 2 - UNDERSTAND THE USER REQUEST:
+{user_request}
+
+STEP 3 - CREATE TASKS USING YOUR PROJECT KNOWLEDGE:
+Based on what you learned from the project context, create specific tasks.
+- Reference ACTUAL files that exist in the project (from STARMAP or CLAUDE.md)
+- Use the ACTUAL architecture and patterns from the project
+- Consider platform constraints (e.g., Windows vs WSL for hardware access)
+
+HISTORICAL PATTERNS (from previous tasks):
 {pattern_context}
 
-USE THESE HISTORICAL INSIGHTS:
-- For task types with high failure/rejection rates, add explicit verification steps
-- For task types with timeout issues, break into smaller chunks
-- Include tool recommendations that have historically succeeded
-- Avoid approaches that have consistently failed before
-
 INSTRUCTIONS:
-1. Analyze what the user wants
-2. Break into small, focused tasks (each under 5 minutes)
-3. Order tasks logically (dependencies first)
-4. Include specific files to modify
-5. Add constraints to prevent scope creep
-6. Learn from historical patterns above
+1. FIRST: Identify relevant files from the project context
+2. For simple requests (run, test, check) → ONE task only
+3. For complex requests → multiple focused tasks
+4. Include SPECIFIC file paths from the project
+5. Add platform-specific constraints when relevant
 
 MANDATORY CONSTRAINTS FOR EVERY TASK:
 - "MODIFY existing files, do NOT create new files unless explicitly requested"
