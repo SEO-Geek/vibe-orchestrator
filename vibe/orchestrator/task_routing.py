@@ -53,7 +53,7 @@ class TaskRoutingConfig:
     task_type: TaskType
 
     # Timeout configuration
-    timeout_tier: TimeoutTier = TimeoutTier.MEDIUM
+    timeout_tier: TimeoutTier = TimeoutTier.CODE
     timeout_seconds: int | None = None  # Override tier if set
 
     # Review configuration

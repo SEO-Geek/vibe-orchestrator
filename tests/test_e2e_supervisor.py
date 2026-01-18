@@ -38,6 +38,14 @@ class MockExecutorContext:
     async def execute(self, **kwargs):
         return self.result
 
+    def load_checkpoint_from_disk(self, task_id: str):
+        """Mock checkpoint loading - no checkpoints in tests."""
+        return None
+
+    def clear_checkpoint_from_disk(self, task_id: str):
+        """Mock checkpoint clearing."""
+        pass
+
 
 def prepare_supervisor_for_request(supervisor: Supervisor) -> None:
     """Prepare supervisor state for processing a request."""
@@ -397,6 +405,12 @@ class TestSupervisorE2E:
                     tool_calls=[],
                     error=None,
                 )
+
+            def load_checkpoint_from_disk(self, task_id: str):
+                return None
+
+            def clear_checkpoint_from_disk(self, task_id: str):
+                pass
 
         with patch("vibe.claude.executor.ClaudeExecutor", CountingMockExecutor):
             result = await supervisor.process_user_request(

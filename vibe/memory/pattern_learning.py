@@ -17,10 +17,12 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from vibe.config import CONFIG_DIR
-from vibe.orchestrator.task_enforcer import TaskType
+
+if TYPE_CHECKING:
+    from vibe.orchestrator.task_enforcer import TaskType
 
 logger = logging.getLogger(__name__)
 
@@ -220,7 +222,7 @@ class PatternLearner:
     def record_success(
         self,
         task_description: str,
-        task_type: TaskType,
+        task_type: "TaskType",
         tools_used: list[str],
         duration_seconds: float = 0.0,
         cost_usd: float = 0.0,
@@ -353,7 +355,7 @@ class PatternLearner:
     def record_failure(
         self,
         task_description: str,
-        task_type: TaskType,
+        task_type: "TaskType",
         feedback: str,
     ) -> FailurePattern | TaskPattern | None:
         """
@@ -471,7 +473,7 @@ class PatternLearner:
 
     def get_relevant_patterns(
         self,
-        task_type: TaskType,
+        task_type: "TaskType",
         limit: int = 5,
     ) -> list[TaskPattern]:
         """
@@ -515,7 +517,7 @@ class PatternLearner:
 
     def get_failure_warnings(
         self,
-        task_type: TaskType,
+        task_type: "TaskType",
         limit: int = 3,
     ) -> list[FailurePattern]:
         """
@@ -553,7 +555,7 @@ class PatternLearner:
 
             return failures
 
-    def generate_learnings_context(self, task_type: TaskType) -> str:
+    def generate_learnings_context(self, task_type: "TaskType") -> str:
         """
         Generate context string with learnings for Claude prompt injection.
 
